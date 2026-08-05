@@ -1,8 +1,8 @@
 # ISPConfig Connect for WHMCS — Scope & Design
 
-**Date:** 2026-08-05
-**Status:** Draft — awaiting owner review
-**Working name:** ISPConfig Connect for WHMCS (module system name `ispconfigconnect`, repo `whmcs-ispconfig-connect`)
+**Date:** 2026-08-05 (owner decisions applied same day)
+**Status:** Approved — license, naming, and commercial model decided by owner; ready for implementation planning
+**Name:** ISPConfig Connect for WHMCS (module system name `ispconfigconnect`, repo `ispconfig-connect-whmcs`) — first of the **ISPConfig Connect family**: `ispconfig-connect-whmcs`, `ispconfig-connect-blesta`, `ispconfig-connect-fossbilling`, sharing an extracted `ispconfig-connect-core` library (REST client, session manager, provisioning recipes). Part of the **ISPConfig Toolkit** portfolio (see `ispconfig-toolkit/ROADMAP.md`).
 **Goal:** a FOSS WHMCS provisioning ("server") module for ISPConfig 3.x with feature parity to the bundled cPanel and Plesk modules — deployable on our own production WHMCS, listed on the WHMCS Marketplace, and positioned as the missing commercial pillar of the "ISPConfig as a Plesk/cPanel replacement" roadmap (companion to `ispconfig-theme-customizer`).
 
 All version numbers, licenses, prices, and API behaviors below were verified in-session on 2026-08-05 against vendor sources (docs.whmcs.com, developers.whmcs.com, marketplace.whmcs.com, ispconfig.org blog, git.ispconfig.org at tag `3.3.1p1`, GitHub APIs) by a 10-agent research pass with per-claim adversarial re-verification. Nothing is from memory.
@@ -53,15 +53,16 @@ A clean WHMCS 9 module implementing the full parity surface is an estimated 1,50
 
 ## 3. Product decisions
 
-### 3.1 Naming
-- **Module system name:** `ispconfigconnect` (WHMCS rule: single word, lowercase, letters/numbers, unique). Deliberately distinct from the dead `ispcfg3` and `ispconfig3` modules so both can coexist during migration, and from any legacy `ispconfig` module name WHMCS's 9.0 legacy-module cleanup might touch.
-- **Product name:** "ISPConfig Connect for WHMCS". Descriptive use of the ISPConfig mark ("for ISPConfig") is the established pattern; we do not use their logo as our icon. Given the Till-symbiosis stance, notify/coordinate with the ISPConfig project before launch — a listing in their community channels is the single best marketing channel this product has.
-- **Repo:** `whmcs-ispconfig-connect` (own GitHub, same neutral-branding conventions as `clarity-theme-ispconfig`).
+### 3.1 Naming (decided)
+- **Family naming scheme:** `ispconfig-connect-<billing-platform>` — `ispconfig-connect-whmcs` now; `ispconfig-connect-blesta` and `ispconfig-connect-fossbilling` reserved for later tracks (those tracks open with an upstream-first assessment, since Blesta ships a maintained MIT ISPConfig module and FOSSBilling an Apache-2.0 one — we contribute upstream where that serves users better, and build `ispconfig-connect-*` where upstream is missing or structurally behind, as with WHMCS). Shared plumbing lives in **`ispconfig-connect-core`** (REST client, SessionManager, Permissions, provisioning recipes), vendored into each connector at build time (WHMCS installs have no Composer).
+- **Module system name:** `ispconfigconnect` (WHMCS rule: single word, lowercase, letters/numbers, unique). Deliberately distinct from the dead `ispcfg3` and `ispconfig3` modules so both can coexist during migration.
+- **Product name:** "ISPConfig Connect for WHMCS" (owner-approved). Descriptive use of the ISPConfig mark; we do not use their logo as our icon. Coordinate with the ISPConfig project before launch — the owner's stance is **full public endorsement of the upstream project in all things**; a listing in ISPConfig community channels is also the product's best marketing channel.
 
-### 3.2 License — **MIT** (recommended; owner to confirm)
-- Consistent with `ispconfig-theme-customizer` (MIT) and with both reference implementations (Blesta MIT, FOSSBilling Apache-2.0).
-- Compatible with the business model: FOSS on GitHub + free marketplace listing for adoption; revenue from support contracts / a supported build channel via our own checkout (the marketplace cannot process sales anyway).
-- Trade-off stated openly: MIT permits a competitor to close-source a fork (e.g., ionCube-encode and sell). GPLv3 would force share-alike but adds friction for hosts and is what the abandoned incumbents used. Given the goodwill-driven positioning, MIT is the recommendation; flip to GPLv3 only if the owner weighs the fork risk higher.
+### 3.2 License — **GPLv3** (owner decision, 2026-08-05)
+- Chosen to protect the open-source nature of the work: any fork or derivative must stay open. This forecloses the ionCube-encode-and-resell fork scenario that MIT would permit.
+- Applies to the whole Connect family including `ispconfig-connect-core` and the companion SSO module. (`ispconfig-theme-customizer` stays MIT — separate product, already shipped.)
+- **Commercial mechanics under GPLv3** (how "sell it and keep it FOSS" works): selling GPL software is fully permitted; what GPLv3 guarantees buyers is the freedom to modify and redistribute. Revenue therefore attaches to things the license does not oblige us to give away: the supported/auto-update build channel (license-key-gated updates via our own WHMCS + Software Licensing — the standard GPL-ecosystem pattern), priority support, and installation services. A paid marketplace listing plus a free GitHub edition is permitted (verified: marketplace imposes no license terms; the Free/Commercial badge is per-listing, so this is either two listings or one commercial listing that links the source — resolve at submission time).
+- **Dual licensing** (selling exceptions to GPLv3) stays possible only while we hold all copyright — if we ever take outside contributions, that requires a CLA. Decision deferred until there's a concrete need; default is plain GPLv3, no CLA, maximum community trust.
 
 ### 3.3 Account model — **one WHMCS service = one ISPConfig client**
 Mirrors cPanel (one service = one panel account). The WHMCS *client* may own many services, each mapping to its own ISPConfig client. This is a hard lesson from the incumbent: an ispcfg3 marketplace review reports terminate wiping **all** of a customer's accounts — a consequence of coupling one ISPConfig client to a WHMCS client. Terminate calls `client_delete_everything` on *that service's* ISPConfig client only. ISPConfig IDs (client_id, primary domain_id, etc.) are stored via the WHMCS Service Properties API (`$params['model']->serviceProperties`), not a custom table, so they're visible/editable in the admin UI.
@@ -183,14 +184,18 @@ Sequencing note: our own servers migrate off Plesk provisioning at end of Phase 
 | Trademark/naming friction with ISPConfig project | Descriptive naming, neutral icon, and proactive coordination with Till/community (aligned with existing symbiosis stance) |
 | Marketplace listing rot perception | Changelog + compatibility flags updated every WHMCS/ISPConfig release (the incumbent died in public by not doing this) |
 
-## 8. Open questions for the owner
+## 8. Owner decisions (2026-08-05) and remaining open items
 
-1. **License: MIT (recommended) or GPLv3?** (§3.2 — MIT for consistency/adoption vs GPLv3 anti-close-fork insurance.)
-2. **Naming sign-off:** `ispconfigconnect` / "ISPConfig Connect for WHMCS" / repo `whmcs-ispconfig-connect` — or a Noiz-branded name?
-3. **Companion SSO module in Phase 2** — comfortable shipping an optional ISPConfig-side module (fully inside the documented extension envelope), or defer SSO?
-4. **Commercial model:** free GitHub + free marketplace listing + paid support/priority builds via own checkout (recommended), or a paid marketplace listing from day one?
-5. **Coordinate with Till/ISPConfig community pre-launch** (recommended), or launch first?
+**Decided:**
+1. **License: GPLv3** across the Connect family (§3.2) — protect the open-source nature of the work.
+2. **Naming:** family scheme `ispconfig-connect-<platform>`; human name "ISPConfig Connect for WHMCS"; system name `ispconfigconnect` (§3.1).
+3. **Companion SSO module: yes** — promoted to a standalone **ISPConfig Toolkit** project (`ispconfig-sso`) consumed by all connectors; a panel-side **file manager** module joins the toolkit as its own future project (see `ispconfig-toolkit/ROADMAP.md`).
+4. **Commercial model:** the connector is **paid** (funds its upkeep: marketplace commercial listing + own checkout, GPLv3 with source available); the **primary revenue line is ISPConfig support subscriptions** sold to other hosting companies at aggressive pricing. The connector is the wedge; support is the business.
+5. **Upstream: full endorsement of ISPConfig in all things.** Coordinate with Till/community pre-launch; contribute fixes as merge requests, never a hostile fork.
+
+**Still open:**
 6. Two forum threads (HowtoForge 67824 & 92661) were Cloudflare-blocked to automated readers — worth a manual skim for any circulating private forks before Phase 0 ends.
+7. Free-tier question within the paid model: whether a feature-limited free listing exists alongside the paid one (helps adoption; resolvable at marketplace-submission time).
 
 ## 9. Verified-source appendix (load-bearing citations)
 
