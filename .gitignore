@@ -1,0 +1,13 @@
+# Tool/agent runtime state — never commit
+.omc/
+.remember/
+.claude/
+*.log
+
+# Dependencies / build
+vendor/
+node_modules/
+
+# Local environment
+.env
+*.local.php
