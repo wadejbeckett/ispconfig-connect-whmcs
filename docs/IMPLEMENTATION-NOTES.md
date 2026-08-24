@@ -98,6 +98,11 @@ trafficquota_get_by_user($session_id, $client_id, $lastdays = 0)
 (`updateQueryPrepare`), and empty PASSWORD-type params are dropped from the merge, so omitting or
 sending an empty password never wipes it.
 
+Grant aliases (verified via checkPerm() in source, encoded in `Api\Permissions`): `server_get_all`
+→ grant `server_get`; `client_template_additional_add`/`_delete` → grant `client_update`;
+`client_delete_everything` additionally re-checks grant `client_delete` mid-cascade — both required.
+All other called functions check their own name.
+
 **`get_function_list` returns the full registered method list, not per-user grants** — a granted-vs-not
 check can only be made by calling a function and catching `PermissionDeniedException`. TestConnection
 therefore login-checks + read-probes only (`server_get_all`, `client_templates_get_all`,
@@ -111,8 +116,9 @@ brief. Validation failures surface as `data_processing_error` remote faults.
 
 - `client_add`: **always pass `usertheme` explicitly** (`'default'`) — neutralizes the 3.3.1
   `usertheme_syntax_incorrect` bug (#6990).
-- `dns_templatezone_add` returns bool → resolve the id with `dns_zone_get_id(origin)`; try the domain
-  with trailing dot (`example.com.`) — check the source for exact matching before implementing.
+- `dns_templatezone_add` returns bool → resolve the id with `dns_zone_get_id(origin)`. **Call it
+  WITHOUT a trailing dot**: `dns_zone_get_id` rejects any origin ending in `.` with `Invalid domain
+  name.` (regex in `remote.d/dns.inc.php`), while the dotless origin matches zones stored either way.
 - `sites_database_add` requires a **pre-created database user id** and per-server-unique names.
 - `mail_user_add` requires the mail domain to exist first (Phase 4 concern).
 - All mutations are **asynchronous** (datalog → per-server cron). API "ok" = accepted, not provisioned.
@@ -256,10 +262,12 @@ Pure functions (static or instance, no I/O): WHMCS data → ISPConfig call param
 - `unsuspend(...)` — inverse (`locked` => `'n'`, status `'active'`).
 - `terminate(int $clientId): void` — `client_delete_everything`.
 - `changePassword(int $clientId, string $newPassword)` — `client_change_password`.
-- `changePackage(int $clientId, ProductConfig, list<int> $currentAddonAssignmentIds)` —
-  `client_update` with new `template_master`, then addon template reconciliation
-  (client_get to discover current assignments — the field holding assigned addon templates; read
-  client.tform / client.inc.php `client_template_additional_*` in source for the exact shape).
+- `changePackage(int $clientId, ProductConfig, list<int> $desiredAddonTemplateIds)` —
+  `client_update` with new `template_master`, then addon template reconciliation: current
+  assignments discovered via `client_get` (`template_additional` field, `assignedId:templateId/...`
+  format), deletes passed by TEMPLATE id — `client_template_additional_delete` matches its third
+  argument against `client_template_id`, not `assigned_template_id` (verified,
+  `remote.d/client.inc.php`).
 - `jobqueueCount(?int $serverId): int` — monitor_jobqueue_count.
 - `ProvisioningException extends IspconfigException` lives in `Provision\` (carries `stage`,
   `rollbackSucceeded`).

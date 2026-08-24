@@ -1,0 +1,27 @@
+{
+    "schema": "1.0",
+    "type": "whmcs-servers",
+    "name": "ispconfigconnect",
+    "version": "0.1.0",
+    "license": "GPL-3.0-or-later",
+    "category": "provisioning",
+    "description": {
+        "name": "ISPConfig Connect",
+        "tagline": "Provision and manage ISPConfig 3 hosting accounts from WHMCS.",
+        "long": "ISPConfig Connect provisions ISPConfig 3 clients, websites, FTP users, mail domains, DNS zones and databases over the ISPConfig remote JSON API, and manages the full service lifecycle (suspend, unsuspend, password change, package change, terminate) from WHMCS.",
+        "features": [
+            "All-or-nothing account provisioning with automatic rollback",
+            "Client template and web server dropdowns loaded live from the panel",
+            "Actionable Test Connection diagnostics including missing API grants",
+            "Credential-scrubbed module logging of every API call"
+        ]
+    },
+    "support": {
+        "docs_url": "https://github.com/noiz/ispconfig-connect-whmcs"
+    },
+    "authors": [
+        {
+            "name": "Noiz"
+        }
+    ]
+}
