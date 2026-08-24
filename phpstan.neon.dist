@@ -1,0 +1,10 @@
+parameters:
+    level: 6
+    paths:
+        - modules/servers/ispconfigconnect
+        - tests
+    excludePaths:
+        - modules/servers/ispconfigconnect/templates
+    bootstrapFiles:
+        - tests/stubs/whmcs-functions.php
+    treatPhpDocTypesAsCertain: false
