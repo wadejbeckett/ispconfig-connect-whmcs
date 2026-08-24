@@ -79,8 +79,11 @@ client_update($session_id, $client_id, $reseller_id, $params) -> affected rows  
 client_change_password($session_id, $client_id, $new_password) -> bool
 client_delete_everything($session_id, $client_id) -> bool
 client_templates_get_all($session_id) -> [{template_id, template_name, template_type('m'|'a'), ...limits}]
+client_template_additional_get($session_id, $client_id) -> [{assigned_template_id, client_id, client_template_id}]   [grant: client_get]
 client_template_additional_add($session_id, $client_id, $template_id)
 client_template_additional_delete($session_id, $client_id, $assigned_template_id)
+sites_ftp_user_update($session_id, $client_id, $primary_id, $params)        // plain updateQuery - partial update safe
+sites_database_user_update($session_id, $client_id, $primary_id, $params)  // plain updateQuery - partial update safe
 sites_web_domain_add($session_id, $client_id, $params, $readonly = false) -> domain_id
 sites_web_domain_get($session_id, $primary_id) -> record (incl. system_user, system_group, document_root)
 sites_web_domain_set_status($session_id, $primary_id, $status)   // 'active' | 'inactive'
@@ -94,9 +97,30 @@ quota_get_by_user($session_id, $client_id)            [grant name: sites_web_dom
 trafficquota_get_by_user($session_id, $client_id, $lastdays = 0)
 ```
 
-`client_update` **partial updates are safe**: the server merges the old record first
-(`updateQueryPrepare`), and empty PASSWORD-type params are dropped from the merge, so omitting or
-sending an empty password never wipes it.
+**`client_update` partial updates are NOT safe as-is** (found by adversarial review, verified in
+source — `remote.d/client.inc.php`): client_update pre-merges the stored DB record into `$params`
+*before* `updateQuery`, which defeats `updateQueryPrepare`'s empty-PASSWORD protection and always
+populates `template_additional`. Consequences and mandatory mitigations:
+
+1. **Password re-crypt corruption**: the stored crypt hash lands in `params['password']` and is
+   re-crypted by `getSQL` (remoting_lib.inc.php:339) and `ispconfig_sysuser_update` (:367) —
+   breaking the panel login on every partial update. Mitigation: **every `client_update` must send
+   `'_ispconfig_pw_crypted' => 1`** so the merged hash passes through verbatim.
+2. **Addon-template wipe**: merged `template_additional` (usually `''`) triggers
+   `update_client_templates()` (client_templates.inc.php), which resyncs `client_template_assigned`
+   against the given list — `''` deletes every assignment. Semantics: bare ids (`"5/7"`) =
+   count-diff per template id (passing the currently-assigned ids = no-op; passing desired ids =
+   atomic delta); `"assignedId:templateId"` pairs = keep/delete by assignment id. Mitigation:
+   **every `client_update` must send `template_additional` = '/'-joined bare ids of the
+   currently-desired assignments**, read via `client_template_additional_get`.
+3. **Lock cascade + tmp_data poisoning**: `locked='y'` runs `func_client_lock`
+   (functions.inc.php): disables ALL client objects (web, mail, FTP, DB, cron, shell …),
+   remembering previously-inactive ones in `client.tmp_data`; `locked='n'` re-enables everything
+   except the remembered set. Locking an already-locked client overwrites `tmp_data` with
+   everything-inactive, so unlock then restores nothing. Mitigation: **read `client_get` first and
+   skip the lock/unlock when the state is already correct**; "suspend disables website only" is
+   impossible via `locked` — a website-only mode must skip `client_update` entirely and use
+   `sites_web_domain_set_status`.
 
 Grant aliases (verified via checkPerm() in source, encoded in `Api\Permissions`): `server_get_all`
 → grant `server_get`; `client_template_additional_add`/`_delete` → grant `client_update`;
@@ -228,7 +252,10 @@ Pure functions (static or instance, no I/O): WHMCS data → ISPConfig call param
 - `webDomainAddParams(ProductConfig, ServiceParams): array` — `server_id`, `ip_address` => `'*'`,
   `domain`, `type` => `'vhost'`, `parent_domain_id` => 0, `subdomain` => `'www'`, `php` from phpMode
   option, `hd_quota` => -1, `traffic_quota` => -1, `allow_override` default, `active` => `'y'`,
-  `errordocs` => 1. Check `web_vhost_domain.tform.php` for required fields.
+  `errordocs` => 1, **plus the four advanced-tab fields whose REGEX validators have no allowempty
+  and therefore reject absent values over the remote API** (review-verified): `pm_process_idle_timeout`
+  => 10, `pm_max_requests` => 0, `http_port` => 80, `https_port` => 443 (values from the stock
+  `remoting_client/examples/sites_web_domain_add.php`).
 - `ftpUserAddParams(...)` — needs the fetched web-domain record (uid/gid/dir from `system_user`,
   `system_group`, `document_root`); username = service username (append `_ftp` ONLY on collision
   policy? No — username = service username; ISPConfig prefixes don't apply over the API),
@@ -256,18 +283,20 @@ Pure functions (static or instance, no I/O): WHMCS data → ISPConfig call param
   `client_add` succeeded: best-effort `client_delete_everything(client_id)` rollback, then rethrow the
   original exception wrapped with context (`ProvisioningException` w/ stage name + original message +
   rollback outcome). `CreateResult` = readonly VO with all created ids + username.
-- `suspend(int $clientId, ?int $domainId, bool $alsoDisableWebsite)` — `client_update(clientId, 0,
-  ['locked' => 'y'])`; if requested and domainId known: `sites_web_domain_set_status(domainId,
-  'inactive')`.
-- `unsuspend(...)` — inverse (`locked` => `'n'`, status `'active'`).
+- `suspend` — entire-client mode: `client_get` first (skip when already locked — tmp_data
+  poisoning, §1.6), then protective `client_update` with `locked='y'`, `_ispconfig_pw_crypted=1`,
+  and the current bare addon ids in `template_additional`; website-only mode: no `client_update`
+  at all, just `sites_web_domain_set_status(domainId, 'inactive')`.
+- `unsuspend` — symmetric inverse with the same guards.
 - `terminate(int $clientId): void` — `client_delete_everything`.
-- `changePassword(int $clientId, string $newPassword)` — `client_change_password`.
-- `changePackage(int $clientId, ProductConfig, list<int> $desiredAddonTemplateIds)` —
-  `client_update` with new `template_master`, then addon template reconciliation: current
-  assignments discovered via `client_get` (`template_additional` field, `assignedId:templateId/...`
-  format), deletes passed by TEMPLATE id — `client_template_additional_delete` matches its third
-  argument against `client_template_id`, not `assigned_template_id` (verified,
-  `remote.d/client.inc.php`).
+- `changePassword(int $clientId, string $newPassword, ?int $ftpUserId, ?int $databaseUserId)` —
+  `client_change_password` + `sites_ftp_user_update` / `sites_database_user_update` for the
+  credentials the module itself provisioned with the service password.
+- `changePackage(int $clientId, ProductConfig, list<int> $desiredAddonTemplateIds)` — ONE
+  protective `client_update` carrying the new `template_master` AND `template_additional` =
+  '/'-joined DESIRED bare addon template ids (+ `_ispconfig_pw_crypted=1`): the server-side
+  `update_client_templates` resync applies the delta atomically (§1.5 hazard #2 turned into the
+  mechanism). No separate `client_template_additional_add/delete` calls.
 - `jobqueueCount(?int $serverId): int` — monitor_jobqueue_count.
 - `ProvisioningException extends IspconfigException` lives in `Provision\` (carries `stage`,
   `rollbackSucceeded`).
@@ -284,7 +313,8 @@ return `'success'` or error string). Functions (MVP):
 - `ispconfigconnect_ConfigOptions()` — §3.1 frozen order, with `Loader` functions for options 1/2
   (`ispconfigconnect_ClientTemplateLoader`, `ispconfigconnect_WebServerLoader` — each builds a
   SessionManager from $params, calls the API, returns `[id => name]`, and MUST logout; on exception
-  rethrow — WHMCS displays loader errors inline).
+  rethrow — WHMCS displays loader errors inline). Loader-backed fields also need
+  `'SimpleMode' => true` or WHMCS never invokes the loader (developers.whmcs.com loader-functions).
 - `ispconfigconnect_TestConnection(array $params)` — login + the three read-probes + jobqueue count;
   returns `['success' => bool, 'error' => string]`; error strings must be actionable (which probe
   failed, which grant to add, IP to allowlist on IpNotAllowedException, backoff advice on Lockout).
@@ -350,7 +380,7 @@ fidelity is load-bearing for the whole suite.
 | 10 | DNS Admin Email | text | — |
 | 11 | Create Database | yesno | off |
 | 12 | PHP Mode | dropdown: php-fpm,fast-cgi,mod,suphp,cgi,no | php-fpm |
-| 13 | Suspend Also Disables Website | yesno | on |
+| 13 | Suspend Entire Client (unchecked: website only) | yesno | on |
 | 14 | Panel URL Override | text | — |
 
 ### 3.2 Deferred out of MVP (tracked, not stubbed)

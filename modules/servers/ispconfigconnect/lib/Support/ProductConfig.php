@@ -27,7 +27,12 @@ final readonly class ProductConfig
         public string $dnsAdminEmail,
         public bool $createDatabase,
         public string $phpMode,
-        public bool $suspendAlsoDisablesWebsite,
+        // Option 13 (position frozen): checked = suspension locks the whole
+        // ISPConfig client (locked='y' cascades to EVERY object -
+        // functions.inc.php func_client_lock); unchecked = website-only
+        // suspension via sites_web_domain_set_status, no client lock at all.
+        // A 'lock but keep the website' middle ground does not exist.
+        public bool $suspendEntireClient,
         public ?string $panelUrlOverride,
     ) {
     }

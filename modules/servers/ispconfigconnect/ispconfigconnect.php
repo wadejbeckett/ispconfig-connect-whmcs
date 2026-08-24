@@ -23,6 +23,7 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\PermissionDeniedException
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Permissions;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
+use WHMCS\Module\Server\Ispconfigconnect\Provision\CreateResult;
 use WHMCS\Module\Server\Ispconfigconnect\Provision\Mapper;
 use WHMCS\Module\Server\Ispconfigconnect\Provision\Recipe;
 use WHMCS\Module\Server\Ispconfigconnect\Support\Factory;
@@ -61,11 +62,18 @@ function ispconfigconnect_ConfigOptions(): array
         'Client Template' => [
             'Type' => 'dropdown',
             'Loader' => 'ispconfigconnect_ClientTemplateLoader',
+            // SimpleMode is REQUIRED for Loader-backed fields: WHMCS only
+            // invokes the loader "when simple mode is used" (developer docs,
+            // provisioning-modules/loader-functions/ - the Loader example
+            // ships 'SimpleMode' => true). Without it the dropdown stays
+            // empty.
+            'SimpleMode' => true,
             'Description' => 'ISPConfig master client template (limits) applied to new clients',
         ],
         'Web Server' => [
             'Type' => 'dropdown',
             'Loader' => 'ispconfigconnect_WebServerLoader',
+            'SimpleMode' => true,
             'Description' => 'ISPConfig server that hosts the website, mail, DNS and database',
         ],
         'Create Website' => [
@@ -124,10 +132,21 @@ function ispconfigconnect_ConfigOptions(): array
             'Default' => 'php-fpm',
             'Description' => 'PHP handler for created websites',
         ],
-        'Suspend Also Disables Website' => [
+        // Position 13 is frozen; only the label and semantics changed when
+        // the option was reworked from "also disable website" to the
+        // entire-client/website-only choice.
+        'Suspend Entire Client' => [
+            'FriendlyName' => 'Suspend Entire Client',
             'Type' => 'yesno',
             'Default' => 'on',
-            'Description' => 'On suspension, also set the website inactive (not just lock the client)',
+            // The blast radius must be spelled out: ISPConfig's client lock
+            // (functions.inc.php func_client_lock) cascades over everything
+            // the client owns.
+            'Description' => 'Checked: suspension locks the ISPConfig client. ISPConfig\'s lock disables'
+                . ' ALL of the client\'s objects - websites, mail domains, FTP users, databases, cron'
+                . ' and shell - and unsuspension restores exactly what the lock disabled.'
+                . ' Unchecked: website-only suspension - only this service\'s website is set inactive;'
+                . ' mail, FTP and databases keep working.',
         ],
         'Panel URL Override' => [
             'Type' => 'text',
@@ -238,6 +257,16 @@ function ispconfigconnect_CreateAccount(array $params): string
             );
         }
 
+        // Empty-credential guard: ISPConfig's *_add forms treat an absent
+        // PASSWORD field as "skip" (tform_base.inc.php _getSQL), so an empty
+        // service password would silently provision panel/FTP/MySQL logins
+        // with blank credentials. Refuse before any API call.
+        if ((string) ($params['password'] ?? '') === '') {
+            return 'Create Account refused: the service has no password.'
+                . ' ISPConfig would create the client, FTP and database users with empty'
+                . ' credentials - set a service password (or let WHMCS generate one) and retry.';
+        }
+
         $generatedUsername = null;
         if (trim((string) ($params['username'] ?? '')) === '') {
             $generatedUsername = ispconfigconnect_generateUsername($params);
@@ -250,40 +279,68 @@ function ispconfigconnect_CreateAccount(array $params): string
         $session = Factory::sessionManager($params);
         try {
             $result = (new Recipe($session))->create($product, $service);
+
+            // Persist every created id IMMEDIATELY - anything that runs
+            // between provisioning and this save is a window in which a
+            // failure orphans live (billable) ISPConfig objects that WHMCS
+            // has no record of.
+            try {
+                $properties->setClientId($result->clientId);
+                $properties->setClientUsername($result->username);
+                if ($result->domainId !== null) {
+                    $properties->setDomainId($result->domainId);
+                }
+                if ($result->ftpUserId !== null) {
+                    $properties->setFtpUserId($result->ftpUserId);
+                }
+                if ($result->mailDomainId !== null) {
+                    $properties->setMailDomainId($result->mailDomainId);
+                }
+                if ($result->dnsZoneId !== null) {
+                    $properties->setDnsZoneId($result->dnsZoneId);
+                }
+                if ($result->databaseUserId !== null) {
+                    $properties->setDatabaseUserId($result->databaseUserId);
+                }
+                if ($result->databaseId !== null) {
+                    $properties->setDatabaseId($result->databaseId);
+                }
+            } catch (\Throwable $saveFailure) {
+                // The ISPConfig side succeeded; only the WHMCS bookkeeping
+                // failed. No rollback (the objects are live) - name every
+                // created id so the operator can reconcile or terminate
+                // manually.
+                return sprintf(
+                    'Create Account provisioned ISPConfig successfully but FAILED to store the'
+                    . ' service properties (%s). Created ISPConfig objects: %s.'
+                    . ' Reconcile manually: either set the ispconfig_* service properties to these'
+                    . ' ids, or delete client #%d in ISPConfig before re-running Create.',
+                    trim($saveFailure->getMessage()) !== ''
+                        ? trim($saveFailure->getMessage())
+                        : get_class($saveFailure),
+                    ispconfigconnect_createdIdSummary($result),
+                    $result->clientId
+                );
+            }
         } finally {
             $session->close();
         }
 
-        $properties->setClientId($result->clientId);
-        $properties->setClientUsername($result->username);
-        if ($result->domainId !== null) {
-            $properties->setDomainId($result->domainId);
-        }
-        if ($result->ftpUserId !== null) {
-            $properties->setFtpUserId($result->ftpUserId);
-        }
-        if ($result->mailDomainId !== null) {
-            $properties->setMailDomainId($result->mailDomainId);
-        }
-        if ($result->dnsZoneId !== null) {
-            $properties->setDnsZoneId($result->dnsZoneId);
-        }
-        if ($result->databaseUserId !== null) {
-            $properties->setDatabaseUserId($result->databaseUserId);
-        }
-        if ($result->databaseId !== null) {
-            $properties->setDatabaseId($result->databaseId);
-        }
-
         if ($generatedUsername !== null) {
-            $model = $params['model'] ?? null;
-            if (is_object($model)) {
-                // Persist the generated username on the WHMCS service record
-                // so admins and the client area show the real panel login.
-                $model->username = $generatedUsername;
-                if (method_exists($model, 'save')) {
-                    $model->save();
+            // Cosmetic write-back of the generated username to the WHMCS
+            // service record (admin/client area display). The authoritative
+            // copy is already stored as a service property, so a failure
+            // here must not fail the successful create.
+            try {
+                $model = $params['model'] ?? null;
+                if (is_object($model)) {
+                    $model->username = $generatedUsername;
+                    if (method_exists($model, 'save')) {
+                        $model->save();
+                    }
                 }
+            } catch (\Throwable) {
+                // Ignored: display-only convenience.
             }
         }
 
@@ -313,7 +370,7 @@ function ispconfigconnect_SuspendAccount(array $params): string
             (new Recipe($session))->suspend(
                 $clientId,
                 $properties->domainId(),
-                $product->suspendAlsoDisablesWebsite
+                $product->suspendEntireClient
             );
         } finally {
             $session->close();
@@ -345,7 +402,7 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
             (new Recipe($session))->unsuspend(
                 $clientId,
                 $properties->domainId(),
-                $product->suspendAlsoDisablesWebsite
+                $product->suspendEntireClient
             );
         } finally {
             $session->close();
@@ -402,6 +459,9 @@ function ispconfigconnect_ChangePassword(array $params): string
                 . ' - this service was not provisioned by ISPConfig Connect.';
         }
 
+        // Empty-credential guard, before any API call: an empty rotation
+        // would no-op the FTP/DB updates (updateQueryPrepare drops empty
+        // PASSWORD-type fields) while leaving the old credentials live.
         $newPassword = (string) ($params['password'] ?? '');
         if ($newPassword === '') {
             return 'Change Password failed: WHMCS passed an empty password.';
@@ -409,7 +469,15 @@ function ispconfigconnect_ChangePassword(array $params): string
 
         $session = Factory::sessionManager($params);
         try {
-            (new Recipe($session))->changePassword($clientId, $newPassword);
+            // Rotate everything the module provisioned with the service
+            // password: panel login always, plus the FTP user and database
+            // user whose ids were stored at create time.
+            (new Recipe($session))->changePassword(
+                $clientId,
+                $newPassword,
+                $properties->ftpUserId(),
+                $properties->databaseUserId()
+            );
         } finally {
             $session->close();
         }
@@ -659,6 +727,33 @@ function ispconfigconnect_connectionAdvice(\Throwable $failure): string
     }
 
     return $message !== '' ? $message : get_class($failure);
+}
+
+/**
+ * Human-readable list of every ISPConfig id a create produced - used in the
+ * property-save-failure error so the operator can reconcile the orphaned
+ * objects (the client id is always present; the rest depend on the product's
+ * Create * options).
+ */
+function ispconfigconnect_createdIdSummary(CreateResult $result): string
+{
+    $ids = ['client #' . $result->clientId . ' (username ' . $result->username . ')'];
+    foreach (
+        [
+            'web domain' => $result->domainId,
+            'FTP user' => $result->ftpUserId,
+            'mail domain' => $result->mailDomainId,
+            'DNS zone' => $result->dnsZoneId,
+            'database user' => $result->databaseUserId,
+            'database' => $result->databaseId,
+        ] as $label => $id
+    ) {
+        if ($id !== null) {
+            $ids[] = $label . ' #' . $id;
+        }
+    }
+
+    return implode(', ', $ids);
 }
 
 /**

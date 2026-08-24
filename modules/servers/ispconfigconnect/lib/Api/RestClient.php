@@ -168,8 +168,18 @@ final class RestClient
      */
     private function log(string $action, array $request, mixed $response, array $sensitiveValues): void
     {
-        if ($this->logger !== null) {
+        if ($this->logger === null) {
+            return;
+        }
+
+        try {
             ($this->logger)($action, $request, $response, $sensitiveValues);
+        } catch (\Throwable) {
+            // A logging failure (e.g. WHMCS unable to write tblmodulelog) must
+            // never break the API call it describes: on the success path it
+            // would turn an on-the-wire success into a thrown failure (create
+            // without rollback), and on the failure path it would replace the
+            // real error with the logger's own.
         }
     }
 }

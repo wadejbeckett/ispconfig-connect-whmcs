@@ -34,7 +34,7 @@ final class ProductConfigTest extends TestCase
             'configoption10' => 'hostmaster@example.net',
             'configoption11' => '',            // Create Database
             'configoption12' => 'php-fpm',     // PHP Mode
-            'configoption13' => 'on',          // Suspend Also Disables Website
+            'configoption13' => 'on',          // Suspend Entire Client
             'configoption14' => '',            // Panel URL Override
         ], $overrides);
     }
@@ -60,7 +60,7 @@ final class ProductConfigTest extends TestCase
         self::assertSame('hostmaster@example.net', $config->dnsAdminEmail);
         self::assertTrue($config->createDatabase);
         self::assertSame('php-fpm', $config->phpMode);
-        self::assertTrue($config->suspendAlsoDisablesWebsite);
+        self::assertTrue($config->suspendEntireClient);
         self::assertSame('https://panel.example.net:8080/', $config->panelUrlOverride);
     }
 
@@ -77,7 +77,7 @@ final class ProductConfigTest extends TestCase
         self::assertFalse($config->createMailDomain);
         self::assertFalse($config->createDnsZone);
         self::assertFalse($config->createDatabase);
-        self::assertFalse($config->suspendAlsoDisablesWebsite);
+        self::assertFalse($config->suspendEntireClient);
     }
 
     public function testMissingOptionKeysBehaveAsUnset(): void

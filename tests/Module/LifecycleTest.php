@@ -79,10 +79,13 @@ final class LifecycleTest extends ModuleTestCase
         self::assertSame('logout', end($methods));
 
         // -- suspend --------------------------------------------------------
+        // Suspend Entire Client is on (configoption13): the client is locked
+        // and ISPConfig's own lock cascade (functions.inc.php
+        // func_client_lock) sets every object - the website included -
+        // inactive; the module makes no separate set_status call.
         self::assertSame('success', ispconfigconnect_SuspendAccount($this->params()));
         self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
         $siteId = (int) array_key_first($this->fake->sites());
-        // Suspend Also Disables Website is on (configoption13).
         self::assertSame('n', $this->fake->sites()[$siteId]['active']);
 
         // -- unsuspend ------------------------------------------------------
@@ -90,12 +93,35 @@ final class LifecycleTest extends ModuleTestCase
         self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
         self::assertSame('y', $this->fake->sites()[$siteId]['active']);
 
+        // The suspend/unsuspend round trip (two protective client_updates)
+        // must NOT have re-crypted the stored panel password hash - the
+        // client_update pre-merge would double-crypt it without
+        // _ispconfig_pw_crypted=1 (client.inc.php client_update).
+        self::assertSame(
+            'crypt:' . self::SERVICE_PASSWORD,
+            $this->fake->clients()[$clientId]['password']
+        );
+
         // -- change password ------------------------------------------------
+        // Rotates every credential provisioned with the service password:
+        // panel (client_change_password crypts server-side), FTP user
+        // ('password', ftp_user.tform.php PASSWORD/CRYPT) and database user
+        // ('database_password', database_user.tform.php PASSWORD/MYSQL).
         self::assertSame(
             'success',
             ispconfigconnect_ChangePassword($this->params(['password' => self::NEW_PASSWORD]))
         );
-        self::assertSame(self::NEW_PASSWORD, $this->fake->clients()[$clientId]['password']);
+        self::assertSame('crypt:' . self::NEW_PASSWORD, $this->fake->clients()[$clientId]['password']);
+        $ftpUserId = (int) array_key_first($this->fake->ftpUsers());
+        self::assertSame(
+            'crypt:' . self::NEW_PASSWORD,
+            $this->fake->ftpUsers()[$ftpUserId]['password']
+        );
+        $databaseUserId = (int) array_key_first($this->fake->databaseUsers());
+        self::assertSame(
+            'crypt:' . self::NEW_PASSWORD,
+            $this->fake->databaseUsers()[$databaseUserId]['database_password']
+        );
 
         // -- change package (new master template + addon template) ----------
         self::assertSame('success', ispconfigconnect_ChangePackage($this->params([
@@ -125,13 +151,13 @@ final class LifecycleTest extends ModuleTestCase
         self::assertSame('', $properties->get('ispconfig_domain_id'));
 
         // -- credential scrubbing across the WHOLE run ----------------------
-        // Every module-log entry must either not contain a secret or list it
-        // in replaceVars (WHMCS's masking convention). This is the regression
-        // test for the scrubbing seam (spec §4 quality bar).
+        // No secret may survive replaceVars masking in any module-log entry
+        // (WHMCS's masking convention). This is the regression test for the
+        // scrubbing seam (spec §4 quality bar).
         self::assertNotEmpty(ModuleCallLog::entries());
-        self::assertSame([], ModuleCallLog::entriesLeaking(self::SERVICE_PASSWORD));
-        self::assertSame([], ModuleCallLog::entriesLeaking(self::NEW_PASSWORD));
-        self::assertSame([], ModuleCallLog::entriesLeaking(self::REMOTE_PASSWORD));
+        $this->assertNoCredentialLeak(self::SERVICE_PASSWORD);
+        $this->assertNoCredentialLeak(self::NEW_PASSWORD);
+        $this->assertNoCredentialLeak(self::REMOTE_PASSWORD);
     }
 
     public function testSuspendWithoutStoredClientIdFailsWithClearError(): void

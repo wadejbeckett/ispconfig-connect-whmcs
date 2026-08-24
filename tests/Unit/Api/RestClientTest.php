@@ -372,6 +372,9 @@ final class RestClientTest extends TestCase
                 'contact_name' => 'Jane Doe',
                 'username' => 'jane',
                 'email' => 'jane@example.com',
+                // NOTEMPTY over the remote API (client.tform.php) - no
+                // server-side default.
+                'language' => 'en',
                 'password' => 'Cl13nt-Pw!',
             ],
         ]);
@@ -415,6 +418,23 @@ final class RestClientTest extends TestCase
         $client->call('client_get', ['session_id' => 's0000', 'client_id' => 7]);
 
         self::assertContains('$5$storedhash$abcdef', $this->logged[0]['sensitive']);
+    }
+
+    public function testThrowingLoggerNeverBreaksTheApiCall(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $client = new RestClient($fake, static function (): void {
+            throw new \RuntimeException('tblmodulelog write failed');
+        });
+
+        // Success path: the call must still return its result.
+        $sessionId = $client->login('remote', 'secret');
+        self::assertMatchesRegularExpression('/^[a-z][0-9a-f]{40}$/', $sessionId);
+
+        // Failure path: the ORIGINAL error must surface, not the logger's.
+        $fake->failNextWith('logout', 'The Session is expired or does not exist.');
+        $this->expectException(SessionExpiredException::class);
+        $client->logout($sessionId);
     }
 
     public function testJsonEncodeFailureIsLoggedAndRethrown(): void

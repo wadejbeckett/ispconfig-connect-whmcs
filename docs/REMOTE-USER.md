@@ -41,7 +41,9 @@ quota_get_by_user
 server_get
 sites_database_add
 sites_database_user_add
+sites_database_user_update
 sites_ftp_user_add
+sites_ftp_user_update
 sites_web_domain_add
 sites_web_domain_get
 sites_web_domain_set_status
@@ -54,10 +56,11 @@ Why each (grouped):
 |---|---|
 | `client_add`, `client_update`, `client_change_password` | create / suspend (locked flag) / package & password changes. `client_update` also covers addon-template assignment — ISPConfig checks `client_update` for `client_template_additional_add/delete` (verified in 3.3.1p1 `remote.d/client.inc.php`) |
 | `client_delete_everything` **and** `client_delete` | termination. `client_delete_everything` re-checks `client_delete` mid-cascade (verified), so both are required — missing `client_delete` fails termination half-way |
-| `client_get`, `client_get_by_username`, `client_get_sites_by_user` | admin panel info, import/sync (Phase 2) |
+| `client_get`, `client_get_by_username`, `client_get_sites_by_user` | suspend/unsuspend state guard and the addon-assignment read before every client update (`client_template_additional_get` checks grant `client_get`, verified in `remote.d/client.inc.php`); admin panel info, import/sync (Phase 2). Without `client_get` every suspend, unsuspend and package change fails |
 | `client_templates_get_all` | the Client Template dropdown in product config |
 | `server_get` | the Web Server dropdown (`server_get_all` checks grant `server_get`, verified) |
 | `sites_web_domain_*`, `sites_ftp_user_add`, `sites_database_*` | website / FTP / database provisioning |
+| `sites_ftp_user_update`, `sites_database_user_update` | password changes rotate the FTP and database credentials the module provisioned with the service password — without these grants a WHMCS password change updates only the panel login and leaves the old FTP/DB passwords live |
 | `mail_domain_add` | mail domain provisioning |
 | `dns_templatezone_add`, `dns_zone_get_id` | DNS zone provisioning |
 | `monitor_jobqueue_count` | pending-job indicator (ISPConfig applies changes asynchronously) |

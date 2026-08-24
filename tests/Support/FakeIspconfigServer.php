@@ -31,8 +31,15 @@ final class FakeIspconfigServer implements HttpTransportInterface
     /** true -> login throws the maintenance fault (remoting.inc.php login()). */
     public bool $maintenanceMode = false;
 
-    /** Returned verbatim by monitor_jobqueue_count. */
+    /** Returned by monitor_jobqueue_count (as a STRING, like mysqli does). */
     public int $jobqueueCount = 0;
+
+    /**
+     * The fake's crypt marker: crypt_password($x) is modeled as 'crypt:' . $x,
+     * so a double-crypt (the client_update pre-merge corruption) is visible as
+     * 'crypt:crypt:...'.
+     */
+    private const CRYPT_PREFIX = 'crypt:';
 
     /**
      * Returned verbatim by quota_get_by_user.
@@ -86,6 +93,20 @@ final class FakeIspconfigServer implements HttpTransportInterface
     private array $databaseUsers = [];
     /** @var array<int, true> dns_template ids known to the wizard */
     private array $dnsTemplates = [];
+
+    /**
+     * client.tmp_data, per client id (functions.inc.php func_client_lock):
+     * ['prev_active' => [store => [record id => 'n']]] between lock and unlock.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $clientTmpData = [];
+
+    /** @var array<int, int> sys_user.active per client id (func_client_cancel) */
+    private array $sysUserActive = [];
+
+    /** Object stores swept by func_client_lock (subset of its $to_disable). */
+    private const LOCKABLE_STORES = ['sites', 'ftpUsers', 'mailDomains', 'databases'];
 
     private int $nextClientId = 1;
     private int $nextServerId = 1;
@@ -221,6 +242,16 @@ final class FakeIspconfigServer implements HttpTransportInterface
     public function templateAssignments(): array
     {
         return $this->templateAssignments;
+    }
+
+    /**
+     * client.tmp_data as func_client_lock left it (unserialized shape).
+     *
+     * @return array<string, mixed>
+     */
+    public function clientTmpData(int $clientId): array
+    {
+        return $this->clientTmpData[$clientId] ?? [];
     }
 
     public function activeSessionCount(): int
@@ -424,11 +455,13 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $methods;
     }
 
-    public function api_monitor_jobqueue_count(mixed $session_id, mixed $server_id): int
+    public function api_monitor_jobqueue_count(mixed $session_id, mixed $server_id): string
     {
         $this->requireGrant($session_id, 'monitor_jobqueue_count');
 
-        return $this->jobqueueCount;
+        // monitor.inc.php returns $tmp['jobqueue_count'] straight from mysqli
+        // - a string column value, never an int.
+        return (string) $this->jobqueueCount;
     }
 
     /** @return list<array<string, string>> grant name 'server_get' covers server_get_all */
@@ -454,8 +487,10 @@ final class FakeIspconfigServer implements HttpTransportInterface
         // duplicate-username error; all errors are '<br />'-joined and thrown
         // as one data_processing_error fault whose text is localized -
         // consumers must never string-match it (Duplicate username aside).
+        // 'language' is NOTEMPTY in client.tform.php; its tform default only
+        // fills the panel SELECT - the remote API has NO server-side default.
         $error = '';
-        foreach (['contact_name', 'username', 'email'] as $field) {
+        foreach (['contact_name', 'username', 'email', 'language'] as $field) {
             if (($params[$field] ?? '') === '' || $params[$field] === null) {
                 $error .= $field . '_error_empty<br />';
             }
@@ -475,7 +510,6 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $id = $this->nextClientId++;
         $record = array_merge(
             [
-                'language' => 'en',   // tform default $conf['language']
                 'template_master' => 0,
                 'template_additional' => '',
                 'locked' => 'n',
@@ -484,20 +518,27 @@ final class FakeIspconfigServer implements HttpTransportInterface
             ],
             $params
         );
+        // getSQL INSERT crypts non-empty PASSWORD fields (tform_base.inc.php)
+        // unless _ispconfig_pw_crypted == 1; empty ones are skipped entirely.
+        $record['password'] = $this->cryptField($params, 'password') ?? '';
+        unset($record['_ispconfig_pw_crypted']);
         $record['client_id'] = $id;
         $this->clients[$id] = $record;
+        $this->sysUserActive[$id] = 1;
 
         return $id;
     }
 
-    /** @return array<string, mixed>|false */
-    public function api_client_get(mixed $session_id, mixed $client_id): array|false
+    /** @return array<string, mixed>|null */
+    public function api_client_get(mixed $session_id, mixed $client_id): ?array
     {
         $this->requireGrant($session_id, 'client_get');
         $id = $this->assertRecordId($client_id);
 
         if (!isset($this->clients[$id])) {
-            return false;
+            // getDataRecord -> queryOneRecord: a miss is NULL (db_mysql.inc.php),
+            // serialized as response: null with code ok.
+            return null;
         }
         $record = $this->clients[$id];
 
@@ -530,7 +571,8 @@ final class FakeIspconfigServer implements HttpTransportInterface
                     'username' => $client['username'],
                     'client_id' => $id,
                     'default_group' => $this->groupIdFor($id),
-                    'active' => 1,
+                    // sys_user.active - toggled by func_client_cancel.
+                    'active' => $this->sysUserActive[$id] ?? 1,
                     'language' => $client['language'] ?? 'en',
                 ]);
             }
@@ -548,16 +590,51 @@ final class FakeIspconfigServer implements HttpTransportInterface
         if (!isset($this->clients[$id])) {
             return 0; // UPDATE with no matching row -> 0 affected rows
         }
+        $stored = $this->clients[$id];
 
-        // updateQueryPrepare(): the old record is merged under the new params,
-        // and empty PASSWORD-formtype fields are dropped, so an omitted or
-        // empty password never wipes the stored one.
-        if (empty($params['password'])) {
-            unset($params['password']);
+        // client.inc.php client_update(): the OLD RECORD is merged into
+        // $params BEFORE updateQuery - unlike every other *_update function.
+        // Everything below operates on the merged record, which is why partial
+        // updates have side effects on password, templates, and lock state.
+        $merged = array_merge($stored, $params);
+
+        // Template resync: the merged record ALWAYS carries the
+        // template_additional COLUMN ('' when assignments were made via the
+        // API), so update_client_templates runs on EVERY update - and
+        // explode('/', '') wipes all assigned rows (client_templates.inc.php).
+        if (array_key_exists('template_additional', $merged)) {
+            $this->updateClientTemplates($id, explode('/', (string) ($merged['template_additional'] ?? '')));
+            $merged['template_additional'] = '';
         }
-        $record = array_merge($this->clients[$id], $params);
-        $record['client_id'] = $id;
-        $this->clients[$id] = $record;
+
+        // Password (remoting.inc.php updateQueryPrepare + tform_base _getSQL):
+        // - empty merged password -> field skipped from the UPDATE, stored
+        //   value survives;
+        // - non-empty WITHOUT _ispconfig_pw_crypted == 1 -> re-crypted. After
+        //   the pre-merge the stored HASH is what gets re-crypted, so every
+        //   partial client_update corrupts the panel password (client.password
+        //   AND sys_user.passwort via ispconfig_sysuser_update, modeled as one
+        //   field here);
+        // - with _ispconfig_pw_crypted == 1 -> stored verbatim.
+        if (($merged['password'] ?? '') === '' || $merged['password'] === null) {
+            $merged['password'] = $stored['password'] ?? '';
+        } elseif ((int) ($merged['_ispconfig_pw_crypted'] ?? 0) !== 1) {
+            $merged['password'] = self::CRYPT_PREFIX . $merged['password'];
+        }
+        unset($merged['_ispconfig_pw_crypted']); // not a column
+
+        $merged['client_id'] = $id;
+        $this->clients[$id] = $merged;
+
+        // client.inc.php: if($params['canceled']) / if($params['locked']) on
+        // the MERGED record - 'n' is a truthy string, so these run on every
+        // update; the funcs themselves only act on 'y'/'n'.
+        if (!empty($merged['canceled'])) {
+            $this->funcClientCancel($id, $merged['canceled']);
+        }
+        if (!empty($merged['locked'])) {
+            $this->funcClientLock($id, $merged['locked']);
+        }
 
         return 1;
     }
@@ -570,7 +647,9 @@ final class FakeIspconfigServer implements HttpTransportInterface
         if (!isset($this->clients[$id])) {
             throw new FakeSoapFault('There is no user account for this client_id');
         }
-        $this->clients[$id]['password'] = $new_password;
+        // client.inc.php client_change_password() always crypt_password()s the
+        // new clear (client.password AND sys_user.passwort).
+        $this->clients[$id]['password'] = self::CRYPT_PREFIX . (string) $new_password;
 
         return true;
     }
@@ -600,9 +679,33 @@ final class FakeIspconfigServer implements HttpTransportInterface
         // The source re-checks checkPerm('client_delete') AFTER the cascade -
         // a remote user needs BOTH grants or the client row survives.
         $this->requireGrant($session_id, 'client_delete');
-        unset($this->clients[$id]);
+        unset($this->clients[$id], $this->clientTmpData[$id], $this->sysUserActive[$id]);
 
         return 1;
+    }
+
+    /**
+     * client.inc.php client_template_additional_get(): grant 'client_get' (an
+     * alias), returns the raw client_template_assigned rows.
+     *
+     * @return list<array<string, string>>
+     */
+    public function api_client_template_additional_get(mixed $session_id, mixed $client_id): array
+    {
+        $this->requireGrant($session_id, 'client_get');
+
+        if (!is_numeric($client_id)) {
+            throw new FakeSoapFault('The ID must be an integer.');
+        }
+
+        $rows = [];
+        foreach ($this->templateAssignments as $assignment) {
+            if ($assignment['client_id'] === (int) $client_id) {
+                $rows[] = $this->dbRecord($assignment);
+            }
+        }
+
+        return $rows;
     }
 
     /** @return list<array<string, string>> */
@@ -628,14 +731,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
             throw new FakeSoapFault('Invalid template');
         }
 
-        $assignedId = $this->nextAssignedTemplateId++;
-        $this->templateAssignments[$assignedId] = [
-            'assigned_template_id' => $assignedId,
-            'client_id' => (int) $client_id,
-            'client_template_id' => (int) $template_id,
-        ];
-
-        return $assignedId;
+        return $this->insertTemplateAssignment((int) $client_id, (int) $template_id);
     }
 
     public function api_client_template_additional_delete(mixed $session_id, mixed $client_id, mixed $assigned_template_id): int
@@ -682,6 +778,24 @@ final class FakeIspconfigServer implements HttpTransportInterface
                 $error .= $field . '_error_empty<br />';
             }
         }
+        // web_vhost_domain.tform.php REGEX validators with NO allowempty: an
+        // empty/absent value fails preg_match, so these four fields are
+        // effectively REQUIRED over the remote API (sites_web_domain_add sets
+        // defaults for pm_max_children & co, but not for these). The stock
+        // example remoting_client/examples/sites_web_domain_add.php ships
+        // pm_process_idle_timeout=10, pm_max_requests=0, http_port='80',
+        // https_port='443'.
+        $regexValidators = [
+            'pm_process_idle_timeout' => '/^([1-9][0-9]{0,10})$/',
+            'pm_max_requests' => '/^([0-9]{1,11})$/',
+            'http_port' => '/^([0-9]{1,5})$/',
+            'https_port' => '/^([0-9]{1,5})$/',
+        ];
+        foreach ($regexValidators as $field => $regex) {
+            if (!preg_match($regex, (string) ($params[$field] ?? ''))) {
+                $error .= $field . '_error_regex<br />';
+            }
+        }
         if ($error !== '') {
             throw new FakeSoapFault($error);
         }
@@ -716,13 +830,13 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $id;
     }
 
-    /** @return array<string, mixed>|false */
-    public function api_sites_web_domain_get(mixed $session_id, mixed $primary_id): array|false
+    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
+    public function api_sites_web_domain_get(mixed $session_id, mixed $primary_id): ?array
     {
         $this->requireGrant($session_id, 'sites_web_domain_get');
         $id = $this->assertRecordId($primary_id);
 
-        return isset($this->sites[$id]) ? $this->dbRecord($this->sites[$id]) : false;
+        return isset($this->sites[$id]) ? $this->dbRecord($this->sites[$id]) : null;
     }
 
     public function api_sites_web_domain_set_status(mixed $session_id, mixed $primary_id, mixed $status): int
@@ -759,11 +873,46 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
         $id = $this->nextFtpUserId++;
         $record = array_merge(['active' => 'y'], $params);
+        // ftp_user.tform.php: password is PASSWORD/CRYPT - crypted on INSERT.
+        $crypted = $this->cryptField($params, 'password');
+        if ($crypted !== null) {
+            $record['password'] = $crypted;
+        }
+        unset($record['_ispconfig_pw_crypted']);
         $record['ftp_user_id'] = $id;
         $record['client_id'] = is_numeric($client_id) ? (int) $client_id : 0;
         $this->ftpUsers[$id] = $record;
 
         return $id;
+    }
+
+    /**
+     * sites.inc.php sites_ftp_user_update(): own-name grant, plain updateQuery
+     * - NO client_update-style pre-merge. updateQueryPrepare drops empty
+     * PASSWORD-type fields, so partial updates are SAFE here.
+     */
+    public function api_sites_ftp_user_update(mixed $session_id, mixed $client_id, mixed $primary_id, mixed $params): int
+    {
+        $this->requireGrant($session_id, 'sites_ftp_user_update');
+        $id = $this->assertRecordId($primary_id);
+        $params = is_array($params) ? $params : [];
+
+        if (!isset($this->ftpUsers[$id])) {
+            return 0;
+        }
+
+        if (($params['password'] ?? '') === '' || ($params['password'] ?? null) === null) {
+            unset($params['password']); // dropped, stored hash survives
+        } else {
+            $params['password'] = $this->cryptField($params, 'password');
+        }
+        unset($params['_ispconfig_pw_crypted']);
+
+        $record = array_merge($this->ftpUsers[$id], $params);
+        $record['ftp_user_id'] = $id;
+        $this->ftpUsers[$id] = $record;
+
+        return 1;
     }
 
     public function api_sites_database_user_add(mixed $session_id, mixed $client_id, mixed $params): int
@@ -778,11 +927,47 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
         $id = $this->nextDatabaseUserId++;
         $record = $params;
+        // database_user.tform.php: database_password is PASSWORD/MYSQL -
+        // hashed on INSERT (modeled with the same crypt marker).
+        $crypted = $this->cryptField($params, 'database_password');
+        if ($crypted !== null) {
+            $record['database_password'] = $crypted;
+        }
+        unset($record['_ispconfig_pw_crypted']);
         $record['database_user_id'] = $id;
         $record['client_id'] = is_numeric($client_id) ? (int) $client_id : 0;
         $this->databaseUsers[$id] = $record;
 
         return $id;
+    }
+
+    /**
+     * sites.inc.php sites_database_user_update(): own-name grant, plain
+     * updateQuery - partial updates are SAFE (empty PASSWORD-type fields such
+     * as database_password are dropped by updateQueryPrepare).
+     */
+    public function api_sites_database_user_update(mixed $session_id, mixed $client_id, mixed $primary_id, mixed $params): int
+    {
+        $this->requireGrant($session_id, 'sites_database_user_update');
+        $id = $this->assertRecordId($primary_id);
+        $params = is_array($params) ? $params : [];
+
+        if (!isset($this->databaseUsers[$id])) {
+            return 0;
+        }
+
+        if (($params['database_password'] ?? '') === '' || ($params['database_password'] ?? null) === null) {
+            unset($params['database_password']);
+        } else {
+            $params['database_password'] = $this->cryptField($params, 'database_password');
+        }
+        unset($params['_ispconfig_pw_crypted']);
+
+        $record = array_merge($this->databaseUsers[$id], $params);
+        $record['database_user_id'] = $id;
+        $this->databaseUsers[$id] = $record;
+
+        return 1;
     }
 
     public function api_sites_database_add(mixed $session_id, mixed $client_id, mixed $params): int
@@ -812,6 +997,15 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $this->databases[$id] = $record;
 
         return $id;
+    }
+
+    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
+    public function api_sites_database_get(mixed $session_id, mixed $primary_id): ?array
+    {
+        $this->requireGrant($session_id, 'sites_database_get');
+        $id = $this->assertRecordId($primary_id);
+
+        return isset($this->databases[$id]) ? $this->dbRecord($this->databases[$id]) : null;
     }
 
     /** @return array<mixed> */
@@ -849,6 +1043,15 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $this->mailDomains[$id] = $record;
 
         return $id;
+    }
+
+    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
+    public function api_mail_domain_get(mixed $session_id, mixed $primary_id): ?array
+    {
+        $this->requireGrant($session_id, 'mail_domain_get');
+        $id = $this->assertRecordId($primary_id);
+
+        return isset($this->mailDomains[$id]) ? $this->dbRecord($this->mailDomains[$id]) : null;
     }
 
     // ---- dns functions (remote.d/dns.inc.php + dns_wizard.inc.php) --------
@@ -920,6 +1123,15 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return true; // dns_templatezone_add returns bool, never the zone id
     }
 
+    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
+    public function api_dns_zone_get(mixed $session_id, mixed $primary_id): ?array
+    {
+        $this->requireGrant($session_id, 'dns_zone_get');
+        $id = $this->assertRecordId($primary_id);
+
+        return isset($this->dnsZones[$id]) ? $this->dbRecord($this->dnsZones[$id]) : null;
+    }
+
     public function api_dns_zone_get_id(mixed $session_id, mixed $origin): int
     {
         $this->requireGrant($session_id, 'dns_zone_get_id');
@@ -942,6 +1154,167 @@ final class FakeIspconfigServer implements HttpTransportInterface
     }
 
     // ---- helpers ----------------------------------------------------------
+
+    private function insertTemplateAssignment(int $clientId, int $templateId): int
+    {
+        $assignedId = $this->nextAssignedTemplateId++;
+        $this->templateAssignments[$assignedId] = [
+            'assigned_template_id' => $assignedId,
+            'client_id' => $clientId,
+            'client_template_id' => $templateId,
+        ];
+
+        return $assignedId;
+    }
+
+    /**
+     * client_templates.inc.php update_client_templates(): bare ids ("5/7") are
+     * the OLD style - a per-template-id count diff against the assigned table;
+     * "assignedId:templateId" pairs are the NEW style - keep listed assigned
+     * ids, delete the rest, insert 'n'-prefixed/zero assigned ids. An empty
+     * list ('' explodes to ['']) is old style with nothing needed: every
+     * existing row counts to -1 and is DELETED.
+     *
+     * @param list<string> $templates
+     */
+    private function updateClientTemplates(int $clientId, array $templates): void
+    {
+        $newTemplates = [];
+        $usedAssigned = [];
+        $neededCounts = [];
+        $oldStyle = true;
+        foreach ($templates as $item) {
+            $item = trim((string) $item);
+            if ($item === '') {
+                continue;
+            }
+            $assignedId = 0;
+            if (!str_contains($item, ':')) {
+                $templateId = (int) $item;
+            } else {
+                $oldStyle = false; // has new-style assigns
+                [$assignedPart, $templatePart] = explode(':', $item, 2);
+                $templateId = (int) $templatePart;
+                // 'n...' marks newly inserted items in the panel UI.
+                $assignedId = str_starts_with($assignedPart, 'n') ? 0 : (int) $assignedPart;
+            }
+            $neededCounts[$templateId] = ($neededCounts[$templateId] ?? 0) + 1;
+            if ($assignedId > 0) {
+                $usedAssigned[] = $assignedId;
+            } else {
+                $newTemplates[] = $templateId;
+            }
+        }
+
+        if ($oldStyle) {
+            foreach ($this->templateAssignments as $assignment) {
+                if ($assignment['client_id'] !== $clientId) {
+                    continue;
+                }
+                $templateId = $assignment['client_template_id'];
+                $neededCounts[$templateId] = ($neededCounts[$templateId] ?? 0) - 1;
+            }
+            foreach ($neededCounts as $templateId => $count) {
+                for ($i = $count; $i > 0; $i--) {
+                    $this->insertTemplateAssignment($clientId, (int) $templateId);
+                }
+                for ($i = $count; $i < 0; $i++) {
+                    // DELETE ... WHERE client_id = ? AND client_template_id = ? LIMIT 1
+                    foreach ($this->templateAssignments as $rowId => $assignment) {
+                        if ($assignment['client_id'] === $clientId
+                            && $assignment['client_template_id'] === (int) $templateId
+                        ) {
+                            unset($this->templateAssignments[$rowId]);
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            foreach ($this->templateAssignments as $rowId => $assignment) {
+                if ($assignment['client_id'] === $clientId
+                    && !in_array($assignment['assigned_template_id'], $usedAssigned, true)
+                ) {
+                    unset($this->templateAssignments[$rowId]);
+                }
+            }
+            foreach ($newTemplates as $templateId) {
+                $this->insertTemplateAssignment($clientId, $templateId);
+            }
+        }
+    }
+
+    /**
+     * functions.inc.php func_client_lock(): lock disables every client object
+     * and remembers the ALREADY-inactive ones in client.tmp_data (OVERWRITING
+     * whatever tmp_data held - locking an already-locked client therefore
+     * remembers everything as previously-inactive and a later unlock restores
+     * nothing); unlock re-enables everything except the remembered ids.
+     */
+    private function funcClientLock(int $clientId, mixed $locked): void
+    {
+        $tmpData = $this->clientTmpData[$clientId] ?? [];
+
+        if ($locked === 'y') {
+            $prevActive = [];
+            foreach (self::LOCKABLE_STORES as $store) {
+                foreach ($this->{$store} as $recordId => $record) {
+                    if (($record['client_id'] ?? null) !== $clientId) {
+                        continue;
+                    }
+                    if (($record['active'] ?? 'y') !== 'y') {
+                        $prevActive[$store][$recordId] = 'n';
+                    }
+                    $this->{$store}[$recordId]['active'] = 'n';
+                }
+            }
+            $tmpData['prev_active'] = $prevActive; // overwrite, never merged
+            $this->clientTmpData[$clientId] = $tmpData;
+        } elseif ($locked === 'n') {
+            foreach (self::LOCKABLE_STORES as $store) {
+                foreach ($this->{$store} as $recordId => $record) {
+                    if (($record['client_id'] ?? null) !== $clientId) {
+                        continue;
+                    }
+                    $remembered = ($tmpData['prev_active'][$store][$recordId] ?? '') === 'n';
+                    $this->{$store}[$recordId]['active'] = $remembered ? 'n' : 'y';
+                }
+            }
+            unset($tmpData['prev_active']);
+            $this->clientTmpData[$clientId] = $tmpData;
+        }
+    }
+
+    /** functions.inc.php func_client_cancel(): toggles sys_user.active only. */
+    private function funcClientCancel(int $clientId, mixed $canceled): void
+    {
+        if ($canceled === 'y') {
+            $this->sysUserActive[$clientId] = 0;
+        } elseif ($canceled === 'n') {
+            $this->sysUserActive[$clientId] = 1;
+        }
+    }
+
+    /**
+     * INSERT-path PASSWORD handling (tform_base.inc.php _getSQL): a non-empty
+     * value is crypted unless _ispconfig_pw_crypted == 1; an empty/absent one
+     * is skipped. Returns the value to store, or null when the field would be
+     * skipped.
+     *
+     * @param array<string, mixed> $params
+     */
+    private function cryptField(array $params, string $field): ?string
+    {
+        $value = $params[$field] ?? null;
+        if ($value === '' || $value === null) {
+            return null;
+        }
+        if ((int) ($params['_ispconfig_pw_crypted'] ?? 0) === 1) {
+            return (string) $value;
+        }
+
+        return self::CRYPT_PREFIX . $value;
+    }
 
     /**
      * remoting_lib.inc.php getDataRecord(): a primary id must be numeric and

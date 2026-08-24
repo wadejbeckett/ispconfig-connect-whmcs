@@ -17,6 +17,9 @@ final class ServiceModelDouble
 
     public int $saveCalls = 0;
 
+    /** When true, save() throws - simulates a failing Eloquent write. */
+    public bool $failSave = false;
+
     public function __construct(?ServicePropertiesStoreDouble $properties = null)
     {
         $this->serviceProperties = $properties ?? new ServicePropertiesStoreDouble();
@@ -25,6 +28,9 @@ final class ServiceModelDouble
     public function save(): bool
     {
         $this->saveCalls++;
+        if ($this->failSave) {
+            throw new \RuntimeException('model save failed');
+        }
 
         return true;
     }

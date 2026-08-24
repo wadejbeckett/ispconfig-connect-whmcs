@@ -86,7 +86,7 @@ final class Params
             dnsAdminEmail: trim(self::str($params, 'configoption10')),
             createDatabase: self::checkbox($params, 'configoption11'),
             phpMode: $phpMode === '' ? 'php-fpm' : $phpMode,
-            suspendAlsoDisablesWebsite: self::checkbox($params, 'configoption13'),
+            suspendEntireClient: self::checkbox($params, 'configoption13'),
             panelUrlOverride: $panelUrlOverride === '' ? null : $panelUrlOverride,
         );
     }

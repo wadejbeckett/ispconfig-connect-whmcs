@@ -102,9 +102,16 @@ Connect**, then work through the options (their order is fixed):
     (default off). Names are derived deterministically:
     `c<ispconfig-client-id>_<domain>` truncated to 16 characters.
 12. **PHP Mode** — PHP handler for created websites (default PHP-FPM).
-13. **Suspend Also Disables Website** — when WHMCS suspends the service, the
-    module always locks the ISPConfig client; with this option (default on)
-    it also sets the website inactive so the site stops serving.
+13. **Suspend Entire Client** — chooses what a WHMCS suspension does in
+    ISPConfig (default on = entire client):
+    - **Checked:** the module locks the ISPConfig client. Be aware of the
+      blast radius: ISPConfig's lock disables **all** of the client's
+      objects — websites, mail domains, FTP users, databases, cron and
+      shell — and unsuspension restores exactly what the lock disabled
+      (objects that were already inactive before the lock stay inactive).
+    - **Unchecked:** website-only suspension — only this service's website
+      is set inactive; mail, FTP and databases keep working, and the client
+      can still log into the panel.
 14. **Panel URL Override** — the URL shown to clients as their control-panel
     link. Empty derives `https://<hostname>:<port>/` from the server
     settings. Set it when clients should use a different address (e.g. a
@@ -120,6 +127,27 @@ option with no matching addon template fails the operation rather than
 silently under-provisioning.
 
 ## 5. Operational notes
+
+### What suspension touches (the lock cascade)
+
+With **Suspend Entire Client** checked, suspension uses ISPConfig's client
+lock, which cascades over *everything* the client owns — every website, mail
+domain, FTP user, database, cron job and shell user is set inactive, not just
+the objects this WHMCS service created. Unsuspension restores exactly the set
+the lock disabled; anything an admin had disabled beforehand stays disabled.
+The module also guards both directions: it never re-locks an already-locked
+client and never "unlocks" a client that is not locked (either would corrupt
+ISPConfig's restore bookkeeping or re-enable deliberately disabled objects).
+If you resell multiple WHMCS services into one ISPConfig client, or manage
+extra objects under the same client by hand, prefer the website-only mode.
+
+### What a password change rotates
+
+WHMCS's Change Password rotates every credential the module provisioned with
+the service password: the ISPConfig panel login, the FTP user's password and
+the database user's password (the latter two only when the product created
+them). Credentials you added manually in ISPConfig are not touched. An empty
+password is refused before any API call.
 
 ### Provisioning is eventually consistent
 

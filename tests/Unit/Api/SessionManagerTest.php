@@ -9,7 +9,6 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LockoutException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LoginFailedException;
-use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\PermissionDeniedException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\SessionExpiredException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface;
@@ -76,7 +75,9 @@ final class SessionManagerTest extends TestCase
 
         $result = $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
 
-        self::assertSame(7, $result);
+        // monitor.inc.php returns the mysqli column value - a STRING; the
+        // manager passes responses through untyped.
+        self::assertSame('7', $result);
         self::assertSame(['login', 'monitor_jobqueue_count'], self::methodSequence($fake));
     }
 
@@ -181,7 +182,8 @@ final class SessionManagerTest extends TestCase
 
         $result = $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
 
-        self::assertSame(3, $result);
+        // String per the wire contract (mysqli column value, monitor.inc.php).
+        self::assertSame('3', $result);
         self::assertSame(
             ['login', 'monitor_jobqueue_count', 'monitor_jobqueue_count', 'login', 'monitor_jobqueue_count'],
             self::methodSequence($fake)
@@ -374,15 +376,25 @@ final class SessionManagerTest extends TestCase
         self::assertSame(1, $transport->logoutAttempts);
     }
 
-    public function testCloseDoesNotSwallowNonTransportFailures(): void
+    public function testCloseSwallowsApiLevelLogoutFailures(): void
     {
+        // close() runs in entry-file finally blocks: a thrown exception there
+        // would replace the operation's real outcome (a successful create
+        // would report as failed with no ids persisted), so every API-level
+        // logout failure is swallowed - the work is already done.
         $fake = new FakeIspconfigServer();
         $manager = $this->managerSharingClock($fake);
 
         $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
         $fake->failNextWith('logout', self::SENTINEL_PERMISSION_DENIED);
 
-        $this->expectException(PermissionDeniedException::class);
-        $manager->close();
+        $manager->close(); // must not throw
+
+        // State cleared despite the failure: a later call re-logins cleanly.
+        $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
+        self::assertSame(
+            ['login', 'monitor_jobqueue_count', 'logout', 'login', 'monitor_jobqueue_count'],
+            self::methodSequence($fake)
+        );
     }
 }

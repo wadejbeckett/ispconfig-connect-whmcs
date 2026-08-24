@@ -16,12 +16,14 @@ final class PermissionsTest extends TestCase
      *  - server_get_all -> 'server_get'          remoting.inc.php (server_get_all body)
      *  - client_template_additional_add -> 'client_update'    remote.d/client.inc.php:298ff
      *  - client_template_additional_delete -> 'client_update' remote.d/client.inc.php:336ff
+     *  - client_template_additional_get -> 'client_get'       remote.d/client.inc.php:260ff
      * All others check their own name (grepped per function).
      */
     private const VERIFIED_GRANTS = [
         'server_get_all' => 'server_get',
         'client_template_additional_add' => 'client_update',
         'client_template_additional_delete' => 'client_update',
+        'client_template_additional_get' => 'client_get',
         'client_add' => 'client_add',
         'client_update' => 'client_update',
         'client_change_password' => 'client_change_password',
@@ -36,7 +38,11 @@ final class PermissionsTest extends TestCase
         'sites_web_domain_get' => 'sites_web_domain_get',
         'sites_web_domain_set_status' => 'sites_web_domain_set_status',
         'sites_ftp_user_add' => 'sites_ftp_user_add',
+        // Own-name grants, plain updateQuery (remote.d/sites.inc.php:310/:228)
+        // - used by changePassword to rotate provisioned credentials.
+        'sites_ftp_user_update' => 'sites_ftp_user_update',
         'sites_database_user_add' => 'sites_database_user_add',
+        'sites_database_user_update' => 'sites_database_user_update',
         'sites_database_add' => 'sites_database_add',
         'mail_domain_add' => 'mail_domain_add',
         'dns_templatezone_add' => 'dns_templatezone_add',

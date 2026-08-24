@@ -14,6 +14,7 @@ namespace WHMCS\Module\Server\Ispconfigconnect\Api;
  *   - server_get_all                  -> checks 'server_get'    (remoting.inc.php)
  *   - client_template_additional_add  -> checks 'client_update' (remote.d/client.inc.php)
  *   - client_template_additional_delete -> checks 'client_update' (remote.d/client.inc.php)
+ *   - client_template_additional_get  -> checks 'client_get'    (remote.d/client.inc.php)
  * and client_delete_everything checks its own grant at entry, then ALSO
  * checks 'client_delete' mid-function after cascading the client's objects
  * (remote.d/client.inc.php) - so both grants are required.
@@ -30,6 +31,7 @@ final class Permissions
         'server_get_all' => 'server_get',
         'client_template_additional_add' => 'client_update',
         'client_template_additional_delete' => 'client_update',
+        'client_template_additional_get' => 'client_get',
     ];
 
     /**
@@ -50,11 +52,18 @@ final class Permissions
         'client_templates_get_all',
         'client_template_additional_add',
         'client_template_additional_delete',
+        // Read before every protective client_update: the current
+        // client_template_assigned rows (remote.d/client.inc.php).
+        'client_template_additional_get',
         'sites_web_domain_add',
         'sites_web_domain_get',
         'sites_web_domain_set_status',
         'sites_ftp_user_add',
+        // Credential rotation on ChangePassword (plain updateQuery, own-name
+        // grants - remote.d/sites.inc.php).
+        'sites_ftp_user_update',
         'sites_database_user_add',
+        'sites_database_user_update',
         'sites_database_add',
         'mail_domain_add',
         'dns_templatezone_add',

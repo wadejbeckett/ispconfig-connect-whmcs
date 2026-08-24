@@ -154,14 +154,59 @@ final class Recipe
         );
     }
 
-    public function suspend(int $clientId, ?int $domainId, bool $alsoDisableWebsite): void
+    /**
+     * Entire-client mode: locked='y' via a protective client_update -
+     * func_client_lock (functions.inc.php) then disables EVERY object the
+     * client owns (web, mail, FTP, DB, cron, shell, ...) and remembers the
+     * already-inactive ones in client.tmp_data. Locking an ALREADY-locked
+     * client would overwrite tmp_data with everything-inactive so a later
+     * unlock restores nothing - hence the client_get guard.
+     *
+     * Website-only mode: a lock that spares the website does not exist, so
+     * no client_update is made at all - just sites_web_domain_set_status.
+     */
+    public function suspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        $this->setSuspended($clientId, $domainId, $alsoDisableWebsite, true);
+        if (!$suspendEntireClient) {
+            if ($domainId !== null) {
+                $this->setWebsiteStatus($domainId, 'inactive');
+            }
+
+            return;
+        }
+
+        if ($this->clientLockedState($clientId) === 'y') {
+            return; // already locked - re-locking poisons tmp_data
+        }
+
+        $this->protectiveClientUpdate($clientId, ['locked' => 'y']);
     }
 
-    public function unsuspend(int $clientId, ?int $domainId, bool $alsoEnableWebsite): void
+    /**
+     * Symmetric inverse of suspend() with the same guards. The unlock runs
+     * only when the client is actually locked: client_update handles ANY
+     * truthy 'locked' value - 'n' included (client.inc.php: if($params
+     * ['locked']) on the merged record) - and func_client_lock('n') would
+     * re-enable objects an admin disabled on purpose. No explicit website
+     * set_status in entire-client mode either: the unlock restores every
+     * object except those tmp_data remembers as previously-inactive
+     * (functions.inc.php func_client_lock).
+     */
+    public function unsuspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        $this->setSuspended($clientId, $domainId, $alsoEnableWebsite, false);
+        if (!$suspendEntireClient) {
+            if ($domainId !== null) {
+                $this->setWebsiteStatus($domainId, 'active');
+            }
+
+            return;
+        }
+
+        if ($this->clientLockedState($clientId) !== 'y') {
+            return; // not locked - nothing to restore
+        }
+
+        $this->protectiveClientUpdate($clientId, ['locked' => 'n']);
     }
 
     public function terminate(int $clientId): void
@@ -169,59 +214,72 @@ final class Recipe
         $this->session->call('client_delete_everything', ['client_id' => $clientId]);
     }
 
-    public function changePassword(int $clientId, #[\SensitiveParameter] string $newPassword): void
-    {
+    /**
+     * Rotates every credential the module provisioned with the service
+     * password: the panel login always, plus the FTP user and the database
+     * user when their ids are given. Both *_update functions use a plain
+     * updateQuery (remote.d/sites.inc.php) - no client_update-style
+     * pre-merge - so the partial params are safe. Field names per the form
+     * definitions: 'password' (ftp_user.tform.php, PASSWORD/CRYPT) and
+     * 'database_password' (database_user.tform.php, PASSWORD/MYSQL).
+     */
+    public function changePassword(
+        int $clientId,
+        #[\SensitiveParameter] string $newPassword,
+        ?int $ftpUserId = null,
+        ?int $databaseUserId = null,
+    ): void {
         $this->session->call('client_change_password', [
             'client_id' => $clientId,
             'new_password' => $newPassword,
         ]);
+
+        if ($ftpUserId !== null) {
+            $this->session->call('sites_ftp_user_update', [
+                'client_id' => $clientId,
+                'primary_id' => $ftpUserId,
+                'params' => ['password' => $newPassword],
+            ]);
+        }
+
+        if ($databaseUserId !== null) {
+            $this->session->call('sites_database_user_update', [
+                'client_id' => $clientId,
+                'primary_id' => $databaseUserId,
+                'params' => ['database_password' => $newPassword],
+            ]);
+        }
     }
 
     /**
      * Applies a new master template and reconciles addon-template
-     * assignments to exactly $addonTemplateIds: currently assigned ids are
-     * discovered via client_get, whose template_additional comes back as
-     * 'assigned_template_id:client_template_id' pairs joined by '/'
-     * (client.inc.php client_get()).
+     * assignments to exactly $addonTemplateIds in ONE protective
+     * client_update: template_additional carries the DESIRED bare template
+     * ids, and update_client_templates' old-style count-diff
+     * (client_templates.inc.php: bare ids are counted against the assigned
+     * rows, surplus inserted, deficit deleted) applies the delta atomically
+     * server-side. Unchanged assignments keep their rows; no separate
+     * client_template_additional_add/_delete calls are needed.
      *
      * @param list<int> $addonTemplateIds the DESIRED addon template ids
      *        (resolved by the caller via Mapper::addonTemplateIds())
      */
     public function changePackage(int $clientId, ProductConfig $product, array $addonTemplateIds): void
     {
-        // Partial update is safe: client_update merges the stored record
-        // first (remoting updateQueryPrepare(), spec §1.5).
-        $this->session->call('client_update', [
-            'client_id' => $clientId,
-            'reseller_id' => 0,
-            'params' => ['template_master' => $product->clientTemplateId],
+        $desired = [];
+        foreach ($addonTemplateIds as $templateId) {
+            $templateId = (int) $templateId;
+            // Skip malformed/zero entries: a 0 would count-diff a bogus
+            // template id, a duplicate would double-assign the template.
+            if ($templateId > 0 && !in_array($templateId, $desired, true)) {
+                $desired[] = $templateId;
+            }
+        }
+
+        $this->protectiveClientUpdate($clientId, [
+            'template_master' => $product->clientTemplateId,
+            'template_additional' => implode('/', $desired),
         ]);
-
-        $record = $this->session->call('client_get', ['client_id' => $clientId]);
-        $current = self::assignedTemplateIds(is_array($record) ? $record : []);
-        $desired = array_values(array_unique(array_map(intval(...), $addonTemplateIds)));
-
-        foreach ($desired as $templateId) {
-            if (!in_array($templateId, $current, true)) {
-                $this->session->call('client_template_additional_add', [
-                    'client_id' => $clientId,
-                    'template_id' => $templateId,
-                ]);
-            }
-        }
-
-        foreach (array_unique($current) as $templateId) {
-            if (!in_array($templateId, $desired, true)) {
-                // Source quirk (client.inc.php client_template_additional_
-                // delete()): the assigned_template_id PARAMETER is matched
-                // against client_template_id, so the TEMPLATE id - not the
-                // assignment id - is what removes an assignment.
-                $this->session->call('client_template_additional_delete', [
-                    'client_id' => $clientId,
-                    'assigned_template_id' => $templateId,
-                ]);
-            }
-        }
     }
 
     public function jobqueueCount(?int $serverId = null): int
@@ -254,20 +312,86 @@ final class Recipe
         );
     }
 
-    private function setSuspended(int $clientId, ?int $domainId, bool $alsoToggleWebsite, bool $suspended): void
+    /**
+     * client_update is NEVER safe as a plain partial update: it merges the
+     * stored DB record into $params BEFORE updateQuery (client.inc.php
+     * client_update()), with two destructive consequences this wrapper
+     * neutralizes on every call:
+     *
+     *  1. The stored crypt hash lands in params['password'] and would be
+     *     re-crypted by getSQL / ispconfig_sysuser_update
+     *     (remoting_lib.inc.php) - corrupting the panel login - unless
+     *     '_ispconfig_pw_crypted' => 1 passes it through verbatim.
+     *  2. The merged record always carries the template_additional COLUMN
+     *     ('' when assignments were made via the API), and client_update
+     *     then runs update_client_templates() with it - '' deletes EVERY
+     *     client_template_assigned row (client_templates.inc.php). Sending
+     *     the currently-assigned bare template ids makes that resync a
+     *     no-op (old-style count-diff: identical counts change nothing);
+     *     callers that WANT a different assignment set (changePackage) pass
+     *     their own template_additional.
+     *
+     * @param array<string, int|string> $params the intended changes
+     */
+    private function protectiveClientUpdate(int $clientId, array $params): void
     {
+        if (!array_key_exists('template_additional', $params)) {
+            $params['template_additional'] = implode('/', $this->assignedAddonTemplateIds($clientId));
+        }
+        $params['_ispconfig_pw_crypted'] = 1;
+
         $this->session->call('client_update', [
             'client_id' => $clientId,
             'reseller_id' => 0,
-            'params' => ['locked' => $suspended ? 'y' : 'n'],
+            'params' => $params,
+        ]);
+    }
+
+    /**
+     * The client's current addon-template assignments as bare template ids,
+     * via client_template_additional_get (client.inc.php: returns the raw
+     * client_template_assigned rows; grant alias 'client_get'). Duplicates
+     * are preserved on purpose - the old-style count-diff in
+     * update_client_templates counts per template id, so dropping one of two
+     * identical assignments here would delete one server-side.
+     *
+     * @return list<int>
+     */
+    private function assignedAddonTemplateIds(int $clientId): array
+    {
+        $rows = $this->session->call('client_template_additional_get', [
+            'client_id' => $clientId,
         ]);
 
-        if ($alsoToggleWebsite && $domainId !== null) {
-            $this->session->call('sites_web_domain_set_status', [
-                'primary_id' => $domainId,
-                'status' => $suspended ? 'inactive' : 'active',
-            ]);
+        $ids = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $id = is_array($row) ? (int) ($row['client_template_id'] ?? 0) : 0;
+            if ($id > 0) {
+                $ids[] = $id;
+            }
         }
+
+        return $ids;
+    }
+
+    /**
+     * The stored 'locked' flag ('y'/'n'), or null when the client record
+     * cannot be read (client_get returns null for a missing id -
+     * db_mysql.inc.php queryOneRecord).
+     */
+    private function clientLockedState(int $clientId): ?string
+    {
+        $record = $this->session->call('client_get', ['client_id' => $clientId]);
+
+        return is_array($record) ? (string) ($record['locked'] ?? 'n') : null;
+    }
+
+    private function setWebsiteStatus(int $domainId, string $status): void
+    {
+        $this->session->call('sites_web_domain_set_status', [
+            'primary_id' => $domainId,
+            'status' => $status,
+        ]);
     }
 
     /**
@@ -287,32 +411,4 @@ final class Recipe
         return false;
     }
 
-    /**
-     * Parses client_get's template_additional field: current-style
-     * 'assigned_template_id:client_template_id' pairs joined by '/', or
-     * legacy bare template ids joined by '/' (client.inc.php
-     * _set_client_formdata() still supports the old storage).
-     *
-     * @param array<string, mixed> $clientRecord
-     * @return list<int> client_template ids currently assigned
-     */
-    private static function assignedTemplateIds(array $clientRecord): array
-    {
-        $raw = trim((string) ($clientRecord['template_additional'] ?? ''));
-        if ($raw === '') {
-            return [];
-        }
-
-        $ids = [];
-        foreach (explode('/', $raw) as $item) {
-            $item = trim($item);
-            if ($item === '') {
-                continue;
-            }
-            $parts = explode(':', $item);
-            $ids[] = (int) end($parts);
-        }
-
-        return $ids;
-    }
 }

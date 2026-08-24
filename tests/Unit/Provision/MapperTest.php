@@ -31,7 +31,7 @@ final class MapperTest extends TestCase
             'dnsAdminEmail' => 'hostmaster@example.net',
             'createDatabase' => false,
             'phpMode' => 'php-fpm',
-            'suspendAlsoDisablesWebsite' => true,
+            'suspendEntireClient' => true,
             'panelUrlOverride' => null,
         ];
 
@@ -163,6 +163,15 @@ final class MapperTest extends TestCase
         self::assertSame('All', $params['allow_override']);
         self::assertSame('y', $params['active']);
         self::assertSame(1, $params['errordocs']);
+        // REGEX validators with no allowempty in web_vhost_domain.tform.php
+        // (pm_process_idle_timeout, pm_max_requests, http_port, https_port):
+        // a missing field validates as '' and FAILS over the remote API, so
+        // all four must always be sent. Values are the stock example's
+        // (remoting_client/examples/sites_web_domain_add.php).
+        self::assertSame(10, $params['pm_process_idle_timeout']);
+        self::assertSame(0, $params['pm_max_requests']);
+        self::assertSame(80, $params['http_port']);
+        self::assertSame(443, $params['https_port']);
     }
 
     // ── ftpUserAddParams ───────────────────────────────────────────────

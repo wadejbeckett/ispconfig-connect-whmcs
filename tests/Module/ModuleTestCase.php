@@ -93,7 +93,7 @@ abstract class ModuleTestCase extends TestCase
             'configoption10' => 'hostmaster@example.net',        // DNS Admin Email
             'configoption11' => '',                              // Create Database
             'configoption12' => 'php-fpm',                       // PHP Mode
-            'configoption13' => 'on',                            // Suspend Also Disables Website
+            'configoption13' => 'on',                            // Suspend Entire Client
             'configoption14' => '',                              // Panel URL Override
             'clientsdetails' => [
                 'firstname' => 'Jane',
@@ -120,5 +120,45 @@ abstract class ModuleTestCase extends TestCase
     protected function calledMethods(): array
     {
         return array_column($this->fake->requestLog, 'method');
+    }
+
+    /** Request-log position marker; pair with methodsSince() to isolate one operation's wire calls. */
+    protected function wireMark(): int
+    {
+        return count($this->fake->requestLog);
+    }
+
+    /** @return list<string> method names of the wire calls made after $mark */
+    protected function methodsSince(int $mark): array
+    {
+        return array_column(array_slice($this->fake->requestLog, $mark), 'method');
+    }
+
+    /**
+     * Asserts $secret cannot survive into the module log: for every entry,
+     * apply WHMCS's replaceVars masking (each listed value is blanked out of
+     * the stored text) and require the secret to be gone afterwards.
+     *
+     * A plain substring search would false-positive here: the fake models
+     * crypt_password() as 'crypt:<clear>', so a stored HASH contains the
+     * clear text as a substring - but the hash itself is listed in
+     * replaceVars (Factory's password-key sweep), and masking it removes the
+     * embedded clear text exactly as the real logModuleCall would.
+     */
+    protected function assertNoCredentialLeak(string $secret): void
+    {
+        self::assertNotSame('', $secret);
+        foreach (ModuleCallLog::entries() as $index => $entry) {
+            $haystack = print_r($entry['request'], true) . ' ' . print_r($entry['response'], true);
+            $masks = $entry['replaceVars'];
+            // Longest first, so a value containing another is masked whole.
+            usort($masks, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+            $masked = str_replace($masks, '***', $haystack);
+            self::assertStringNotContainsString(
+                $secret,
+                $masked,
+                sprintf('module-log entry #%d (%s) leaks a credential', $index, $entry['action'])
+            );
+        }
     }
 }

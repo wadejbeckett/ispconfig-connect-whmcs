@@ -63,6 +63,74 @@ final class CreateAccountEdgeTest extends ModuleTestCase
         self::assertGreaterThan(0, $this->model->saveCalls);
     }
 
+    public function testEmptyServicePasswordIsRejectedBeforeAnyApiCall(): void
+    {
+        $result = ispconfigconnect_CreateAccount($this->params(['password' => '']));
+
+        self::assertNotSame('success', $result);
+        self::assertStringContainsStringIgnoringCase('password', $result);
+        // Without the guard, ISPConfig would accept the create and provision
+        // FTP and MySQL users with EMPTY credentials (the *_add forms treat
+        // an absent PASSWORD field as "skip") - so no API call may happen.
+        self::assertSame([], $this->fake->requestLog);
+        self::assertSame([], $this->fake->clients());
+    }
+
+    public function testPropertySaveFailureReturnsErrorNamingEveryCreatedId(): void
+    {
+        // Provisioning succeeds, then the WHMCS property store fails: the
+        // ISPConfig objects exist but WHMCS holds no record of them. The
+        // error string must carry every created id so the operator can
+        // reconcile the orphan (at minimum the client id).
+        $this->model->serviceProperties->throwOnSaveMessage = 'db gone away';
+
+        $result = ispconfigconnect_CreateAccount($this->params([
+            'configoption5' => 'on',  // Create Mail Domain
+            'configoption6' => 'on',  // Create DNS Zone
+            'configoption11' => 'on', // Create Database
+        ]));
+
+        self::assertNotSame('success', $result);
+        $clientId = (int) array_key_first($this->fake->clients());
+        self::assertStringContainsString('client #' . $clientId, $result);
+        foreach (
+            [
+                'web domain #' . array_key_first($this->fake->sites()),
+                'FTP user #' . array_key_first($this->fake->ftpUsers()),
+                'mail domain #' . array_key_first($this->fake->mailDomains()),
+                'DNS zone #' . array_key_first($this->fake->dnsZones()),
+                'database user #' . array_key_first($this->fake->databaseUsers()),
+                'database #' . array_key_first($this->fake->databases()),
+            ] as $expected
+        ) {
+            self::assertStringContainsString($expected, $result);
+        }
+        self::assertStringContainsString('db gone away', $result);
+        // The provisioned objects are NOT rolled back - they are live and
+        // billable; the operator reconciles instead.
+        self::assertCount(1, $this->fake->clients());
+        // The session was still closed on the way out.
+        self::assertSame(0, $this->fake->activeSessionCount());
+    }
+
+    public function testUsernameWriteBackFailureStillReturnsSuccess(): void
+    {
+        // The username write-back to the service model is cosmetic: the
+        // authoritative ids are already stored as service properties, so a
+        // failing model save must not fail the whole (successful) create.
+        $this->model->failSave = true;
+
+        $result = ispconfigconnect_CreateAccount($this->params(['username' => '']));
+
+        self::assertSame('success', $result);
+        self::assertCount(1, $this->fake->clients());
+        self::assertSame(
+            'example42',
+            $this->model->serviceProperties->get('ispconfig_client_username')
+        );
+        self::assertGreaterThan(0, $this->model->saveCalls);
+    }
+
     public function testErrorStringNeverContainsAStackTrace(): void
     {
         $this->fake->failNextWith('client_add', 'database_error INSERT INTO client');

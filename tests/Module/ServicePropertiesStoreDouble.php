@@ -11,6 +11,13 @@ namespace Ispconfigconnect\Tests\Module;
  */
 final class ServicePropertiesStoreDouble
 {
+    /**
+     * When set, every save() throws a RuntimeException with this message -
+     * simulates the WHMCS property store failing AFTER provisioning
+     * succeeded (the orphan-reconciliation path of CreateAccount).
+     */
+    public ?string $throwOnSaveMessage = null;
+
     /** @param array<string, string> $values */
     public function __construct(private array $values = [])
     {
@@ -24,6 +31,9 @@ final class ServicePropertiesStoreDouble
     /** @param array<string, string> $values */
     public function save(array $values): void
     {
+        if ($this->throwOnSaveMessage !== null) {
+            throw new \RuntimeException($this->throwOnSaveMessage);
+        }
         $this->values = array_merge($this->values, $values);
     }
 

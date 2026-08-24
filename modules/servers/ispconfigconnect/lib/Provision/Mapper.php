@@ -131,6 +131,16 @@ final class Mapper
             'allow_override' => 'All',
             'active' => 'y',
             'errordocs' => 1,
+            // web_vhost_domain.tform.php REGEX validators WITHOUT allowempty:
+            // pm_process_idle_timeout /^([1-9][0-9]{0,10})$/, pm_max_requests
+            // /^([0-9]{1,11})$/, http_port + https_port /^([0-9]{1,5})$/.
+            // A missing field validates as '' and fails, so the remote API
+            // effectively REQUIRES all four; values are the stock example's
+            // (remoting_client/examples/sites_web_domain_add.php).
+            'pm_process_idle_timeout' => 10,
+            'pm_max_requests' => 0,
+            'http_port' => 80,
+            'https_port' => 443,
         ];
     }
 

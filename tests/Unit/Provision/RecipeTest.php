@@ -50,7 +50,7 @@ final class RecipeTest extends TestCase
             'dnsAdminEmail' => 'hostmaster@example.net',
             'createDatabase' => false,
             'phpMode' => 'php-fpm',
-            'suspendAlsoDisablesWebsite' => true,
+            'suspendEntireClient' => true,
             'panelUrlOverride' => null,
         ];
 
@@ -106,8 +106,16 @@ final class RecipeTest extends TestCase
             'contact_name' => 'Seed Client',
             'username' => 'seeduser',
             'email' => 'seed@example.org',
+            // NOTEMPTY over the remote API (client.tform.php) - the panel
+            // SELECT default does not apply to API calls.
+            'language' => 'en',
         ]]);
-        $webDefaults = ['server_id' => 2, 'hd_quota' => -1, 'traffic_quota' => -1];
+        $webDefaults = [
+            'server_id' => 2, 'hd_quota' => -1, 'traffic_quota' => -1,
+            // REGEX-without-allowempty fields (web_vhost_domain.tform.php).
+            'pm_process_idle_timeout' => 10, 'pm_max_requests' => 0,
+            'http_port' => 80, 'https_port' => 443,
+        ];
         $call('sites_web_domain_add', ['client_id' => $seedClientId, 'readonly' => false,
             'params' => ['domain' => 'seed1.example.org'] + $webDefaults]);
         $call('sites_web_domain_add', ['client_id' => $seedClientId, 'readonly' => false,
@@ -165,6 +173,14 @@ final class RecipeTest extends TestCase
         $site = $fake->sites()[3];
         self::assertSame('example.com', $site['domain']);
         self::assertSame(2, $site['client_id']);
+        // The four advanced-tab REGEX fields without allowempty
+        // (web_vhost_domain.tform.php) - absent values fail validation over
+        // the remote API, so create must always send them (stock-example
+        // values, remoting_client/examples/sites_web_domain_add.php).
+        self::assertSame(10, $site['pm_process_idle_timeout']);
+        self::assertSame(0, $site['pm_max_requests']);
+        self::assertSame(80, $site['http_port']);
+        self::assertSame(443, $site['https_port']);
 
         // uid/gid/dir must come from the FETCHED web domain record.
         $ftp = $fake->ftpUsers()[2];
@@ -225,6 +241,18 @@ final class RecipeTest extends TestCase
         self::assertNull($result->dnsZoneId);
         self::assertNull($result->databaseUserId);
         self::assertNull($result->databaseId);
+    }
+
+    public function testCreateWithEmptyWhmcsLanguageStillSatisfiesTheNotemptyValidator(): void
+    {
+        $fake = new FakeIspconfigServer();
+
+        // 'language' is NOTEMPTY in client.tform.php and the remote API has
+        // no server-side default - the mapper's 'en' fallback must reach the
+        // wire or client_add faults.
+        $result = $this->recipe($fake)->create($this->product(), $this->service(['language' => '']));
+
+        self::assertSame('en', $fake->clients()[$result->clientId]['language']);
     }
 
     public function testCreateFailureAtClientAddPropagatesUnwrappedWithoutRollback(): void
@@ -293,38 +321,143 @@ final class RecipeTest extends TestCase
         self::assertArrayHasKey(1, $fake->sites());
     }
 
-    // ── suspend / unsuspend ────────────────────────────────────────────
-
-    public function testSuspendLocksClientAndDisablesWebsite(): void
+    /**
+     * Drive the fake directly (outside the Recipe under test) - e.g. to
+     * disable an object the way a panel admin would before a suspension.
+     *
+     * @param array<string, mixed> $params
+     */
+    private function rawCall(FakeIspconfigServer $fake, string $method, array $params): mixed
     {
-        $fake = new FakeIspconfigServer();
-        $recipe = $this->recipe($fake);
-        $result = $recipe->create($this->product(), $this->service());
+        $client = new RestClient($fake);
+        $sessionId = $client->login('remote', 'secret');
+        $result = $client->call($method, ['session_id' => $sessionId] + $params);
+        $client->logout($sessionId);
 
-        $recipe->suspend($result->clientId, $result->domainId, true);
-
-        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
-        self::assertSame('n', $fake->sites()[$result->domainId]['active']);
+        return $result;
     }
 
-    public function testSuspendWithoutDomainIdOnlyLocksTheClient(): void
+    // ── suspend / unsuspend ────────────────────────────────────────────
+
+    public function testEntireClientSuspendLocksAndTheCascadeDisablesTheWebsite(): void
     {
         $fake = new FakeIspconfigServer();
         $recipe = $this->recipe($fake);
         $result = $recipe->create($this->product(), $this->service());
         $logOffset = count($fake->requestLog);
 
-        $recipe->suspend($result->clientId, null, true);
+        $recipe->suspend($result->clientId, $result->domainId, true);
 
         self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
-        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        // func_client_lock (functions.inc.php) disables ALL client objects -
+        // the website goes inactive through the cascade, so no separate
+        // sites_web_domain_set_status call is made (it would poison the
+        // remembered prev_active state on unsuspend).
+        self::assertSame('n', $fake->sites()[$result->domainId]['active']);
+        self::assertSame('n', $fake->ftpUsers()[$result->ftpUserId]['active']);
         self::assertSame(
-            ['client_update'],
+            ['client_get', 'client_template_additional_get', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
     }
 
-    public function testSuspendWithWebsiteToggleOffLeavesWebsiteActive(): void
+    public function testEntireClientSuspendThenUnsuspendPreservesPasswordAndAddonAssignments(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $fake->addClientTemplate('Basic', 'm');
+        $addonId = $fake->addClientTemplate('Extra Space', 'a');
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create(
+            $this->product(['clientTemplateId' => 1]),
+            $this->service(['configOptions' => ['ISPConfig Extra Space' => '1']])
+        );
+        // Single-crypt marker from client_add - the regression fixture.
+        self::assertSame('crypt:S3cret!pass', $fake->clients()[$result->clientId]['password']);
+
+        $recipe->suspend($result->clientId, $result->domainId, true);
+        $recipe->unsuspend($result->clientId, $result->domainId, true);
+
+        // Without _ispconfig_pw_crypted=1 each client_update would re-crypt
+        // the stored hash (client.inc.php pre-merge + remoting_lib getSQL);
+        // without template_additional=<current ids> the merged '' column
+        // would wipe client_template_assigned (client_templates.inc.php).
+        self::assertSame('crypt:S3cret!pass', $fake->clients()[$result->clientId]['password']);
+        self::assertSame(
+            [$addonId],
+            array_column($fake->templateAssignments(), 'client_template_id')
+        );
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+    }
+
+    public function testDoubleSuspendThenUnsuspendStillRestoresTheWebsite(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(), $this->service());
+
+        $recipe->suspend($result->clientId, $result->domainId, true);
+        $logOffset = count($fake->requestLog);
+        // Re-locking an already-locked client would overwrite tmp_data with
+        // everything-inactive (func_client_lock, functions.inc.php) - the
+        // guard must skip the second lock after the client_get check.
+        $recipe->suspend($result->clientId, $result->domainId, true);
+        self::assertSame(
+            ['client_get'],
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
+
+        $recipe->unsuspend($result->clientId, $result->domainId, true);
+
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        self::assertSame([], $fake->clientTmpData($result->clientId));
+    }
+
+    public function testUnsuspendKeepsObjectsThatWereInactiveBeforeTheSuspension(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(), $this->service());
+        // An admin disabled the website independently of billing.
+        $this->rawCall($fake, 'sites_web_domain_set_status', [
+            'primary_id' => $result->domainId, 'status' => 'inactive',
+        ]);
+
+        $recipe->suspend($result->clientId, $result->domainId, true);
+        $recipe->unsuspend($result->clientId, $result->domainId, true);
+
+        // func_client_lock remembered the site as previously-inactive; the
+        // unlock must not resurrect it - which also proves unsuspend makes
+        // no sites_web_domain_set_status call in entire-client mode.
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('n', $fake->sites()[$result->domainId]['active']);
+        self::assertSame('y', $fake->ftpUsers()[$result->ftpUserId]['active']);
+    }
+
+    public function testUnsuspendOfANotLockedClientMakesNoClientUpdate(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(), $this->service());
+        // Deliberately-disabled object that a stray client_update's
+        // truthy-'n' lock handling would wrongly re-enable
+        // (client.inc.php: if($params['locked']) runs for 'n' too).
+        $this->rawCall($fake, 'sites_web_domain_set_status', [
+            'primary_id' => $result->domainId, 'status' => 'inactive',
+        ]);
+        $logOffset = count($fake->requestLog);
+
+        $recipe->unsuspend($result->clientId, $result->domainId, true);
+
+        self::assertSame(
+            ['client_get'],
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
+        self::assertSame('n', $fake->sites()[$result->domainId]['active']);
+    }
+
+    public function testWebsiteOnlySuspendNeverTouchesTheClientRecord(): void
     {
         $fake = new FakeIspconfigServer();
         $recipe = $this->recipe($fake);
@@ -333,43 +466,35 @@ final class RecipeTest extends TestCase
 
         $recipe->suspend($result->clientId, $result->domainId, false);
 
-        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
-        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        // 'suspend disables the website only' is impossible via locked='y'
+        // (the lock cascades to every object - functions.inc.php), so this
+        // mode must not call client_update at all.
         self::assertSame(
-            ['client_update'],
+            ['sites_web_domain_set_status'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
-    }
-
-    public function testUnsuspendUnlocksClientAndReactivatesWebsite(): void
-    {
-        $fake = new FakeIspconfigServer();
-        $recipe = $this->recipe($fake);
-        $result = $recipe->create($this->product(), $this->service());
-        $recipe->suspend($result->clientId, $result->domainId, true);
-
-        $recipe->unsuspend($result->clientId, $result->domainId, true);
-
-        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
-        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
-    }
-
-    public function testUnsuspendWithoutDomainIdOnlyUnlocksTheClient(): void
-    {
-        $fake = new FakeIspconfigServer();
-        $recipe = $this->recipe($fake);
-        $result = $recipe->create($this->product(), $this->service());
-        $recipe->suspend($result->clientId, $result->domainId, true);
-        $logOffset = count($fake->requestLog);
-
-        $recipe->unsuspend($result->clientId, null, true);
-
         self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
         self::assertSame('n', $fake->sites()[$result->domainId]['active']);
-        self::assertSame(
-            ['client_update'],
-            array_column(array_slice($fake->requestLog, $logOffset), 'method')
-        );
+        self::assertSame('y', $fake->ftpUsers()[$result->ftpUserId]['active']);
+
+        $recipe->unsuspend($result->clientId, $result->domainId, false);
+
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+    }
+
+    public function testWebsiteOnlySuspendWithoutADomainIdMakesNoCallsAtAll(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(), $this->service());
+        $logOffset = count($fake->requestLog);
+
+        $recipe->suspend($result->clientId, null, false);
+        $recipe->unsuspend($result->clientId, null, false);
+
+        self::assertSame([], array_slice($fake->requestLog, $logOffset));
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
     }
 
     // ── terminate ──────────────────────────────────────────────────────
@@ -391,20 +516,71 @@ final class RecipeTest extends TestCase
 
     // ── changePassword ─────────────────────────────────────────────────
 
-    public function testChangePasswordUpdatesTheClientPassword(): void
+    public function testChangePasswordWithoutIdsRotatesThePanelPasswordOnly(): void
     {
         $fake = new FakeIspconfigServer();
         $recipe = $this->recipe($fake);
         $result = $recipe->create($this->product(), $this->service());
+        $ftpPasswordBefore = $fake->ftpUsers()[$result->ftpUserId]['password'];
+        $logOffset = count($fake->requestLog);
 
         $recipe->changePassword($result->clientId, 'N3w!password');
 
-        self::assertSame('N3w!password', $fake->clients()[$result->clientId]['password']);
+        // client_change_password crypts the new clear server-side
+        // (client.inc.php) - single crypt marker, no double-crypt.
+        self::assertSame('crypt:N3w!password', $fake->clients()[$result->clientId]['password']);
+        self::assertSame($ftpPasswordBefore, $fake->ftpUsers()[$result->ftpUserId]['password']);
+        self::assertSame(
+            ['client_change_password'],
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
+    }
+
+    public function testChangePasswordRotatesFtpAndDatabaseUserCredentialsWhenIdsGiven(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create(
+            $this->product(['createDatabase' => true]),
+            $this->service()
+        );
+        $logOffset = count($fake->requestLog);
+
+        $recipe->changePassword(
+            $result->clientId,
+            'N3w!password',
+            $result->ftpUserId,
+            $result->databaseUserId
+        );
+
+        // The module provisioned FTP and DB users with the service password,
+        // so a password change must rotate them too. Partial updates are safe
+        // here - plain updateQuery, no client_update-style pre-merge
+        // (remote.d/sites.inc.php sites_ftp_user_update /
+        // sites_database_user_update). Param keys: 'password'
+        // (ftp_user.tform.php, PASSWORD/CRYPT) and 'database_password'
+        // (database_user.tform.php, PASSWORD/MYSQL).
+        self::assertSame('crypt:N3w!password', $fake->clients()[$result->clientId]['password']);
+        self::assertSame('crypt:N3w!password', $fake->ftpUsers()[$result->ftpUserId]['password']);
+        self::assertSame(
+            'crypt:N3w!password',
+            $fake->databaseUsers()[$result->databaseUserId]['database_password']
+        );
+        self::assertSame(
+            ['client_change_password', 'sites_ftp_user_update', 'sites_database_user_update'],
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
+        // The updates went to the RIGHT records - nothing else changed.
+        self::assertSame('exampleuser', $fake->ftpUsers()[$result->ftpUserId]['username']);
+        self::assertSame(
+            'c1_example',
+            $fake->databaseUsers()[$result->databaseUserId]['database_user']
+        );
     }
 
     // ── changePackage ──────────────────────────────────────────────────
 
-    public function testChangePackageUpdatesMasterTemplateAndReconcilesAddons(): void
+    public function testChangePackageAppliesTheAddonDeltaInOneClientUpdate(): void
     {
         $fake = new FakeIspconfigServer();
         $basicId = $fake->addClientTemplate('Basic', 'm');
@@ -420,10 +596,21 @@ final class RecipeTest extends TestCase
             [$spaceId],
             array_column($fake->templateAssignments(), 'client_template_id')
         );
+        $logOffset = count($fake->requestLog);
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $proId]), [$mailId]);
 
+        // ONE protective client_update: template_additional carries the
+        // DESIRED bare ids and update_client_templates' old-style count-diff
+        // applies the delta atomically (client_templates.inc.php) - no
+        // client_template_additional_add/_delete calls.
+        self::assertSame(
+            ['client_update'],
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
         self::assertSame($proId, $fake->clients()[$result->clientId]['template_master']);
+        // The pw_crypted flag must have protected the stored hash.
+        self::assertSame('crypt:S3cret!pass', $fake->clients()[$result->clientId]['password']);
         // 'Extra Space' unassigned, 'Extra Mail' assigned; record shape per
         // client_template_assigned (client.inc.php).
         $assignments = array_values($fake->templateAssignments());
@@ -434,7 +621,7 @@ final class RecipeTest extends TestCase
         );
     }
 
-    public function testChangePackageWithUnchangedAddonsMakesNoAssignmentCalls(): void
+    public function testChangePackageWithUnchangedAddonsKeepsTheExistingAssignmentRows(): void
     {
         $fake = new FakeIspconfigServer();
         $basicId = $fake->addClientTemplate('Basic', 'm');
@@ -444,16 +631,41 @@ final class RecipeTest extends TestCase
             $this->product(['clientTemplateId' => $basicId]),
             $this->service(['configOptions' => ['ISPConfig Extra Space' => '1']])
         );
+        $assignmentsBefore = $fake->templateAssignments();
         $logOffset = count($fake->requestLog);
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $basicId]), [$spaceId]);
 
         self::assertSame(
-            ['client_update', 'client_get'],
+            ['client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
+        // Old-style count-diff no-op: the very same assignment rows survive
+        // (same assigned_template_id - not delete-and-reinsert).
+        self::assertSame($assignmentsBefore, $fake->templateAssignments());
+    }
+
+    public function testChangePackageSkipsMalformedAndDuplicateDesiredIds(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $basicId = $fake->addClientTemplate('Basic', 'm');
+        $mailId = $fake->addClientTemplate('Extra Mail', 'a');
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create(
+            $this->product(['clientTemplateId' => $basicId]),
+            $this->service()
+        );
+
+        // A 0/negative id would emit a bogus '0' entry into the count-diff;
+        // a duplicate would double-assign the template.
+        $recipe->changePackage(
+            $result->clientId,
+            $this->product(['clientTemplateId' => $basicId]),
+            [0, $mailId, $mailId, -3]
+        );
+
         self::assertSame(
-            [$spaceId],
+            [$mailId],
             array_column($fake->templateAssignments(), 'client_template_id')
         );
     }

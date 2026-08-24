@@ -46,7 +46,7 @@ final class MetaDataAndConfigTest extends ModuleTestCase
                 'DNS Admin Email',
                 'Create Database',
                 'PHP Mode',
-                'Suspend Also Disables Website',
+                'Suspend Entire Client',
                 'Panel URL Override',
             ],
             array_keys($options)
@@ -61,6 +61,12 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertSame('ispconfigconnect_ClientTemplateLoader', $options['Client Template']['Loader']);
         self::assertSame('dropdown', $options['Web Server']['Type']);
         self::assertSame('ispconfigconnect_WebServerLoader', $options['Web Server']['Loader']);
+        // Loader-backed fields are only populated when SimpleMode is set -
+        // WHMCS developer docs, provisioning-modules/loader-functions/:
+        // "These fields will be populated with the return values of the
+        // associated loader function when simple mode is used."
+        self::assertTrue($options['Client Template']['SimpleMode']);
+        self::assertTrue($options['Web Server']['SimpleMode']);
 
         foreach (
             [
@@ -69,14 +75,22 @@ final class MetaDataAndConfigTest extends ModuleTestCase
                 'Create Mail Domain',
                 'Create DNS Zone',
                 'Create Database',
-                'Suspend Also Disables Website',
+                'Suspend Entire Client',
             ] as $checkbox
         ) {
             self::assertSame('yesno', $options[$checkbox]['Type'], $checkbox);
         }
         self::assertSame('on', $options['Create Website']['Default']);
         self::assertSame('on', $options['Create FTP User']['Default']);
-        self::assertSame('on', $options['Suspend Also Disables Website']['Default']);
+        self::assertSame('on', $options['Suspend Entire Client']['Default']);
+        self::assertSame('Suspend Entire Client', $options['Suspend Entire Client']['FriendlyName']);
+        // The description must state the lock's blast radius plainly: it
+        // disables ALL of the client's objects, unlock restores what the
+        // lock disabled, and unchecked means website-only suspension.
+        $description = (string) $options['Suspend Entire Client']['Description'];
+        foreach (['websites', 'mail', 'FTP', 'databases', 'website-only'] as $fragment) {
+            self::assertStringContainsStringIgnoringCase($fragment, $description);
+        }
 
         self::assertSame('text', $options['DNS Template ID']['Type']);
         self::assertSame('1', $options['DNS Template ID']['Default']);
@@ -116,9 +130,23 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertFileExists($path);
 
         $template = (string) file_get_contents($path);
-        self::assertStringContainsString('{$panelUrl}', $template);
-        self::assertStringContainsString('{$ispconfigUsername}', $template);
+        self::assertStringContainsString('{$panelUrl|escape}', $template);
+        self::assertStringContainsString('{$ispconfigUsername|escape}', $template);
         // Design §3.6.3: no password (or any credential) is ever rendered.
         self::assertStringNotContainsStringIgnoringCase('password', $template);
+    }
+
+    public function testOverviewTemplateEscapesEveryRenderedVariable(): void
+    {
+        // WHMCS ships Smarty auto-escaping OFF for server-module templates,
+        // so every output tag must escape explicitly or it is an XSS sink
+        // (the domain and username are customer-controlled).
+        $template = (string) file_get_contents(self::MODULE_DIR . '/templates/overview.tpl');
+
+        preg_match_all('/\{\$[^}]*\}/', $template, $matches);
+        self::assertNotEmpty($matches[0]);
+        foreach ($matches[0] as $outputTag) {
+            self::assertStringContainsString('|escape', $outputTag, $outputTag);
+        }
     }
 }

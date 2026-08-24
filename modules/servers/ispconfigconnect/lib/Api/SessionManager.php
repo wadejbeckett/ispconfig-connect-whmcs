@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace WHMCS\Module\Server\Ispconfigconnect\Api;
 
+use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\IspconfigException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LockoutException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\SessionExpiredException;
-use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException;
 
 /**
  * Session lifecycle around RestClient (spec 2.3): one lazy login per batch,
@@ -81,9 +81,11 @@ final class SessionManager
     }
 
     /**
-     * Best-effort logout.  Swallows ONLY transport-level failures (the server
-     * garbage-collects expired sessions at each login anyway); every other
-     * failure propagates.  Safe to call twice or before any call.
+     * Best-effort logout.  Swallows every API-level failure: the batch's work
+     * is already done, the server garbage-collects expired sessions at each
+     * login anyway, and close() runs in entry-file finally blocks where a
+     * thrown exception would REPLACE the operation's real outcome.  Safe to
+     * call twice or before any call.
      */
     public function close(): void
     {
@@ -96,8 +98,12 @@ final class SessionManager
 
         try {
             $this->client->logout($sessionId);
-        } catch (TransportException) {
-            // Best-effort by spec 2.3 - the batch's work is already done.
+        } catch (IspconfigException) {
+            // Best-effort by spec 2.3 - the batch's work is already done, and
+            // close() runs in entry-file finally blocks: an exception here
+            // would REPLACE the operation's real outcome (PHP finally
+            // semantics), turning a successful create into a reported failure.
+            // The RestClient logger has already recorded the failed logout.
         }
     }
 
