@@ -89,6 +89,13 @@ final class Mapper
             // validates as '' and fails (ISPConfig bug #6990), so the theme
             // is ALWAYS sent explicitly.
             'usertheme' => 'default',
+            // Both NOTEMPTY with no server-side default (client.tform.php
+            // :1135ff, :1272ff; live-verified failure web_php_options_notempty
+            // / ssh_chroot_notempty on 3.3.1p1): the client's ALLOWED php
+            // modes and chroot options. Sent permissive - the client template
+            // governs actual limits.
+            'web_php_options' => 'no,fast-cgi,cgi,mod,suphp,php-fpm,hhvm',
+            'ssh_chroot' => 'no,jailkit',
             'street' => $contact['address1'] ?? '',
             'zip' => $contact['postcode'] ?? '',
             'city' => $contact['city'] ?? '',

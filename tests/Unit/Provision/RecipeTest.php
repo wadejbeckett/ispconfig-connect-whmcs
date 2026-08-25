@@ -109,6 +109,8 @@ final class RecipeTest extends TestCase
             // NOTEMPTY over the remote API (client.tform.php) - the panel
             // SELECT default does not apply to API calls.
             'language' => 'en',
+            'web_php_options' => 'php-fpm',
+            'ssh_chroot' => 'no',
         ]]);
         $webDefaults = [
             'server_id' => 2, 'hd_quota' => -1, 'traffic_quota' => -1,

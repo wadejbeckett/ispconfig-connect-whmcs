@@ -375,6 +375,8 @@ final class RestClientTest extends TestCase
                 // NOTEMPTY over the remote API (client.tform.php) - no
                 // server-side default.
                 'language' => 'en',
+                'web_php_options' => 'php-fpm',
+                'ssh_chroot' => 'no',
                 'password' => 'Cl13nt-Pw!',
             ],
         ]);

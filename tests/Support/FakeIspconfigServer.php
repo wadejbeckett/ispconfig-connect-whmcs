@@ -495,6 +495,13 @@ final class FakeIspconfigServer implements HttpTransportInterface
                 $error .= $field . '_error_empty<br />';
             }
         }
+        // NOTEMPTY with no server default (client.tform.php :1135ff/:1272ff;
+        // live-verified on 3.3.1p1) - mirror the exact errmsg names.
+        foreach (['web_php_options' => 'web_php_options_notempty', 'ssh_chroot' => 'ssh_chroot_notempty'] as $field => $errmsg) {
+            if (($params[$field] ?? '') === '' || $params[$field] === null) {
+                $error .= $errmsg . '<br />';
+            }
+        }
         if (($params['username'] ?? '') !== '') {
             foreach ($this->clients as $existing) {
                 if ($existing['username'] === $params['username']) {

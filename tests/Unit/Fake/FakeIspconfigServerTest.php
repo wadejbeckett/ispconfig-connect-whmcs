@@ -315,6 +315,8 @@ final class FakeIspconfigServerTest extends TestCase
                 'email' => $username . '@example.com',
                 'language' => 'en',
                 'usertheme' => 'default',
+                'web_php_options' => 'no,fast-cgi,cgi,mod,suphp,php-fpm,hhvm',
+                'ssh_chroot' => 'no,jailkit',
             ],
         ]);
         self::assertSame('ok', $envelope['code'], 'client_add failed: ' . ($envelope['message'] ?? ''));
@@ -354,6 +356,8 @@ final class FakeIspconfigServerTest extends TestCase
                 'password' => 'x',
                 'email' => 'other@example.com',
                 'language' => 'en',
+                'web_php_options' => 'php-fpm',
+                'ssh_chroot' => 'no',
             ],
         ]);
         self::assertSame('remote_fault', $envelope['code']);
