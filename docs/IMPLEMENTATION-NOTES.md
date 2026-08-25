@@ -648,12 +648,22 @@ So the column is populated somewhere else. `GetRemoteMetaData` is not that place
 no other write path to it. **The remaining candidate is the Server Sync (`ListAccounts`) run** — that
 is the only other module entry point core invokes with the whole account list in hand.
 
-Status: **not yet proven.** The check is one step, and it is falsifiable: run *Sync Accounts* on the
-server, then re-read `tblservers_remote.num_accounts` for that `server_id`. `ListAccounts` emits **one
-row per ISPConfig client**, so if the sync is what writes the column, the number that appears must
-equal the `client_count` this module reports in the same page's block. If it stays empty after a
-successful sync, the column is written by something else again and this finding is the place to say
-so.
+Status (updated 2026-08-25, live): the sync's **analyse** step does **not** write it. A full *Sync
+Accounts* analyse ran against the live install — core called `ListAccounts`, rendered all five
+accounts, matched one to two existing services — and `num_accounts` was still `0` afterwards, with
+`updated_at` freshly bumped by the same page load. Core's own
+`Admin\Utilities\Tools\ServerSync\Controller` exposes exactly two entry points, `analyse()` and
+`process()`, so the remaining candidate is `process()` — the step that actually imports/syncs/
+terminates services in WHMCS.
+
+That has deliberately **not** been tested: `process()` mutates real billing records, and running it
+to satisfy curiosity on a production install is not a trade worth making. If a future maintainer
+wants the answer, do it on a throwaway WHMCS.
+
+Practical consequence: **do not rely on core's *Accounts* figure for this module.** It stays `0`
+until (perhaps) someone completes a sync. The module's own block reports `Clients: N` from a live
+probe on every metadata refresh, which is the same question answered accurately and always fresh —
+that is what an ISPConfig operator should read.
 
 The module's side of that flow is in place either way: `ListAccounts` returns `success` with one row
 per client, each row carrying an identifier core accepts (§6.6), and `tests/Module/ListAccountsTest`
