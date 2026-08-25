@@ -372,7 +372,9 @@ final class AccountListerTest extends TestCase
         self::assertSame(
             [
                 'ListAccountsUniqueIdentifierDisplayName' => 'Domain',
-                'ListAccountsUniqueIdentifierField' => 'uniqueIdentifier',
+                // Core only accepts field names it can match a service on;
+                // 'uniqueIdentifier' is rejected outright (live-verified).
+                'ListAccountsUniqueIdentifierField' => 'domain',
                 'ListAccountsProductField' => 'configoption1',
             ],
             AccountLister::WHMCS_METADATA

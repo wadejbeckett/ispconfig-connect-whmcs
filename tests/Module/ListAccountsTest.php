@@ -18,7 +18,7 @@ final class ListAccountsTest extends ModuleTestCase
 
         // Without all three, WHMCS never offers the Sync Accounts button.
         self::assertSame('Domain', $meta['ListAccountsUniqueIdentifierDisplayName']);
-        self::assertSame('uniqueIdentifier', $meta['ListAccountsUniqueIdentifierField']);
+        self::assertSame('domain', $meta['ListAccountsUniqueIdentifierField']);
         // configoption1 is the Client Template dropdown, whose stored value is
         // the ISPConfig template id - which is what 'product' reports.
         self::assertSame('configoption1', $meta['ListAccountsProductField']);

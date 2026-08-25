@@ -25,7 +25,7 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertSame('8080', (string) $meta['DefaultNonSSLPort']);
         // Server Sync: all three keys or WHMCS offers no Sync Accounts button.
         self::assertSame('Domain', $meta['ListAccountsUniqueIdentifierDisplayName']);
-        self::assertSame('uniqueIdentifier', $meta['ListAccountsUniqueIdentifierField']);
+        self::assertSame('domain', $meta['ListAccountsUniqueIdentifierField']);
         self::assertSame('configoption1', $meta['ListAccountsProductField']);
         // SSO labels are conditional on a detected companion (SingleSignOnTest);
         // nothing has been probed here, so neither may be advertised.

@@ -42,7 +42,14 @@ final class AccountLister
      */
     public const WHMCS_METADATA = [
         'ListAccountsUniqueIdentifierDisplayName' => 'Domain',
-        'ListAccountsUniqueIdentifierField' => 'uniqueIdentifier',
+        // MUST name a field WHMCS itself can match a service on. Core throws
+        // "Unsupported unique identifier field provided by module" for
+        // anything else (live-verified on WHMCS 9.0.6:
+        // Admin/Utilities/Tools/ServerSync/SyncItem::determineServiceMatches()),
+        // and the value 'uniqueIdentifier' - the docs' name for the account
+        // ARRAY key - is one of the rejected ones. The bundled cPanel and
+        // Plesk modules both ship 'domain'.
+        'ListAccountsUniqueIdentifierField' => 'domain',
         'ListAccountsProductField' => 'configoption1',
     ];
 

@@ -1072,7 +1072,36 @@ function ispconfigconnect_ServiceSingleSignOn(array $params): array
  */
 function ispconfigconnect_AdminSingleSignOn(array $params): array
 {
-    return ispconfigconnect_singleSignOn($params, 'AdminSingleSignOn');
+    // WHMCS renders "Login to Control Panel" on the Servers page for any
+    // module that defines this function, so it must do something useful.
+    //
+    // With a service in scope, mint a real one-time login for THAT service's
+    // ISPConfig client (the companion path). Without one - the server-level
+    // button - there is no client to log in as, and minting an ADMIN panel
+    // session is deliberately refused by the companion: such a token would be
+    // a full panel takeover, and the API remote user is not a panel user at
+    // all. Rather than fail, hand the admin the panel's own login page.
+    if ((int) ($params['serviceid'] ?? 0) > 0) {
+        $serviceSso = ispconfigconnect_singleSignOn($params, 'AdminSingleSignOn');
+        if (($serviceSso['success'] ?? false) === true) {
+            return $serviceSso;
+        }
+    }
+
+    try {
+        $config = Params::serverConfig($params);
+        $override = trim((string) ($params['configoption14'] ?? ''));
+
+        return [
+            'success' => true,
+            'redirectTo' => $override !== '' ? $override : $config->panelUrl(),
+        ];
+    } catch (\Throwable $failure) {
+        return [
+            'success' => false,
+            'errorMsg' => ispconfigconnect_errorString('Admin Single Sign-On', $failure),
+        ];
+    }
 }
 
 // ---------------------------------------------------------------------------

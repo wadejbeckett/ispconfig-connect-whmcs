@@ -196,7 +196,15 @@ final class SingleSignOnTest extends ModuleTestCase
         self::assertStringContainsString('/connectsso/?token=', $result['redirectTo']);
     }
 
-    public function testAdminSingleSignOnForABareServerExplainsWhyItCannotWork(): void
+    /**
+     * WHMCS shows "Login to Control Panel" for any module defining
+     * AdminSingleSignOn, so the SERVER-level press (no service in scope) must
+     * still land somewhere useful. ISPConfig has no admin-level SSO - minting
+     * an admin panel session is refused by the companion because it would be a
+     * full takeover - so the admin is handed the panel's own login page, and
+     * no API call is made at all.
+     */
+    public function testAdminSingleSignOnForABareServerOpensThePanelLoginPage(): void
     {
         $this->fake->installCompanion();
         $serverOnly = $this->params();
@@ -204,10 +212,21 @@ final class SingleSignOnTest extends ModuleTestCase
 
         $result = ispconfigconnect_AdminSingleSignOn($serverOnly);
 
-        self::assertFalse($result['success']);
-        // ISPConfig has no admin-level SSO: say so, and point at the panel.
-        self::assertStringContainsString('administrator', $result['errorMsg']);
-        self::assertStringContainsString('https://panel.example.net:8080/', $result['errorMsg']);
+        self::assertTrue($result['success']);
+        self::assertSame('https://panel.example.net:8080/', $result['redirectTo']);
+        self::assertStringNotContainsString('token=', $result['redirectTo']);
         self::assertSame([], $this->calledMethods());
+    }
+
+    public function testAdminSingleSignOnForABareServerHonoursThePanelUrlOverride(): void
+    {
+        $serverOnly = $this->params();
+        unset($serverOnly['model'], $serverOnly['serviceid']);
+        $serverOnly['configoption14'] = 'https://panel.example.net/custom/';
+
+        $result = ispconfigconnect_AdminSingleSignOn($serverOnly);
+
+        self::assertTrue($result['success']);
+        self::assertSame('https://panel.example.net/custom/', $result['redirectTo']);
     }
 }
