@@ -722,6 +722,18 @@ function ispconfigconnect_connectionAdvice(\Throwable $failure): string
             . ' ISPConfig server, then retry. (' . $message . ')';
     }
     if ($failure instanceof TransportException) {
+        // TLS hostname mismatch while connecting to a bare IP: no client can
+        // verify a hostname certificate against an IP, so the fix is always
+        // to fill the WHMCS Hostname field - say so instead of raw curl text.
+        if (str_contains($message, 'no alternative certificate subject name matches')
+            && preg_match('~//(\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):~', $message)
+        ) {
+            return 'TLS verification failed because the connection used the server\'s IP address,'
+                . ' but the panel\'s certificate is issued for its hostname. Enter the panel'
+                . ' hostname (e.g. panel.example.com) in this server\'s Hostname field - the'
+                . ' module always prefers it over the IP. (' . $message . ')';
+        }
+
         return 'Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080),'
             . ' the Secure checkbox, and the TLS/CA settings in the Access Hash field. (' . $message . ')';
     }

@@ -103,4 +103,24 @@ final class TestConnectionTest extends ModuleTestCase
         self::assertFalse($result['success']);
         self::assertStringContainsStringIgnoringCase('maintenance', $result['error']);
     }
+
+    public function testTlsMismatchAgainstBareIpAdvisesFillingTheHostnameField(): void
+    {
+        \WHMCS\Module\Server\Ispconfigconnect\Support\Factory::$transportFactory =
+            static fn (): \WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface =>
+                new class implements \WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface {
+                    public function post(string $method, string $jsonBody): string
+                    {
+                        throw new \WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException(
+                            'curl error 60 while calling https://198.51.100.7:8080/remote/json.php?login:'
+                            . " SSL: no alternative certificate subject name matches target host name '198.51.100.7'"
+                        );
+                    }
+                };
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertFalse($result['success']);
+        self::assertStringContainsString('Hostname field', $result['error']);
+    }
 }
