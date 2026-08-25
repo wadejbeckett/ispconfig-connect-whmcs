@@ -35,6 +35,50 @@ final class FakeIspconfigServer implements HttpTransportInterface
     public int $jobqueueCount = 0;
 
     /**
+     * ISPC_APP_VERSION as the INTERFACE reports it (interface/lib/config.inc.php);
+     * server_get_app_version($sid, 0) returns exactly this.
+     */
+    public string $appVersion = '3.3.1p1';
+
+    /**
+     * Per-node versions read from monitor_data type 'ispc_info' by
+     * server_get_app_version($sid, <id>); an id with no monitor row yields
+     * null, exactly like the source's unserialize(false)['version'].
+     *
+     * @var array<int, string>
+     */
+    public array $nodeVersions = [];
+
+    /**
+     * Whether the OPTIONAL SSO companion (companion/ispconfig-sso) is deployed
+     * on this panel.  Default false = a stock ISPConfig: its remote function is
+     * absent from get_function_list and calling it yields the JSON handler's
+     * invalid_method envelope, exactly as json_handler.inc.php does for any
+     * unregistered method name.
+     */
+    public bool $companionInstalled = false;
+
+    /** Endpoint path the companion reports for the consumer page. */
+    public string $companionTokenPath = '/connectsso/';
+
+    /** Token TTL the companion reports, in seconds (real one: <= 60). */
+    public int $companionTokenTtl = 45;
+
+    /**
+     * When non-null, connect_sso_token_create returns this verbatim instead of
+     * a well-formed payload - the seam for "companion speaks a shape we do not
+     * trust" tests (version skew, hostile/compromised panel).
+     */
+    public mixed $companionResponseOverride = null;
+
+    /**
+     * Methods that exist only when the companion is installed.
+     *
+     * @var list<string>
+     */
+    private const COMPANION_METHODS = ['connect_sso_token_create'];
+
+    /**
      * The fake's crypt marker: crypt_password($x) is modeled as 'crypt:' . $x,
      * so a double-crypt (the client_update pre-merge corruption) is visible as
      * 'crypt:crypt:...'.
@@ -42,18 +86,55 @@ final class FakeIspconfigServer implements HttpTransportInterface
     private const CRYPT_PREFIX = 'crypt:';
 
     /**
-     * Returned verbatim by quota_get_by_user.
+     * Canned override for quota_get_by_user: when non-empty it is returned
+     * verbatim instead of the values computed from seeded state.
      *
      * @var array<mixed>
      */
     public array $quotaData = [];
 
     /**
-     * Returned verbatim by trafficquota_get_by_user.
+     * Canned override for trafficquota_get_by_user (see $quotaData).
      *
      * @var array<mixed>
      */
     public array $trafficQuotaData = [];
+
+    /**
+     * monitor_data type 'harddisk_quota', member data['user'][system_user].
+     * repquota block counts, i.e. KILOBYTES, and stringly typed because they
+     * come back from unserialize() of preg_split() output
+     * (server/lib/classes/cron.d/100-monitor_hd_quota.inc.php).
+     *
+     * @var array<string, array{used: string, soft: string, hard: string, files: string}>
+     */
+    public array $diskQuotaMonitor = [];
+
+    /**
+     * monitor_data type 'email_quota', keyed by email address, in BYTES
+     * (doveadm kB * 1024 / .quotausage storage value / du -s KB * 1024 -
+     * server/lib/classes/cron.d/100-monitor_email_quota.inc.php).
+     *
+     * @var array<string, string>
+     */
+    public array $mailQuotaMonitor = [];
+
+    /**
+     * monitor_data type 'database_size', keyed by database_name, in BYTES
+     * (SUM(data_length+index_length) from information_schema -
+     * server/lib/classes/db_mysql.inc.php getDatabaseSize()).
+     *
+     * @var array<string, string>
+     */
+    public array $databaseSizeMonitor = [];
+
+    /**
+     * web_traffic SUM(traffic_bytes) per hostname and period, in BYTES and
+     * stringly typed the way mysqli returns a SUM().
+     *
+     * @var array<string, array<string, string>>
+     */
+    public array $webTrafficMonitor = [];
 
     /** @var list<array{method: string, params: array<mixed>}> decoded body of every parsed call */
     public array $requestLog = [];
@@ -85,6 +166,8 @@ final class FakeIspconfigServer implements HttpTransportInterface
     private array $ftpUsers = [];
     /** @var array<int, array<string, mixed>> */
     private array $mailDomains = [];
+    /** @var array<int, array<string, mixed>> mail_user rows (mailquota_get_by_user) */
+    private array $mailUsers = [];
     /** @var array<int, array<string, mixed>> */
     private array $dnsZones = [];
     /** @var array<int, array<string, mixed>> */
@@ -115,6 +198,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
     private int $nextDomainId = 1;
     private int $nextFtpUserId = 1;
     private int $nextMailDomainId = 1;
+    private int $nextMailUserId = 1;
     private int $nextDnsZoneId = 1;
     private int $nextDatabaseId = 1;
     private int $nextDatabaseUserId = 1;
@@ -146,6 +230,17 @@ final class FakeIspconfigServer implements HttpTransportInterface
     public function grantAll(): void
     {
         $this->grants = null;
+    }
+
+    /**
+     * Deploy the optional SSO companion on this panel: its remote.d class is
+     * auto-loaded by ISPConfigRemotingHandlerBase from
+     * interface/web/*&#47;lib/classes/remote.d/*.inc.php, so its public methods
+     * join the handler's method map and therefore get_function_list.
+     */
+    public function installCompanion(): void
+    {
+        $this->companionInstalled = true;
     }
 
     /** Queue a one-shot remote_fault for the next call of $method. */
@@ -194,7 +289,231 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $id;
     }
 
+    /**
+     * Seed a client row directly, skipping client_add's validators - for tests
+     * about reading existing panel state rather than about provisioning it.
+     */
+    public function addClient(string $username, string $language = 'en'): int
+    {
+        $id = $this->nextClientId++;
+        $this->clients[$id] = [
+            'client_id' => $id,
+            'username' => $username,
+            'contact_name' => $username,
+            'email' => $username . '@example.test',
+            'language' => $language,
+            'password' => self::CRYPT_PREFIX . 'seeded',
+            'template_master' => 0,
+            'template_additional' => '',
+            'locked' => 'n',
+            'canceled' => 'n',
+            'parent_client_id' => 0,
+            'created_at' => $this->clock,
+            // Every panel-created client carries an SSH KEYPAIR: klientadd ->
+            // generate_ssh_key() writes id_rsa (PRIVATE) and ssh_rsa (public)
+            // in the same UPDATE that stamps created_at
+            // (functions.inc.php:518), and client_get is SELECT * - so the
+            // private key rides along on every client read. Seeded so leak
+            // tests exercise the real wire content.
+            'id_rsa' => self::clientSshPrivateKey($id),
+            'ssh_rsa' => 'ssh-rsa FAKE-PUBLIC-KEY-client' . $id,
+        ];
+        $this->sysUserActive[$id] = 1;
+
+        return $id;
+    }
+
+    /** The fake SSH PRIVATE key every client row carries (client.id_rsa). */
+    public static function clientSshPrivateKey(int $clientId): string
+    {
+        return "-----BEGIN RSA PRIVATE KEY-----\nFAKE-SSH-KEY-client" . $clientId
+            . "\n-----END RSA PRIVATE KEY-----";
+    }
+
+    /** The fake TLS PRIVATE key every website row carries (web_domain.ssl_key). */
+    public static function websiteTlsPrivateKey(int $domainId): string
+    {
+        return "-----BEGIN PRIVATE KEY-----\nFAKE-TLS-KEY-web" . $domainId
+            . "\n-----END PRIVATE KEY-----";
+    }
+
+    /** The fake CSR every website row carries (web_domain.ssl_request). */
+    public static function websiteCertificateRequest(int $domainId): string
+    {
+        return "-----BEGIN CERTIFICATE REQUEST-----\nFAKE-CSR-web" . $domainId
+            . "\n-----END CERTIFICATE REQUEST-----";
+    }
+
+    /**
+     * Seed a type='vhost' web_domain. hd_quota and traffic_quota are the panel
+     * columns, both in MB with -1 meaning unlimited
+     * (interface/web/sites/form/web_vhost_domain.tform.php).
+     */
+    public function addWebsite(
+        int $clientId,
+        string $domain,
+        int $hdQuotaMegabytes = -1,
+        int $trafficQuotaMegabytes = -1,
+        string $type = 'vhost',
+        string $active = 'y',
+    ): int {
+        $id = $this->nextDomainId++;
+        $this->sites[$id] = [
+            'domain_id' => $id,
+            'client_id' => $clientId,
+            'client_group_id' => $this->groupIdFor($clientId),
+            'sys_groupid' => $this->groupIdFor($clientId),
+            'server_id' => 1,
+            'domain' => $domain,
+            'type' => $type,
+            'active' => $active,
+            'ip_address' => '*',
+            'parent_domain_id' => 0,
+            'hd_quota' => $hdQuotaMegabytes,
+            'traffic_quota' => $trafficQuotaMegabytes,
+            'system_user' => 'web' . $id,
+            'system_group' => 'client' . $clientId,
+            'document_root' => '/var/www/clients/client' . $clientId . '/web' . $id,
+            // web_domain carries the site's TLS key material as COLUMNS
+            // (install/sql/ispconfig3.sql:2036 ssl_key, :2033 ssl_request),
+            // and quota_get_by_user is SELECT * over web_domain
+            // (quota_lib.inc.php get_quota_data) - the PRIVATE KEY is on the
+            // wire in every quota row. Seeded so leak tests see it.
+            'ssl_key' => self::websiteTlsPrivateKey($id),
+            'ssl_request' => self::websiteCertificateRequest($id),
+        ];
+
+        return $id;
+    }
+
+    public function addFtpUser(int $clientId, int $parentDomainId, string $username): int
+    {
+        $id = $this->nextFtpUserId++;
+        $this->ftpUsers[$id] = [
+            'ftp_user_id' => $id,
+            'client_id' => $clientId,
+            'sys_groupid' => $this->groupIdFor($clientId),
+            'server_id' => 1,
+            'parent_domain_id' => $parentDomainId,
+            'username' => $username,
+            'quota_size' => -1,
+            'active' => 'y',
+        ];
+
+        return $id;
+    }
+
+    /**
+     * Seed a mail_user row plus its email_quota monitor entry. mail_user.quota
+     * is in BYTES with 0 meaning unlimited (interface/web/mail/user_quota_stats.php
+     * divides it by 1048576 to display MB).
+     */
+    public function addMailUser(int $clientId, string $email, int $quotaBytes = 0, int $usedBytes = 0): int
+    {
+        $id = $this->nextMailUserId++;
+        $this->mailUsers[$id] = [
+            'mailuser_id' => $id,
+            'client_id' => $clientId,
+            'sys_groupid' => $this->groupIdFor($clientId),
+            'server_id' => 1,
+            'email' => $email,
+            'login' => $email,
+            'name' => $email,
+            'quota' => $quotaBytes,
+            'maildir' => '/var/vmail/' . $email,
+            'last_access' => 0,
+        ];
+        if ($usedBytes > 0) {
+            $this->mailQuotaMonitor[$email] = (string) $usedBytes;
+        }
+
+        return $id;
+    }
+
+    /**
+     * Seed a web_database row. database_quota is in MB with -1 meaning
+     * unlimited (interface/web/sites/form/database.tform.php).
+     */
+    public function addDatabase(int $clientId, string $databaseName, int $quotaMegabytes = -1): int
+    {
+        $id = $this->nextDatabaseId++;
+        $this->databases[$id] = [
+            'database_id' => $id,
+            'client_id' => $clientId,
+            'sys_groupid' => $this->groupIdFor($clientId),
+            'server_id' => 1,
+            'database_name' => $databaseName,
+            'database_quota' => $quotaMegabytes,
+            'type' => 'mysql',
+            'active' => 'y',
+        ];
+
+        return $id;
+    }
+
+    public function addDnsZone(int $clientId, string $origin): int
+    {
+        $id = $this->nextDnsZoneId++;
+        $this->dnsZones[$id] = [
+            'id' => $id,
+            'client_id' => $clientId,
+            'sys_groupid' => $this->groupIdFor($clientId),
+            'server_id' => 1,
+            'origin' => rtrim($origin, '.') . '.',
+            'active' => 'Y',
+        ];
+
+        return $id;
+    }
+
+    /**
+     * Seed the harddisk_quota monitor entry for a website's system_user. All
+     * four values are repquota block/inode counts, i.e. KILOBYTES and files
+     * (server/lib/classes/cron.d/100-monitor_hd_quota.inc.php).
+     */
+    public function setDiskUsage(
+        string $systemUser,
+        int $usedKilobytes,
+        int $softKilobytes = 0,
+        int $hardKilobytes = 0,
+        int $files = 0,
+    ): void {
+        $this->diskQuotaMonitor[$systemUser] = [
+            'used' => (string) $usedKilobytes,
+            'soft' => (string) $softKilobytes,
+            'hard' => (string) $hardKilobytes,
+            'files' => (string) $files,
+        ];
+    }
+
+    /** Seed web_traffic sums for a hostname, in BYTES (web_traffic.traffic_bytes). */
+    public function setWebTraffic(
+        string $domain,
+        int $thisMonthBytes,
+        ?int $thisYearBytes = null,
+        int $lastMonthBytes = 0,
+    ): void {
+        $this->webTrafficMonitor[$domain] = [
+            'this_month' => (string) $thisMonthBytes,
+            'this_year' => (string) ($thisYearBytes ?? $thisMonthBytes),
+            'last_month' => (string) $lastMonthBytes,
+            'last_year' => (string) $lastMonthBytes,
+        ];
+    }
+
+    /** Seed the database_size monitor entry for a database, in BYTES. */
+    public function setDatabaseSize(string $databaseName, int $bytes): void
+    {
+        $this->databaseSizeMonitor[$databaseName] = (string) $bytes;
+    }
+
     // ---- state inspectors -------------------------------------------------
+
+    /** @return array<int, array<string, mixed>> */
+    public function mailUsers(): array
+    {
+        return $this->mailUsers;
+    }
 
     /** @return array<int, array<string, mixed>> */
     public function clients(): array
@@ -290,7 +609,10 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
         $this->requestLog[] = ['method' => $name, 'params' => $json];
 
-        if (!method_exists($this, 'api_' . $name)) {
+        // Companion methods only exist once companion/ispconfig-sso is
+        // deployed; on a stock panel the handler's method map has no such key.
+        $unregistered = in_array($name, self::COMPANION_METHODS, true) && !$this->companionInstalled;
+        if ($unregistered || !method_exists($this, 'api_' . $name)) {
             return $this->envelope('invalid_method', 'Method ' . $name . ' does not exist');
         }
 
@@ -447,9 +769,14 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
         $methods = [];
         foreach (get_class_methods($this) as $method) {
-            if (str_starts_with($method, 'api_')) {
-                $methods[] = substr($method, 4);
+            if (!str_starts_with($method, 'api_')) {
+                continue;
             }
+            $name = substr($method, 4);
+            if (in_array($name, self::COMPANION_METHODS, true) && !$this->companionInstalled) {
+                continue;
+            }
+            $methods[] = $name;
         }
 
         return $methods;
@@ -470,6 +797,28 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $this->requireGrant($session_id, 'server_get');
 
         return array_values(array_map($this->dbRecord(...), $this->servers));
+    }
+
+    /**
+     * remote.d/server.inc.php server_get_app_version(): grant 'server_get'
+     * (another alias). server_id 0 (or absent - the JSON handler passes null,
+     * and null == 0) returns the INTERFACE constant ISPC_APP_VERSION; any
+     * other id unserializes monitor_data type 'ispc_info' for that node, which
+     * is empty until the node's monitor cron has reported - the source then
+     * evaluates false['version'] and returns null.
+     *
+     * @return array{ispc_app_version: string|null}
+     */
+    public function api_server_get_app_version(mixed $session_id, mixed $server_id): array
+    {
+        $this->requireGrant($session_id, 'server_get');
+
+        $id = is_numeric($server_id) ? (int) $server_id : 0;
+        if ($id === 0) {
+            return ['ispc_app_version' => $this->appVersion];
+        }
+
+        return ['ispc_app_version' => $this->nodeVersions[$id] ?? null];
     }
 
     // ---- client functions (remote.d/client.inc.php) -----------------------
@@ -530,16 +879,46 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $record['password'] = $this->cryptField($params, 'password') ?? '';
         unset($record['_ispconfig_pw_crypted']);
         $record['client_id'] = $id;
+        // klientadd() -> functions.inc.php generate_ssh_key() (:518):
+        // "UPDATE client SET created_at = UNIX_TIMESTAMP(), id_rsa = ?,
+        // ssh_rsa = ? ..." - the only place these columns are ever written, so
+        // they stay NULL when ssh-keygen fails or the row predates the
+        // feature. id_rsa is the client's SSH PRIVATE key, echoed by every
+        // client_get (SELECT *).
+        $record['created_at'] = $this->clock;
+        $record['id_rsa'] = self::clientSshPrivateKey($id);
+        $record['ssh_rsa'] = 'ssh-rsa FAKE-PUBLIC-KEY-client' . $id;
         $this->clients[$id] = $record;
         $this->sysUserActive[$id] = 1;
 
         return $id;
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * A single record for a positive id, EVERY client row for -1
+     * (remoting_lib.inc.php getDataRecord(): "$primary_id == -1 // Return a
+     * array with all records", plain "SELECT * FROM client" with no auth
+     * filter - the remote API always runs as admin, loadUserProfile(0)).
+     * client_get() post-processes both shapes: the multi-record branch is
+     * "elseif(isset($data[0]['client_id']))" in remote.d/client.inc.php.
+     *
+     * @return array<mixed>|null
+     */
     public function api_client_get(mixed $session_id, mixed $client_id): ?array
     {
         $this->requireGrant($session_id, 'client_get');
+
+        if (is_numeric($client_id) && (int) $client_id === -1) {
+            $records = [];
+            foreach ($this->clients as $id => $record) {
+                $records[] = $this->dbRecord($this->backfillTemplateAdditional($id, $record));
+            }
+
+            // queryAllRecords() returns array() when nothing matches, so an
+            // empty panel answers with [] - never false, never null.
+            return $records;
+        }
+
         $id = $this->assertRecordId($client_id);
 
         if (!isset($this->clients[$id])) {
@@ -547,22 +926,33 @@ final class FakeIspconfigServer implements HttpTransportInterface
             // serialized as response: null with code ok.
             return null;
         }
-        $record = $this->clients[$id];
 
-        // client.inc.php client_get(): when template_additional is empty, it is
-        // backfilled with 'assigned_template_id:client_template_id' pairs
-        // joined by '/' from client_template_assigned.
-        if (($record['template_additional'] ?? '') === '') {
-            $pairs = [];
-            foreach ($this->templateAssignments as $assignment) {
-                if ($assignment['client_id'] === $id) {
-                    $pairs[] = $assignment['assigned_template_id'] . ':' . $assignment['client_template_id'];
-                }
-            }
-            $record['template_additional'] = implode('/', $pairs);
+        return $this->dbRecord($this->backfillTemplateAdditional($id, $this->clients[$id]));
+    }
+
+    /**
+     * client.inc.php client_get(): when template_additional is empty, it is
+     * backfilled with 'assigned_template_id:client_template_id' pairs joined
+     * by '/' from client_template_assigned.
+     *
+     * @param array<string, mixed> $record
+     * @return array<string, mixed>
+     */
+    private function backfillTemplateAdditional(int $clientId, array $record): array
+    {
+        if (($record['template_additional'] ?? '') !== '') {
+            return $record;
         }
 
-        return $this->dbRecord($record);
+        $pairs = [];
+        foreach ($this->templateAssignments as $assignment) {
+            if ($assignment['client_id'] === $clientId) {
+                $pairs[] = $assignment['assigned_template_id'] . ':' . $assignment['client_template_id'];
+            }
+        }
+        $record['template_additional'] = implode('/', $pairs);
+
+        return $record;
     }
 
     /** @return array<string, mixed> the sys_user row, not the client record */
@@ -578,6 +968,10 @@ final class FakeIspconfigServer implements HttpTransportInterface
                     'username' => $client['username'],
                     'client_id' => $id,
                     'default_group' => $this->groupIdFor($id),
+                    // sys_user.groups is a comma-separated group list; a client
+                    // created through the API gets exactly its own group
+                    // (remoting_lib.inc.php ispconfig_sysuser_add: $groups = $groupid).
+                    'groups' => (string) $this->groupIdFor($id),
                     // sys_user.active - toggled by func_client_cancel.
                     'active' => $this->sysUserActive[$id] ?? 1,
                     'language' => $client['language'] ?? 'en',
@@ -715,6 +1109,25 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $rows;
     }
 
+    /**
+     * remote.d/client.inc.php client_get_all(): SELECT client_id FROM client,
+     * collected into a bare list. Two source facts that matter to callers:
+     * the ids arrive as mysqli STRINGS, and an empty client table returns
+     * FALSE (the `if(!$result) return false;` early exit), never [].
+     *
+     * @return list<string>|false
+     */
+    public function api_client_get_all(mixed $session_id): array|false
+    {
+        $this->requireGrant($session_id, 'client_get_all');
+
+        if ($this->clients === []) {
+            return false;
+        }
+
+        return array_map(static fn (int $id): string => (string) $id, array_keys($this->clients));
+    }
+
     /** @return list<array<string, string>> */
     public function api_client_templates_get_all(mixed $session_id): array
     {
@@ -772,6 +1185,56 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
     // ---- sites functions (remote.d/sites.inc.php) -------------------------
 
+    /**
+     * sites.inc.php client_get_sites_by_user(): own-name grant. $sys_groupid
+     * is a COMMA-SEPARATED STRING (the source explode()s it, so an array
+     * argument would be a TypeError), each part intval()ed into an IN() list.
+     * The query selects exactly four columns from vhost-type web domains:
+     *   SELECT domain, domain_id, document_root, active FROM web_domain
+     *   WHERE ((sys_userid = ? AND sys_perm_user LIKE '%r%')
+     *          OR (sys_groupid IN (...) AND sys_perm_group LIKE '%r%')
+     *          OR sys_perm_other LIKE '%r%') AND type = 'vhost'
+     * Modeled here as "owned by that client's group, or by that client's
+     * sys_user" - the fake's sites carry client_group_id and client_id, and
+     * its sys_user ids are client_id + 1 (api_client_get_by_username).
+     * queryAllRecords() never returns null, so the source's no_client_found
+     * branch is dead code: an empty result is [].
+     *
+     * @return list<array<string, string>>
+     */
+    public function api_client_get_sites_by_user(mixed $session_id, mixed $sys_userid, mixed $sys_groupid): array
+    {
+        $this->requireGrant($session_id, 'client_get_sites_by_user');
+
+        $userId = is_numeric($sys_userid) ? (int) $sys_userid : 0;
+        $groupIds = [];
+        foreach (explode(',', (string) $sys_groupid) as $part) {
+            $groupIds[] = (int) $part;
+        }
+
+        $rows = [];
+        foreach ($this->sites as $site) {
+            if (($site['type'] ?? 'vhost') !== 'vhost') {
+                continue;
+            }
+            $clientId = (int) ($site['client_id'] ?? 0);
+            $ownedByGroup = in_array((int) ($site['client_group_id'] ?? 0), $groupIds, true);
+            $ownedByUser = $userId > 0 && $clientId + 1 === $userId;
+            if (!$ownedByGroup && !$ownedByUser) {
+                continue;
+            }
+
+            $rows[] = $this->dbRecord([
+                'domain' => $site['domain'] ?? '',
+                'domain_id' => $site['domain_id'] ?? 0,
+                'document_root' => $site['document_root'] ?? '',
+                'active' => $site['active'] ?? 'y',
+            ]);
+        }
+
+        return $rows;
+    }
+
     public function api_sites_web_domain_add(mixed $session_id, mixed $client_id, mixed $params, mixed $readonly): int
     {
         $this->requireGrant($session_id, 'sites_web_domain_add');
@@ -827,11 +1290,24 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $record['domain_id'] = $id;
         $record['client_id'] = $cid;
         $record['client_group_id'] = $this->groupIdFor($cid);
+        // Every ISPConfig table carries sys_groupid; a record created for a
+        // client is owned by that client's own sys_group (the one
+        // ispconfig_sysuser_add created - remoting_lib.inc.php).
+        $record['sys_groupid'] = $this->groupIdFor($cid);
         // The real values are written asynchronously by the server plugin; the
-        // fake stores the final shape directly (spec 2.9).
+        // fake stores the final shape directly (spec 2.9). That includes the
+        // TLS key material the LE/SSL plugins write back into web_domain
+        // (ssl_key/ssl_request columns, install/sql/ispconfig3.sql:2036/:2033)
+        // - present on the wire in every later SELECT * read of the row.
         $record['system_user'] = 'web' . $id;
         $record['system_group'] = 'client' . $cid;
         $record['document_root'] = '/var/www/clients/client' . $cid . '/web' . $id;
+        if (($record['ssl_key'] ?? '') === '') {
+            $record['ssl_key'] = self::websiteTlsPrivateKey($id);
+        }
+        if (($record['ssl_request'] ?? '') === '') {
+            $record['ssl_request'] = self::websiteCertificateRequest($id);
+        }
         $this->sites[$id] = $record;
 
         return $id;
@@ -888,9 +1364,29 @@ final class FakeIspconfigServer implements HttpTransportInterface
         unset($record['_ispconfig_pw_crypted']);
         $record['ftp_user_id'] = $id;
         $record['client_id'] = is_numeric($client_id) ? (int) $client_id : 0;
+        $record['sys_groupid'] = $this->groupIdFor($record['client_id']);
         $this->ftpUsers[$id] = $record;
 
         return $id;
+    }
+
+    /**
+     * sites.inc.php sites_ftp_user_get() -> remoting_lib::getDataRecord():
+     * a positive int returns ONE record, and an ARRAY is a key/value filter
+     * turned into "WHERE k = v AND ..." plus getAuthSQL(), which is a plain
+     * '1' HERE - unlike the quota_lib path, getDataRecord() calls
+     * loadUserProfile(0) first (remoting_lib.inc.php:251), which sets
+     * $_SESSION['s']['user']['typ'] = 'admin' (:143) and so takes the '1'
+     * shortcut (tform_base.inc.php:1633). A filter is therefore unrestricted
+     * and returns a LIST, never a single record.
+     *
+     * @return array<mixed>|null
+     */
+    public function api_sites_ftp_user_get(mixed $session_id, mixed $primary_id): ?array
+    {
+        $this->requireGrant($session_id, 'sites_ftp_user_get');
+
+        return $this->getDataRecord('ftpUsers', $primary_id);
     }
 
     /**
@@ -1001,6 +1497,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $record = array_merge(['type' => 'mysql', 'active' => 'y'], $params);
         $record['database_id'] = $id;
         $record['client_id'] = is_numeric($client_id) ? (int) $client_id : 0;
+        $record['sys_groupid'] = $this->groupIdFor($record['client_id']);
         $this->databases[$id] = $record;
 
         return $id;
@@ -1015,23 +1512,167 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return isset($this->databases[$id]) ? $this->dbRecord($this->databases[$id]) : null;
     }
 
-    /** @return array<mixed> */
+    /**
+     * sites.inc.php quota_get_by_user() -> quota_lib::get_quota_data($client_id, false):
+     * every type='vhost' web_domain row visible to the client's group list,
+     * augmented with the harddisk_quota monitor values (used/soft/hard in
+     * KILOBYTES, files as an inode count) and the *_raw fields quota_lib
+     * derives from them IN BYTES - with 0/absent soft & hard mapped to -1.
+     *
+     * @return array<mixed>
+     */
     public function api_quota_get_by_user(mixed $session_id, mixed $client_id): array
     {
         $this->requireGrant($session_id, 'quota_get_by_user');
 
-        return $this->quotaData;
+        if ($this->quotaData !== []) {
+            return $this->quotaData;
+        }
+
+        $rows = [];
+        foreach ($this->sitesVisibleTo($client_id) as $site) {
+            if (($site['type'] ?? 'vhost') !== 'vhost') {
+                continue;
+            }
+            $monitor = $this->diskQuotaMonitor[(string) ($site['system_user'] ?? '')] ?? null;
+            // A system_user with no monitor entry leaves used/soft/hard/files
+            // NULL: quota_lib reads $monitor_data['user'][$username][...] on a
+            // missing key, and PHP 8 yields null rather than raising.
+            $used = $monitor['used'] ?? null;
+            $soft = $monitor['soft'] ?? null;
+            $hard = $monitor['hard'] ?? null;
+            $files = $monitor['files'] ?? null;
+
+            $row = $this->dbRecord($site);
+            $row['used'] = $used;
+            $row['soft'] = $soft;
+            $row['hard'] = $hard;
+            $row['files'] = $files;
+            // "Convert from kb to bytes, and use -1 for instead of 0 for
+            // Unlimited." - quota_lib.inc.php, verbatim comment. These are
+            // computed in PHP, so unlike the web_domain columns they come back
+            // as JSON numbers, not strings.
+            $row['used_raw'] = (int) $used * 1024;
+            $row['soft_raw'] = (int) $soft > 0 ? (int) $soft * 1024 : -1;
+            $row['hard_raw'] = (int) $hard > 0 ? (int) $hard * 1024 : -1;
+            $row['files_raw'] = $files;
+            $row['used_percentage'] = (int) $soft > 0 && (int) $used > 0
+                ? (int) round((int) $used * 100 / (int) $soft)
+                : 0;
+            $rows[] = $row;
+        }
+
+        return $rows;
     }
 
-    /** @return array<mixed> */
+    /**
+     * sites.inc.php trafficquota_get_by_user() -> quota_lib::get_trafficquota_data():
+     * a map keyed by DOMAIN NAME (not id) over the client's active vhost,
+     * vhostsubdomain and vhostalias records. Every period member is a
+     * SUM(traffic_bytes) - bytes, and stringly typed the way mysqli returns a
+     * SUM - and is ABSENT entirely when web_traffic holds no row for it.
+     *
+     * @return array<mixed>
+     */
     public function api_trafficquota_get_by_user(mixed $session_id, mixed $client_id, mixed $lastdays): array
     {
         $this->requireGrant($session_id, 'trafficquota_get_by_user');
 
-        return $this->trafficQuotaData;
+        if ($this->trafficQuotaData !== []) {
+            return $this->trafficQuotaData;
+        }
+
+        // get_trafficquota_data() scopes with a subselect ("sys_groupid =
+        // (SELECT default_group FROM sys_user WHERE client_id=?)",
+        // quota_lib.inc.php:81), so an unknown client id yields NULL = no
+        // match - zero rows, same outcome as the getAuthSQL degradation in
+        // recordsVisibleTo(), reached by a different mechanism.
+        $clientId = is_numeric($client_id) ? (int) $client_id : 0;
+        $traffic = [];
+        foreach ($this->sites as $site) {
+            if ((int) ($site['client_id'] ?? 0) !== $clientId || ($site['active'] ?? 'y') !== 'y') {
+                continue;
+            }
+            if (!in_array($site['type'] ?? 'vhost', ['vhost', 'vhostsubdomain', 'vhostalias'], true)) {
+                continue;
+            }
+            $domain = (string) ($site['domain'] ?? '');
+            $traffic[$domain] = array_merge(
+                ['domain_id' => (string) ($site['domain_id'] ?? 0)],
+                $this->webTrafficMonitor[$domain] ?? []
+            );
+        }
+
+        return $traffic;
+    }
+
+    /**
+     * sites.inc.php databasequota_get_by_user() -> quota_lib::get_databasequota_data():
+     * the client's web_database rows plus database_quota_raw and used_raw.
+     * NOTE the units: database_quota_raw is database_quota * 1000 * 1000
+     * (DECIMAL megabytes - quota_lib.inc.php), while used_raw is the
+     * information_schema data_length+index_length sum in bytes.
+     *
+     * @return array<mixed>
+     */
+    public function api_databasequota_get_by_user(mixed $session_id, mixed $client_id): array
+    {
+        $this->requireGrant($session_id, 'databasequota_get_by_user');
+
+        $rows = [];
+        foreach ($this->recordsVisibleTo('databases', $client_id) as $database) {
+            $name = (string) ($database['database_name'] ?? '');
+            $quota = (int) ($database['database_quota'] ?? -1);
+            $size = $this->databaseSizeMonitor[$name] ?? 0;
+
+            $row = $this->dbRecord($database);
+            $row['database_quota_raw'] = $quota === -1 ? -1 : $quota * 1000 * 1000;
+            $row['used_raw'] = $size;
+            $row['used_percentage'] = $quota > 0 && (int) $size > 0
+                ? (int) round((int) $size * 100 / ($quota * 1000 * 1000))
+                : 0;
+            $rows[] = $row;
+        }
+
+        return $rows;
     }
 
     // ---- mail functions (remote.d/mail.inc.php) ---------------------------
+
+    /**
+     * mail.inc.php mailquota_get_by_user() -> quota_lib::get_mailquota_data($client_id, false):
+     * the client's mail_user rows plus used/used_raw/quota_raw. Both quota and
+     * used are BYTES; quota == 0 means unlimited, and the $readable branch that
+     * would rewrite it to -1 is never taken over the remote API. A mailbox with
+     * no email_quota monitor entry gets used = 0 (quota_lib defaults it to
+     * array(1 => 0) and then takes member 1).
+     *
+     * @return array<mixed>
+     */
+    public function api_mailquota_get_by_user(mixed $session_id, mixed $client_id): array
+    {
+        $this->requireGrant($session_id, 'mailquota_get_by_user');
+
+        $rows = [];
+        foreach ($this->recordsVisibleTo('mailUsers', $client_id) as $mailUser) {
+            $email = (string) ($mailUser['email'] ?? '');
+            $used = $this->mailQuotaMonitor[$email] ?? 0;
+
+            $row = $this->dbRecord($mailUser);
+            $row['used'] = $used;
+            $row['quota_raw'] = $row['quota'] ?? '0';
+            $row['used_raw'] = $used;
+            $row['used_percentage'] = (int) ($mailUser['quota'] ?? 0) > 0 && (int) $used > 0
+                ? (int) round((int) $used * 100 / (int) $mailUser['quota'])
+                : 0;
+            // get_mailquota_data() rewrites last_access even when $readable is
+            // false: it becomes a localized string, never the raw timestamp.
+            $row['last_access'] = 'never_accessed_txt';
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
 
     public function api_mail_domain_add(mixed $session_id, mixed $client_id, mixed $params): int
     {
@@ -1047,6 +1688,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
         $record = array_merge(['active' => 'y'], $params);
         $record['domain_id'] = $id;
         $record['client_id'] = is_numeric($client_id) ? (int) $client_id : 0;
+        $record['sys_groupid'] = $this->groupIdFor($record['client_id']);
         $this->mailDomains[$id] = $record;
 
         return $id;
@@ -1124,19 +1766,25 @@ final class FakeIspconfigServer implements HttpTransportInterface
             'mbox' => str_replace('@', '.', (string) $email) . '.',
             'server_id' => 1,
             'client_id' => $cid,
+            'sys_groupid' => $this->groupIdFor($cid),
             'active' => 'Y',
         ];
 
         return true; // dns_templatezone_add returns bool, never the zone id
     }
 
-    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
+    /**
+     * dns.inc.php dns_zone_get() -> remoting_lib::getDataRecord(): one record
+     * for a positive int (a miss is null - queryOneRecord, not false), a LIST
+     * for a key/value filter array (see api_sites_ftp_user_get).
+     *
+     * @return array<mixed>|null
+     */
     public function api_dns_zone_get(mixed $session_id, mixed $primary_id): ?array
     {
         $this->requireGrant($session_id, 'dns_zone_get');
-        $id = $this->assertRecordId($primary_id);
 
-        return isset($this->dnsZones[$id]) ? $this->dbRecord($this->dnsZones[$id]) : null;
+        return $this->getDataRecord('dnsZones', $primary_id);
     }
 
     public function api_dns_zone_get_id(mixed $session_id, mixed $origin): int
@@ -1158,6 +1806,45 @@ final class FakeIspconfigServer implements HttpTransportInterface
         }
 
         throw new FakeSoapFault('There is no domain ID with informed domain name.');
+    }
+
+    // ---- optional SSO companion (companion/ispconfig-sso) -----------------
+
+    /**
+     * Mints a one-time panel-login token.  Provided by the OPTIONAL companion
+     * module's remote.d class, not by ISPConfig core - guarded by
+     * $companionInstalled above.
+     *
+     * The double models the wire contract only: grant check, argument
+     * validation, payload shape.  It deliberately does NOT model panel-user
+     * lookup (the real function faults with 'There is no panel user for this
+     * client id.' for an unknown/inactive client) - tests reach that path with
+     * failNextWith(), because modelling it here would require seeding sys_user
+     * rows the rest of the suite has no use for.
+     */
+    public function api_connect_sso_token_create(mixed $session_id, mixed $client_id, mixed $bind_ip): mixed
+    {
+        $this->requireGrant($session_id, 'connect_sso_token_create');
+
+        if (!is_numeric($client_id) || (int) $client_id <= 0) {
+            throw new FakeSoapFault('The client id must be an integer greater than zero.');
+        }
+        if ($bind_ip !== null && $bind_ip !== '' && !filter_var((string) $bind_ip, FILTER_VALIDATE_IP)) {
+            throw new FakeSoapFault('The bind IP address is invalid.');
+        }
+
+        if ($this->companionResponseOverride !== null) {
+            return $this->companionResponseOverride;
+        }
+
+        return [
+            // random_bytes(32) -> 64 hex chars, per the companion's contract.
+            'token' => bin2hex(random_bytes(32)),
+            'path' => $this->companionTokenPath,
+            'expires_in' => $this->companionTokenTtl,
+            'client_id' => (int) $client_id,
+            'username' => 'client' . (int) $client_id,
+        ];
     }
 
     // ---- helpers ----------------------------------------------------------
@@ -1340,6 +2027,91 @@ final class FakeIspconfigServer implements HttpTransportInterface
     private function groupIdFor(int $clientId): int
     {
         return $clientId + 1;
+    }
+
+    /**
+     * remoting_lib::getDataRecord(): a positive int is a single record (a miss
+     * is null - queryOneRecord), an array is a "WHERE k = v AND ..." filter
+     * returning a LIST, and anything else is rejected. getAuthSQL() adds no
+     * restriction on THIS path: getDataRecord() calls loadUserProfile(0)
+     * (remoting_lib.inc.php:251), which sets typ='admin' (:143), so the '1'
+     * shortcut applies (tform_base.inc.php:1633) and the filter alone decides
+     * what comes back. Contrast recordsVisibleTo(): the quota_lib path never
+     * loads a user profile and gets the fallback clause instead.
+     *
+     * @param 'databases'|'dnsZones'|'ftpUsers'|'mailDomains'|'mailUsers'|'sites' $store
+     * @return array<mixed>|null
+     */
+    private function getDataRecord(string $store, mixed $filter): ?array
+    {
+        if (is_array($filter)) {
+            $rows = [];
+            foreach ($this->{$store} as $record) {
+                foreach ($filter as $column => $value) {
+                    // The source casts both sides to string for the prepared
+                    // statement, and MySQL then compares loosely.
+                    if ((string) ($record[$column] ?? '') !== (string) $value) {
+                        continue 2;
+                    }
+                }
+                $rows[] = $this->dbRecord($record);
+            }
+
+            return $rows;
+        }
+
+        $id = $this->assertRecordId($filter);
+
+        return isset($this->{$store}[$id]) ? $this->dbRecord($this->{$store}[$id]) : null;
+    }
+
+    /**
+     * quota_lib scopes get_quota_data/get_mailquota_data/get_databasequota_data
+     * with getAuthSQL('r', '', '', clientid_to_groups_list($clientid))
+     * (quota_lib.inc.php:18/:224/:290). clientid_to_groups_list() returns NULL
+     * when the client id matches no client row (functions.inc.php:687,
+     * GROUP_CONCAT over an empty set) - and getAuthSQL() then falls to its
+     * FALLBACK clause, NOT to '1': the '1' shortcut requires
+     * $_SESSION['s']['user']['typ'] == 'admin' (tform_base.inc.php:1633), and
+     * the only writes of typ='admin' live in loadUserProfile
+     * (remoting_lib.inc.php:143/:155), which the quota remote path never
+     * calls. With no session user and NULL groups the WHERE collapses to
+     * "sys_perm_other like '%r%'", and these tables carry sys_perm_other = ''
+     * (e.g. web_vhost_domain.tform.php:76 auth_preset perm_other = ''), so a
+     * STALE CLIENT ID SILENTLY RETURNS ZERO ROWS with code ok. Modeled
+     * faithfully because consumers must not mistake that for "no usage".
+     *
+     * For an EXISTING client the group list is real ("3", or "3,5,..." for a
+     * reseller whose sub-client groups are concatenated in - the
+     * parent_client_id branch of the same query), so its own records match.
+     *
+     * @param 'databases'|'mailUsers'|'sites' $store
+     * @return list<array<string, mixed>>
+     */
+    private function recordsVisibleTo(string $store, mixed $clientId): array
+    {
+        $id = is_numeric($clientId) ? (int) $clientId : 0;
+        if (!isset($this->clients[$id])) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($this->{$store} as $record) {
+            if ((int) ($record['client_id'] ?? 0) === $id) {
+                $rows[] = $record;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     * @see recordsVisibleTo()
+     */
+    private function sitesVisibleTo(mixed $clientId): array
+    {
+        return $this->recordsVisibleTo('sites', $clientId);
     }
 
     /**

@@ -21,6 +21,9 @@ final class PermissionsTest extends TestCase
      */
     private const VERIFIED_GRANTS = [
         'server_get_all' => 'server_get',
+        // Servers-page metadata (remote.d/server.inc.php:239 / client.inc.php:513).
+        'server_get_app_version' => 'server_get',
+        'client_get_all' => 'client_get_all',
         'client_template_additional_add' => 'client_update',
         'client_template_additional_delete' => 'client_update',
         'client_template_additional_get' => 'client_get',
@@ -49,6 +52,13 @@ final class PermissionsTest extends TestCase
         'dns_zone_get_id' => 'dns_zone_get_id',
         'quota_get_by_user' => 'quota_get_by_user',
         'trafficquota_get_by_user' => 'trafficquota_get_by_user',
+        // Usage metrics (Phase 2), all own-name grants:
+        // remote.d/mail.inc.php:1176, remote.d/sites.inc.php:1018/:290,
+        // remote.d/dns.inc.php:90.
+        'mailquota_get_by_user' => 'mailquota_get_by_user',
+        'databasequota_get_by_user' => 'databasequota_get_by_user',
+        'sites_ftp_user_get' => 'sites_ftp_user_get',
+        'dns_zone_get' => 'dns_zone_get',
     ];
 
     public function testGrantForMatchesEverySourceVerifiedPair(): void

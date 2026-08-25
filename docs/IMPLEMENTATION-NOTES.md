@@ -309,7 +309,8 @@ to lib, catches ALL IspconfigException + Throwable → returns the message strin
 return `'success'` or error string). Functions (MVP):
 
 - `ispconfigconnect_MetaData()` — DisplayName `ISPConfig Connect`, APIVersion 1.1,
-  RequiresServer true, DefaultSSLPort 8080, DefaultNonSSLPort 8080, ServiceSingleSignOnLabel omitted (Phase 2).
+  RequiresServer true, DefaultSSLPort 8080, DefaultNonSSLPort 8080. Phase 2 added the three
+  `ListAccounts*` keys and a **conditional** `ServiceSingleSignOnLabel` (§5.2, §5.5).
 - `ispconfigconnect_ConfigOptions()` — §3.1 frozen order, with `Loader` functions for options 1/2
   (`ispconfigconnect_ClientTemplateLoader`, `ispconfigconnect_WebServerLoader` — each builds a
   SessionManager from $params, calls the API, returns `[id => name]`, and MUST logout; on exception
@@ -385,9 +386,13 @@ fidelity is load-bearing for the whole suite.
 
 ### 3.2 Deferred out of MVP (tracked, not stubbed)
 
-Keep-DNS-on-terminate toggle (Phase 3), hooks.php contact sync (Phase 2), SSO (Phase 2, companion),
-reseller products / dedicated IP (Phase 3), client-area management views (Phase 4), UsageUpdate /
-MetricProvider (Phase 2). Do NOT create placeholder functions or empty files for these.
+Keep-DNS-on-terminate toggle (Phase 3), hooks.php contact sync (Phase 3), reseller products /
+dedicated IP (Phase 3), client-area management views (Phase 4). Do NOT create placeholder functions
+or empty files for these.
+
+**Delivered in Phase 2** (see §5): ListAccounts / Server Sync, UsageUpdate, MetricProvider,
+GetRemoteMetaData + the servers-page hook, and single sign-on via the optional
+`companion/ispconfig-sso`.
 
 ### 3.3 Open questions to settle against the live server (not in unit tests)
 
@@ -408,3 +413,167 @@ MetricProvider (Phase 2). Do NOT create placeholder functions or empty files for
 - Style: PSR-12, `declare(strict_types=1)`, final classes by default, readonly VOs, no abbreviations in
   public API names. Comments only for non-obvious constraints (wire facts, ISPConfig quirks) — cite
   the source file when stating a wire fact.
+
+## 5. Phase 2 — the WHMCS-facing surface
+
+This section is the permanent record of the **WHMCS-side contracts**, in the same spirit as §1 for the
+ISPConfig wire. Where WHMCS documents a contract, the developers.whmcs.com URL is cited; where it does
+not, the behaviour below was established on a live **WHMCS 9.0.6** install against ISPConfig 3.3.1p1
+and is marked LIVE-VERIFIED. WHMCS core is ionCube-encoded, so LIVE-VERIFIED facts were obtained by
+observing behaviour, never by decompiling.
+
+### 5.1 `GetRemoteMetaData` — LIVE-VERIFIED, undocumented
+
+WHMCS calls `<module>_GetRemoteMetaData(array $params)` while rendering **Configuration > System
+Settings > Servers**. Established on the live install:
+
+- `$params` keys: `whmcsVersion`, `server`, `serverid`, `serverip`, `serverhostname`,
+  `serverusername`, `serverpassword`, `serveraccesshash`, `serversecure`, `serverhttpprefix`,
+  `serverport`, `action`.
+- The returned array is stored **verbatim as JSON** in `tblservers_remote` (columns: `server_id`,
+  `num_accounts`, `meta_data`, `created_at`, `updated_at`).
+- A **FLAT return is required**. A `['success' => true, 'metaData' => [...]]` wrapper is stored as
+  those two literal keys — it is not unwrapped.
+- The key **`service_count`** is rendered by core as *"Services: N"* in the row's Remote Usage Stats
+  cell. That is the only key core renders itself.
+- The `num_accounts` column was **not** written by any key tried (`num_accounts`, `ownedAccounts`,
+  `accounts`).
+- The styled `<div class="remote-meta-data">` block that bundled modules render under the hostname
+  (Plesk shows *Plesk Version / Load Averages / License Max # of Accounts* there) did **not** appear
+  for this module even when returning Plesk's exact key vocabulary. Those label strings exist in no
+  plain file of the install, so that block is rendered from encoded core and appears to be gated to
+  bundled modules. `Server\MetaDataPanel` + `hooks.php` (AdminAreaFooterOutput) therefore build the
+  equivalent block themselves.
+
+Module-side consequences: `ispconfigconnect_GetRemoteMetaData()` never throws (it runs mid-render),
+always returns a flat scalar array, and on total failure still returns `checked_at`,
+`ispconfig_status` and `ispconfig_error` so the row shows a reason rather than an empty cell.
+
+It is also where the SSO companion probe result is cached (`sso_available`), because `MetaData()`
+receives no server parameters and must not make API calls — see §5.5.
+
+### 5.2 `ListAccounts` / Server Sync
+
+developers.whmcs.com/provisioning-modules/server-sync/ — and the three MetaData keys are what makes
+the **Sync Accounts** action appear at all (Configuration > System Settings > Servers):
+
+```
+'ListAccountsUniqueIdentifierDisplayName' => 'Domain'
+'ListAccountsUniqueIdentifierField'       => 'uniqueIdentifier'
+'ListAccountsProductField'                => 'configoption1'
+```
+
+Return shape: `['success' => true, 'accounts' => [...]]`, or `['success' => false, 'error' => '...']`.
+Each account row carries exactly `email, username, domain, uniqueIdentifier, product, primaryip,
+created, status`, with `status` from `WHMCS\Service\Status::ACTIVE|SUSPENDED`.
+
+Two mapping decisions worth keeping:
+
+- `ListAccountsProductField` points at **configoption1**, the *Client Template* dropdown. WHMCS
+  stores a Loader dropdown's array KEY, so that option holds the ISPConfig **template id** — which is
+  what `RemoteAccount::product` emits, making the match id-to-id rather than label-to-label.
+- The identifier field is `uniqueIdentifier`, not `domain`: an ISPConfig client without a website has
+  no domain, and those rows fall back to the panel username so they stay distinct.
+
+`WHMCS\Service\Status` is resolved through `defined()`/`constant()` with the module's own copy of the
+values as a fallback, so lib code stays free of WHMCS classes (§2 rule) while the entry file still
+passes the real constants when WHMCS is in scope.
+
+### 5.3 `UsageUpdate`
+
+developers.whmcs.com/provisioning-modules/usage-update/ — "a daily import of the disk and bandwidth
+usage for accounts of a server", triggered by WHMCS's cron, **per server, not per product**, and only
+for an active/enabled server. It writes `tblhosting.diskusage / disklimit / bwusage / bwlimit` plus
+`lastupdate => Capsule::raw('now()')`.
+
+Units are **megabytes** — not stated on the UsageUpdate page itself; the UpdateClientProduct API
+reference documents the same four columns as "in megabytes"
+(developers.whmcs.com/api-reference/updateclientproduct/).
+
+Entry-file design:
+
+- The service list is one query on `tblhosting` (server id, status Active/Suspended) plus one query
+  for the two `ispconfig_*` service properties by field NAME + service id — the same
+  product-independent lookup as the `ServiceProperties` fallback reader, because custom fields are
+  scoped to the service's current product (§ live fact from Phase 1).
+- **One reachability probe** (`monitor_jobqueue_count`) runs before the sweep. Without it, an
+  unreachable or mis-credentialed panel would be retried once per service, and ten failed logins lock
+  the WHMCS server's IP out of the panel for five minutes (§1.4) — a nightly cron that locks itself
+  out every night would be a self-inflicted outage.
+- A per-service failure is data, not an exception: it lands in the module log entry (`action =
+  UsageUpdate`) as `skipped[serviceId] => reason`, alongside `updated` and, when the sweep aborted,
+  `error`. Nothing in this function throws — an exception would abort WHMCS's cron for every other
+  server too.
+
+### 5.4 `MetricProvider`
+
+developers.whmcs.com/provisioning-modules/usage-metrics/. WHMCS wants an object implementing
+`\WHMCS\UsageBilling\Contracts\Metrics\ProviderInterface` with `metrics()`, `usage()` and
+`tenantUsage($tenant)`, built from `\WHMCS\UsageBilling\Metrics\{Metric, Usage}` and the
+`Metrics\Units\*` classes; the documented sample declares all three methods **without parameter or
+return types**, and the adapter must match that or it will be incompatible with the real, encoded
+interface.
+
+Those classes are ionCube-encoded core, so `Metrics\Provider` deals in plain data
+(`MetricDefinition`, `array<systemName, int>`) and the entry file does the final construction. The
+adapter is an **anonymous class**: a top-level `implements ProviderInterface` would be resolved when
+the module file is included, which fails anywhere WHMCS core is not loaded.
+
+- `metrics()` is static-data only and does **no I/O** — WHMCS invokes it in product contexts where no
+  server is in scope.
+- `usage()` is keyed by the account username, per the documented sample.
+- `tenantUsage($tenant)` accepts a service model, a service id or a username, because WHMCS's own type
+  for that argument is not documented and cannot be read from encoded core.
+- A value of `0` is reported rather than skipped (the doc sample's `if ($data[$key])` would drop it):
+  zero is a real reading, and dropping it leaves the previous collection standing forever.
+- Metric **system names are stable** (`diskusage bandwidth mailquota databasequota websites mailboxes
+  databases ftpusers dnszones`) — renaming one orphans its stored history.
+
+### 5.5 Single sign-on
+
+developers.whmcs.com/provisioning-modules/single-sign-on/ and .../meta-data-params/. Both functions
+return `['success' => bool, 'redirectTo' => string, 'errorMsg' => string]`.
+
+ISPConfig core has **no one-time-login API** (verified across the 3.3.1p1 tree: `client_login_get()`
+only validates a credential pair, and `login(..., true)` mints an API session, not a panel session),
+so SSO exists only where the optional `companion/ispconfig-sso` is deployed. That makes the MetaData
+labels conditional, and creates one genuinely awkward constraint:
+
+> `MetaData()` receives **no `$params`** — no server, no credentials — and is called on many admin
+> pages. It therefore cannot probe the panel.
+
+Resolution: `GetRemoteMetaData` caches `sso_available` into `tblservers_remote.meta_data` (one
+`get_function_list` call, already granted), and `MetaData()` reads that cache with a single joined
+query, memoised per request and defaulting to *not advertised* on any failure. The operator-visible
+consequence is documented in INSTALL §6.5: after installing the companion, open Configuration >
+Servers once.
+
+**`AdminSingleSignOnLabel` is deliberately never advertised.** WHMCS documents that label as
+server-level ("Login to Panel as Admin"), and the companion refuses to mint tokens for administrator
+accounts by design — an admin token bypasses password and IP checks, so it would be a full panel
+takeover. A server-level button could therefore only ever fail, and a dead button is worse than none.
+`ispconfigconnect_AdminSingleSignOn()` still exists and works wherever WHMCS calls it with a service
+in scope; called with only a server, it returns that explanation plus the panel URL.
+
+Logging rule: the redirect URL carries the one-time token in its query string, so the SSO entry points
+log the **outcome only**, never the URL. (`Api\RestClient` masks the `token` key of the companion's
+response through WHMCS's replaceVars, so the wire log is safe on its own.)
+
+### 5.6 Entry-file seams and the WHMCS class doubles
+
+The entry file is the only place allowed to touch WHMCS APIs, which makes it the only place that
+cannot be unit-tested against a real dependency. Two conventions keep it testable:
+
+- **Optional trailing seam parameters.** `UsageUpdate($params, $rowProvider, $writer)`,
+  `MetricProvider($params, $rowProvider)` and `MetaData($ssoProbe)` take extra arguments that WHMCS
+  never passes; the defaults do the Capsule work. `MetaData`'s seam is typed `mixed` rather than
+  `?callable` on purpose — a typed parameter would turn any future core change that passes an
+  argument into a fatal error.
+- **`tests/Module/WhmcsClassDoubles.php`** declares the WHMCS core classes the entry file names
+  (`WHMCS\Service\Status`, the `UsageBilling` metric types) with the public shapes the documentation
+  shows. It is the class-level counterpart of `tests/stubs/whmcs-functions.php`, is required from
+  `ModuleTestCase` before the entry file, and is never shipped. Without it the module tests would only
+  ever exercise the fallback branches.
+
+`WHMCS\Database\Capsule` is used only behind `class_exists()` guards (which is also what lets PHPStan
+resolve it), and every Capsule block degrades to an empty result rather than an exception.

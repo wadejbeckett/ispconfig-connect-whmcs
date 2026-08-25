@@ -23,7 +23,12 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertTrue($meta['RequiresServer']);
         self::assertSame('8080', (string) $meta['DefaultSSLPort']);
         self::assertSame('8080', (string) $meta['DefaultNonSSLPort']);
-        // SSO is Phase 2 - advertising a label now would render a dead button.
+        // Server Sync: all three keys or WHMCS offers no Sync Accounts button.
+        self::assertSame('Domain', $meta['ListAccountsUniqueIdentifierDisplayName']);
+        self::assertSame('uniqueIdentifier', $meta['ListAccountsUniqueIdentifierField']);
+        self::assertSame('configoption1', $meta['ListAccountsProductField']);
+        // SSO labels are conditional on a detected companion (SingleSignOnTest);
+        // nothing has been probed here, so neither may be advertised.
         self::assertArrayNotHasKey('ServiceSingleSignOnLabel', $meta);
         self::assertArrayNotHasKey('AdminSingleSignOnLabel', $meta);
     }
@@ -118,7 +123,7 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertSame('whmcs-servers', $metadata['type']);
         self::assertSame('ispconfigconnect', $metadata['name']);
         self::assertSame('ISPConfig Connect', $metadata['description']['name']);
-        self::assertSame('0.1.0', $metadata['version']);
+        self::assertSame('0.2.0', $metadata['version']);
         self::assertStringContainsString('GPL', (string) $metadata['license']);
         self::assertSame('provisioning', $metadata['category']);
         self::assertArrayNotHasKey('logo', $metadata);

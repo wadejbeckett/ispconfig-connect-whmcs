@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/ModuleCallLog.php';
+require_once __DIR__ . '/HookRegistry.php';
 
 if (!function_exists('logModuleCall')) {
     /**
@@ -33,5 +34,18 @@ if (!function_exists('logModuleCall')) {
             $processedData,
             $replaceVars
         );
+    }
+}
+
+if (!function_exists('add_hook')) {
+    /**
+     * WHMCS's hook registration (developers.whmcs.com/hooks/sample-hook):
+     * add_hook($hookPoint, $priority, $function).
+     *
+     * @param callable|string $function the function name or an anonymous function
+     */
+    function add_hook(string $hookPoint, int $priority, $function): void
+    {
+        \Ispconfigconnect\Tests\Stubs\HookRegistry::register($hookPoint, $priority, $function);
     }
 }

@@ -17,6 +17,12 @@ if (!defined('WHMCS')) {
     define('WHMCS', true);
 }
 
+// WHMCS core classes the entry file talks to (Status, the usage-billing
+// metric types). They are ionCube-encoded in a real install and absent here,
+// so the doubles must be declared before the entry file runs - the module
+// resolves them with class_exists()/defined() and would otherwise only ever
+// exercise its fallback branches.
+require_once __DIR__ . '/WhmcsClassDoubles.php';
 require_once __DIR__ . '/../../modules/servers/ispconfigconnect/ispconfigconnect.php';
 
 /**

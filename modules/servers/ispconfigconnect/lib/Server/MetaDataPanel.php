@@ -1,0 +1,242 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WHMCS\Module\Server\Ispconfigconnect\Server;
+
+/**
+ * The "ISPConfig Version / Pending Jobs / ..." block shown under each
+ * ISPConfig server on Configuration > Servers.
+ *
+ * WHMCS core renders its own styled `<div class="remote-meta-data">` under the
+ * hostname for bundled modules (Plesk shows "Plesk Version / Load Averages /
+ * License Max # of Accounts" there). That block did NOT appear for this module
+ * even when GetRemoteMetaData returned Plesk's exact key vocabulary, and its
+ * label strings exist in no plain file of the install - it is rendered from
+ * ionCube-encoded core and appears gated to bundled modules. So this class
+ * builds the equivalent ourselves, injected through the documented
+ * AdminAreaFooterOutput hook ("Accepts HTML to be output before the closing
+ * body tag of the admin area output").
+ *
+ * Output shape: one `<script type="application/json">` payload, one `<style>`,
+ * and one small vanilla-JS block that places a node per server row.
+ *
+ * ## Why the data travels as JSON rather than as ready-made HTML
+ *
+ * Every value here originates on the ISPConfig side (a version string, a probe
+ * error message) and is therefore untrusted. Encoding it with JSON_HEX_TAG and
+ * friends leaves no `<`, `>`, `&`, `"` or `'` anywhere in the document, and the
+ * script writes it into the DOM through textContent only - never innerHTML - so
+ * there is no HTML parsing step for a hostile value to escape from. No inline
+ * event handlers, no jQuery assumption, no network calls.
+ *
+ * Pure rendering: no WHMCS calls, no I/O, no API calls. Reading the cached
+ * values out of tblservers_remote is hooks.php's job - Configuration > Servers
+ * renders one row per server, and probing the panel from there would be slow
+ * and could trip its login lockout.
+ */
+final class MetaDataPanel
+{
+    public const PAYLOAD_ELEMENT_ID = 'ispconfigconnect-server-meta';
+    public const BLOCK_CLASS = 'ispconfigconnect-meta';
+
+    /**
+     * meta_data key => label, in display order. `service_count` is deliberately
+     * absent: WHMCS core already renders it as "Services: N" in the same row's
+     * Remote Usage Stats cell (live-verified), and repeating it would read as
+     * two different numbers.
+     */
+    private const FIELDS = [
+        'ispconfig_version' => 'ISPConfig Version',
+        'pending_jobs' => 'Pending Jobs',
+        'client_count' => 'Clients',
+        'server_count' => 'ISPConfig Nodes',
+    ];
+
+    private const NO_DATA_LABEL = 'ISPConfig';
+    private const NO_DATA_TEXT = 'no data collected yet - use Test Connection, or wait for the next refresh';
+
+    private function __construct()
+    {
+    }
+
+    /**
+     * @param list<ServerMetaData> $servers every server whose module is this one
+     * @return string HTML for the footer hook; '' when there is nothing to show
+     */
+    public static function render(array $servers): string
+    {
+        $payload = [];
+        foreach ($servers as $server) {
+            $payload[] = [
+                'id' => $server->serverId,
+                'hostname' => $server->hostname,
+                'lines' => self::linesFor($server),
+            ];
+        }
+
+        if ($payload === []) {
+            return '';
+        }
+
+        // JSON_HEX_* keeps every character that is special to the HTML parser
+        // out of the document; INVALID_UTF8_SUBSTITUTE guarantees encoding
+        // succeeds even if the panel answered with broken bytes, because this
+        // runs while an admin page is being rendered.
+        $json = json_encode(
+            $payload,
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+            | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+        );
+        if ($json === false) {
+            return '';
+        }
+
+        return '<script type="application/json" id="' . self::PAYLOAD_ELEMENT_ID . '">' . $json . "</script>\n"
+            . '<style>' . self::css() . "</style>\n"
+            . '<script>' . self::script() . "</script>\n";
+    }
+
+    /**
+     * @return list<array{label: string, value: string, warn?: bool}>
+     */
+    private static function linesFor(ServerMetaData $server): array
+    {
+        $lines = [];
+        foreach (self::FIELDS as $key => $label) {
+            $value = $server->values[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                $lines[] = ['label' => $label, 'value' => trim((string) $value)];
+            }
+        }
+
+        // WHMCS's own tblservers_remote.updated_at is authoritative for "when
+        // did WHMCS last refresh this"; checked_at is the module's own stamp
+        // and only fills in when the column is empty.
+        $checkedAt = $server->values['checked_at'] ?? null;
+        $lastUpdated = $server->updatedAt ?? (is_scalar($checkedAt) ? trim((string) $checkedAt) : '');
+        if ((string) $lastUpdated !== '') {
+            $lines[] = ['label' => 'Last Updated', 'value' => (string) $lastUpdated];
+        }
+
+        // A failed probe must never be silent: RemoteMetaData drops the key it
+        // could not read and says why here instead.
+        $error = $server->values['ispconfig_error'] ?? null;
+        if (is_scalar($error) && trim((string) $error) !== '') {
+            $lines[] = ['label' => 'Probe Errors', 'value' => trim((string) $error), 'warn' => true];
+        }
+
+        if ($lines === []) {
+            $lines[] = ['label' => self::NO_DATA_LABEL, 'value' => self::NO_DATA_TEXT];
+        }
+
+        return $lines;
+    }
+
+    private static function css(): string
+    {
+        return '.' . self::BLOCK_CLASS . '{margin-top:5px;font-size:11px;line-height:1.5;color:#6c757d}'
+            . '.' . self::BLOCK_CLASS . ' .' . self::BLOCK_CLASS . '-label{font-weight:600}'
+            . '.' . self::BLOCK_CLASS . ' .' . self::BLOCK_CLASS . '-warn{color:#b02a37}';
+    }
+
+    /**
+     * Vanilla JS, defensively written: no library is assumed beyond the DOM
+     * (the admin theme's own scripts are none of our business), every lookup is
+     * null-checked, and placing the block is skipped rather than guessed when
+     * the row cannot be identified.
+     *
+     * Rows are matched on the numeric `id` query parameter of a link inside a
+     * table - that is how the servers list links each row to its edit page -
+     * and fall back to a cell whose text is exactly the hostname. Insertion is
+     * idempotent per cell, so a second run (DOMContentLoaded) cannot duplicate
+     * the block.
+     */
+    private static function script(): string
+    {
+        $payloadId = self::PAYLOAD_ELEMENT_ID;
+        $blockClass = self::BLOCK_CLASS;
+
+        return <<<JS
+            (function () {
+                function serverLinks() {
+                    var preferred = {}, fallback = {}, links = document.getElementsByTagName('a');
+                    for (var i = 0; i < links.length; i++) {
+                        var link = links[i], href = link.getAttribute('href');
+                        if (!href) { continue; }
+                        var match = /[?&]id=(\d+)(?:&|#|\$)/.exec(href);
+                        if (!match) { continue; }
+                        if (href.indexOf('configservers') !== -1) {
+                            // A link to this server's own edit page: unambiguous
+                            // wherever it sits, so a redesigned (non-table)
+                            // layout still resolves.
+                            if (!preferred[match[1]]) { preferred[match[1]] = link; }
+                        } else if (!fallback[match[1]] && link.closest && link.closest('table')) {
+                            // Some other ?id=N link, accepted only inside a
+                            // table - sidebar and breadcrumb links must never
+                            // be mistaken for a server row.
+                            fallback[match[1]] = link;
+                        }
+                    }
+                    for (var key in fallback) {
+                        if (!preferred[key]) { preferred[key] = fallback[key]; }
+                    }
+                    return preferred;
+                }
+
+                function cellWithExactText(text) {
+                    if (!text) { return null; }
+                    var cells = document.getElementsByTagName('td');
+                    for (var c = 0; c < cells.length; c++) {
+                        if ((cells[c].textContent || '').replace(/^\s+|\s+\$/g, '') === text) { return cells[c]; }
+                    }
+                    return null;
+                }
+
+                function buildBlock(lines) {
+                    var box = document.createElement('div');
+                    box.className = '{$blockClass}';
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i];
+                        if (!line) { continue; }
+                        var row = document.createElement('div');
+                        if (line.warn) { row.className = '{$blockClass}-warn'; }
+                        var label = document.createElement('span');
+                        label.className = '{$blockClass}-label';
+                        label.textContent = String(line.label) + ': ';
+                        row.appendChild(label);
+                        row.appendChild(document.createTextNode(String(line.value)));
+                        box.appendChild(row);
+                    }
+                    return box;
+                }
+
+                function run() {
+                    var holder = document.getElementById('{$payloadId}');
+                    if (!holder) { return; }
+                    var servers;
+                    try { servers = JSON.parse(holder.textContent || '[]'); } catch (err) { return; }
+                    if (!servers || typeof servers.length !== 'number') { return; }
+
+                    var links = serverLinks();
+                    for (var s = 0; s < servers.length; s++) {
+                        var server = servers[s];
+                        if (!server || !server.lines || !server.lines.length) { continue; }
+                        var link = links[String(server.id)];
+                        var cell = link && link.closest ? link.closest('td') : null;
+                        if (!cell && link) { cell = link.parentNode; }
+                        if (!cell) { cell = cellWithExactText(server.hostname); }
+                        if (!cell || cell.querySelector('.{$blockClass}')) { continue; }
+                        cell.appendChild(buildBlock(server.lines));
+                    }
+                }
+
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', run);
+                } else {
+                    run();
+                }
+            })();
+            JS;
+    }
+}

@@ -25,14 +25,14 @@ exist on 3.2.x). The module needs these nine:
 
 | Checkbox | Why the module needs it |
 |---|---|
-| **Server functions** | `server_get` (Web Server dropdown), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
-| **Client functions** | client create/update/lock/password/terminate (incl. both `client_delete_everything` and `client_delete`, which termination re-checks mid-cascade) |
-| **Quota functions** | `quota_get_by_user`, `trafficquota_get_by_user` (usage sync, Phase 2) |
+| **Server functions** | `server_get` (Web Server dropdown, and the `server_get_app_version` panel-version probe — it checks `server_get`, verified), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
+| **Client functions** | client create/update/lock/password/terminate (incl. both `client_delete_everything` and `client_delete`, which termination re-checks mid-cascade), plus `client_get_all` for the servers-page client counter |
+| **Quota functions** | the whole group — `quota_get_by_user`, `trafficquota_get_by_user`, `mailquota_get_by_user`, `databasequota_get_by_user` — for disk/bandwidth usage import and usage-billing metrics |
 | **Sites Domain functions** | website create/read/status (suspend) |
-| **Sites FTP-User functions** | FTP user create + password rotation |
+| **Sites FTP-User functions** | FTP user create + password rotation, and `sites_ftp_user_get` for the FTP-user metric |
 | **Sites database functions** | database + database-user create, DB password rotation |
 | **Mail domain functions** | mail domain provisioning |
-| **DNS zone functions** | `dns_templatezone_add` + `dns_zone_get_id` |
+| **DNS zone functions** | `dns_templatezone_add` + `dns_zone_get_id`, and `dns_zone_get` for the DNS-zone metric |
 | **Monitor functions** | `monitor_jobqueue_count` (pending-job indicator) |
 
 The precise function names the module actually calls (the minimal set, for auditing or for a
@@ -44,14 +44,18 @@ client_change_password
 client_delete
 client_delete_everything
 client_get
+client_get_all
 client_get_by_username
 client_get_sites_by_user
 client_templates_get_all
 client_update
+databasequota_get_by_user
 dns_templatezone_add
+dns_zone_get
 dns_zone_get_id
 get_function_list
 mail_domain_add
+mailquota_get_by_user
 monitor_jobqueue_count
 quota_get_by_user
 server_get
@@ -59,6 +63,7 @@ sites_database_add
 sites_database_user_add
 sites_database_user_update
 sites_ftp_user_add
+sites_ftp_user_get
 sites_ftp_user_update
 sites_web_domain_add
 sites_web_domain_get
@@ -72,7 +77,7 @@ Why each (grouped):
 |---|---|
 | `client_add`, `client_update`, `client_change_password` | create / suspend (locked flag) / package & password changes. `client_update` also covers addon-template assignment — ISPConfig checks `client_update` for `client_template_additional_add/delete` (verified in 3.3.1p1 `remote.d/client.inc.php`) |
 | `client_delete_everything` **and** `client_delete` | termination. `client_delete_everything` re-checks `client_delete` mid-cascade (verified), so both are required — missing `client_delete` fails termination half-way |
-| `client_get`, `client_get_by_username`, `client_get_sites_by_user` | suspend/unsuspend state guard and the addon-assignment read before every client update (`client_template_additional_get` checks grant `client_get`, verified in `remote.d/client.inc.php`); admin panel info, import/sync (Phase 2). Without `client_get` every suspend, unsuspend and package change fails |
+| `client_get`, `client_get_by_username`, `client_get_sites_by_user` | suspend/unsuspend state guard and the addon-assignment read before every client update (`client_template_additional_get` checks grant `client_get`, verified in `remote.d/client.inc.php`); admin panel info. Also **Sync Accounts** (WHMCS's ListAccounts): one `client_get` with `client_id = -1` reads the whole client table, then `client_get_by_username` + `client_get_sites_by_user` resolve each client's primary website. Without `client_get` every suspend, unsuspend and package change fails; without the other two, Sync Accounts lists accounts with no domain |
 | `client_templates_get_all` | the Client Template dropdown in product config |
 | `server_get` | the Web Server dropdown (`server_get_all` checks grant `server_get`, verified) |
 | `sites_web_domain_*`, `sites_ftp_user_add`, `sites_database_*` | website / FTP / database provisioning |
@@ -80,10 +85,41 @@ Why each (grouped):
 | `mail_domain_add` | mail domain provisioning |
 | `dns_templatezone_add`, `dns_zone_get_id` | DNS zone provisioning |
 | `monitor_jobqueue_count` | pending-job indicator (ISPConfig applies changes asynchronously) |
-| `quota_get_by_user`, `trafficquota_get_by_user` | disk/bandwidth usage sync (Phase 2) |
+| `server_get`, `monitor_jobqueue_count`, `client_get_all` | the **Configuration → Servers** stats block: panel version (`server_get_app_version`, grant `server_get`), pending datalog jobs, client count and ISPConfig node count. All four probes return ids, counts or a version string — the module deliberately does **not** count websites or mail domains there, because ISPConfig's only bulk read is `SELECT *` and `web_domain.ssl_key` / `mail_domain.dkim_private` would land in WHMCS's module log. Any of these grants missing just drops its own line from the block |
+| `quota_get_by_user`, `trafficquota_get_by_user` | the nightly disk/bandwidth import into `tblhosting` (WHMCS's UsageUpdate cron), which also drives disk and bandwidth overage billing. When a service's quota answers come back empty, the sweep also spends one `client_get` (already granted above) to distinguish "client owns nothing" from "client was deleted in the panel" — a deleted client answers every quota call with zero rows rather than an error, and importing that as zero usage forever would be silent wrong billing; such services are skipped with a reason in the module log instead |
+| `mailquota_get_by_user`, `databasequota_get_by_user` | usage-billing metrics: mailbox and database storage, and the mailbox/database counts. Same **Quota functions** checkbox as the two above, so they cost no extra grant group |
+| `sites_ftp_user_get`, `dns_zone_get` | usage-billing metrics: the FTP-user and DNS-zone counts, read as `sys_groupid` filters. Both are already inside the **Sites FTP-User functions** and **DNS zone functions** checkboxes the module needs for provisioning |
 | `get_function_list` | connection diagnostics |
 
 `login`/`logout` need no grant.
+
+### 2a. Optional — the single sign-on grant
+
+One further grant exists, and it is **not part of the list above** because it does not exist on a
+stock ISPConfig. It is registered only when the optional companion module
+(`companion/ispconfig-sso/`) is installed on the panel, which is what gives the client area and the
+admin service tab a working *Log in to panel* button. Skip this whole section if you have not
+installed it.
+
+| Checkbox | Function | Why |
+|---|---|---|
+| **ISPConfig Connect: panel single sign-on (SSO token)** | `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
+
+This is its own checkbox — the companion ships its own `lib/remote.conf.php`, so it appears as a
+single entry granting exactly that one function. It is the list from
+`Permissions::optionalGrants()`; `Permissions::requiredGrants()` deliberately excludes it, and
+neither Test Connection nor Verify Permissions reports it as missing.
+
+Notes:
+
+- If the checkbox is not on the form, the companion's installer could not add `connectsso` to your
+  admin account's module list. Re-run its `install.sh`, then log out and back in — the Functions
+  list is built from the modules of the admin who is logged in.
+- Without the grant, the module still detects the companion (via `get_function_list`, which needs no
+  extra permission) and reports an actionable error naming this grant when SSO is attempted.
+- A remote user holding this grant can mint a panel login for **any non-admin client on the panel**.
+  Grant it only to the API user WHMCS uses, and keep that user's Remote Access IP list populated.
+  The companion's own `README.md` carries the full security model.
 
 ## 3. Enable the remote API itself
 

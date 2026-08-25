@@ -52,6 +52,61 @@ final class AdminAndClientAreaTest extends ModuleTestCase
         self::assertSame([], ispconfigconnect_AdminServicesTabFields($params));
     }
 
+    public function testAdminServicesTabFieldsShowsLiveUsageForAProvisionedService(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+        $domainId = (int) $this->model->serviceProperties->get('ispconfig_domain_id');
+        $this->fake->setDiskUsage('web' . $domainId, usedKilobytes: 262144);
+        $this->fake->setWebTraffic('example.com', thisMonthBytes: 1048576);
+
+        $fields = ispconfigconnect_AdminServicesTabFields($this->params());
+
+        // The product provisions websites with hd_quota/traffic_quota -1, so
+        // both limits read as unlimited here.
+        self::assertSame('256 MB of unlimited', $fields['ISPConfig Disk Usage']);
+        self::assertSame('1 MB of unlimited', $fields['ISPConfig Bandwidth (this month)']);
+        self::assertSame(0, $this->fake->activeSessionCount());
+    }
+
+    public function testAdminServicesTabFieldsReportsWhetherSingleSignOnIsAvailable(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+
+        $stock = ispconfigconnect_AdminServicesTabFields($this->params());
+        self::assertStringContainsString('companion/ispconfig-sso', $stock['ISPConfig Single Sign-On']);
+
+        $this->fake->installCompanion();
+        $withCompanion = ispconfigconnect_AdminServicesTabFields($this->params());
+        self::assertSame('available', $withCompanion['ISPConfig Single Sign-On']);
+    }
+
+    public function testAdminServicesTabFieldsDegradesEveryLiveFigureWhenThePanelIsDown(): void
+    {
+        $this->model->serviceProperties->save(['ispconfig_client_id' => '7']);
+        $this->fake->apiEnabled = false;
+
+        $fields = ispconfigconnect_AdminServicesTabFields($this->params());
+
+        self::assertSame('7', $fields['ISPConfig Client ID']);
+        self::assertSame('n/a', $fields['ISPConfig Job Queue']);
+        self::assertSame('n/a', $fields['ISPConfig Disk Usage']);
+        self::assertSame('n/a', $fields['ISPConfig Bandwidth (this month)']);
+        self::assertSame('unknown', $fields['ISPConfig Single Sign-On']);
+    }
+
+    public function testAdminServicesTabFieldsSkipsUsageForAnUnprovisionedService(): void
+    {
+        $fields = ispconfigconnect_AdminServicesTabFields($this->params());
+
+        self::assertSame('not provisioned', $fields['ISPConfig Client ID']);
+        self::assertArrayNotHasKey('ISPConfig Disk Usage', $fields);
+        // No client id means nothing to ask the panel about beyond the queue.
+        self::assertSame(
+            [],
+            array_filter($this->calledMethods(), static fn (string $m): bool => $m === 'quota_get_by_user')
+        );
+    }
+
     public function testAdminCustomButtonArrayExposesVerifyPermissions(): void
     {
         self::assertSame(

@@ -27,7 +27,31 @@ final class RestClient
      * the wiring (Support\Logging) can feed WHMCS's replaceVars masking; the
      * request itself reaches the logger INTACT by design (spec 2.2).
      */
-    private const SENSITIVE_KEYS = ['password', 'new_password', 'remote_password', 'database_password', 'session_id'];
+    private const SENSITIVE_KEYS = [
+        'password',
+        'new_password',
+        'remote_password',
+        'database_password',
+        'session_id',
+        // The SSO companion's one-time panel-login token (Sso\CompanionClient).
+        // It arrives in the RESPONSE, is a bearer credential for the seconds
+        // it lives, and tblmodulelog is readable by every WHMCS admin - so it
+        // is masked exactly like a password.
+        'token',
+        // Key-material COLUMNS that record-shaped responses echo back, because
+        // ISPConfig's reads are SELECT * (remoting_lib getDataRecord,
+        // quota_lib): web_domain.ssl_key is the site's TLS private key and
+        // ssl_request its CSR (install/sql/ispconfig3.sql:2036/:2033 - both in
+        // every quota_get_by_user row), client.id_rsa is the client's SSH
+        // private key (:260 - in every client_get row), and
+        // mail_domain.dkim_private / relay_pass (:893/:897) ride along on mail
+        // domain reads. tblmodulelog is readable by every WHMCS admin.
+        'ssl_key',
+        'ssl_request',
+        'id_rsa',
+        'dkim_private',
+        'relay_pass',
+    ];
 
     private const BODY_EXCERPT_LIMIT = 300;
 

@@ -12,6 +12,7 @@ namespace WHMCS\Module\Server\Ispconfigconnect\Api;
  * the called function's name.  Every entry below was verified against the
  * 3.3.1p1 source; the aliases are:
  *   - server_get_all                  -> checks 'server_get'    (remoting.inc.php)
+ *   - server_get_app_version          -> checks 'server_get'    (remote.d/server.inc.php)
  *   - client_template_additional_add  -> checks 'client_update' (remote.d/client.inc.php)
  *   - client_template_additional_delete -> checks 'client_update' (remote.d/client.inc.php)
  *   - client_template_additional_get  -> checks 'client_get'    (remote.d/client.inc.php)
@@ -29,6 +30,7 @@ final class Permissions
     /** Called functions whose checkPerm() name differs from their own name. */
     private const ALIASES = [
         'server_get_all' => 'server_get',
+        'server_get_app_version' => 'server_get',
         'client_template_additional_add' => 'client_update',
         'client_template_additional_delete' => 'client_update',
         'client_template_additional_get' => 'client_get',
@@ -42,6 +44,12 @@ final class Permissions
         'get_function_list',
         'monitor_jobqueue_count',
         'server_get_all',
+        // Servers-page metadata: the panel version string. Checks 'server_get'
+        // like the rest of the server.* family (remote.d/server.inc.php:239).
+        'server_get_app_version',
+        // Servers-page metadata: the client count, ids only
+        // (remote.d/client.inc.php:513 - SELECT client_id FROM client).
+        'client_get_all',
         'client_get',
         'client_get_by_username',
         'client_get_sites_by_user',
@@ -62,14 +70,39 @@ final class Permissions
         // Credential rotation on ChangePassword (plain updateQuery, own-name
         // grants - remote.d/sites.inc.php).
         'sites_ftp_user_update',
+        // Usage metrics: the FTP-user count, read as a sys_groupid filter
+        // through remoting_lib::getDataRecord() (remote.d/sites.inc.php:286).
+        'sites_ftp_user_get',
         'sites_database_user_add',
         'sites_database_user_update',
         'sites_database_add',
         'mail_domain_add',
         'dns_templatezone_add',
         'dns_zone_get_id',
+        // Usage metrics: the DNS-zone count, same filter form
+        // (remote.d/dns.inc.php:87).
+        'dns_zone_get',
         'quota_get_by_user',
         'trafficquota_get_by_user',
+        // Usage metrics: mailbox and database storage + counts. Both check
+        // their own name (remote.d/mail.inc.php:1176, sites.inc.php:1018) and
+        // both live in the same 'Quota functions' checkbox group as the two
+        // above (interface/web/client/lib/remote.conf.php).
+        'mailquota_get_by_user',
+        'databasequota_get_by_user',
+    ];
+
+    /**
+     * Functions provided by OPTIONAL panel-side companions, not by ISPConfig
+     * core - they exist only where that companion is installed, so they are
+     * resolvable here but deliberately absent from requiredGrants().
+     *
+     * connect_sso_token_create: companion/ispconfig-sso, checks its own name
+     * via the inherited remoting::checkPerm() (its remote.d class extends
+     * remoting exactly as every core remote.d class does).
+     */
+    private const OPTIONAL_FUNCTIONS = [
+        'connect_sso_token_create',
     ];
 
     /**
@@ -90,7 +123,10 @@ final class Permissions
      */
     public static function grantFor(string $function): string
     {
-        if (!in_array($function, self::CALLED_FUNCTIONS, true)) {
+        if (
+            !in_array($function, self::CALLED_FUNCTIONS, true)
+            && !in_array($function, self::OPTIONAL_FUNCTIONS, true)
+        ) {
             throw new \InvalidArgumentException(
                 sprintf('%s is not a remote function this module calls', $function)
             );
@@ -112,6 +148,22 @@ final class Permissions
             self::CALLED_FUNCTIONS
         );
         $grants = array_values(array_unique(array_merge($grants, self::EXTRA_GRANTS)));
+        sort($grants);
+
+        return $grants;
+    }
+
+    /**
+     * Grants that only matter when an optional panel-side companion is
+     * installed. Kept OUT of requiredGrants() on purpose: a stock ISPConfig
+     * has no such function, and telling an operator to tick a checkbox that
+     * does not exist would turn a working setup into a support ticket.
+     *
+     * @return list<string>
+     */
+    public static function optionalGrants(): array
+    {
+        $grants = array_values(array_unique(array_map(self::grantFor(...), self::OPTIONAL_FUNCTIONS)));
         sort($grants);
 
         return $grants;

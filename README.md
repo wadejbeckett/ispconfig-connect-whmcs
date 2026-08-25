@@ -4,9 +4,9 @@ A free, open-source **WHMCS provisioning module for [ISPConfig](https://www.ispc
 bringing the same automated provisioning, suspension, and billing integration that WHMCS ships for
 cPanel and Plesk to ISPConfig hosting servers.
 
-> **Status:** Phase 1 complete (full provisioning lifecycle), verified against a live ISPConfig
-> 3.3.1p1 server. Phase 2 (usage metrics, account sync, single sign-on) in progress. Licensed under
-> **GPLv3**.
+> **Status:** Phase 1 (full provisioning lifecycle) and Phase 2 (usage import, usage-billing metrics,
+> account sync, server health, optional single sign-on) complete; Phase 1 verified against a live
+> ISPConfig 3.3.1p1 + WHMCS 9.0.6 server. Licensed under **GPLv3**.
 
 ---
 
@@ -39,11 +39,13 @@ billing module above is very likely the better home for you.
 
 ---
 
-## What it does (Phase 1)
+## What it does
 
 One WHMCS service maps to one ISPConfig client (mirroring how the cPanel module maps one service to
 one account), so terminating a service only ever removes that service's own ISPConfig client — never
 a customer's other accounts.
+
+### Provisioning lifecycle
 
 | WHMCS action | ISPConfig result |
 |---|---|
@@ -57,6 +59,30 @@ a customer's other accounts.
 Provisioning is driven by ISPConfig **client templates** — operators manage plans in ISPConfig exactly
 as Plesk operators manage service plans — selected per WHMCS product from a live dropdown.
 
+### The rest of the WHMCS surface
+
+| WHMCS feature | What this module does | Needs |
+|---|---|---|
+| **Usage import** (nightly cron) | Writes disk and bandwidth usage plus their panel limits onto every service on the server, in megabytes | — |
+| **Usage-billing metrics** | Publishes nine metrics — disk, bandwidth, mail and database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones | — |
+| **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services | — |
+| **Servers page health** | Panel version, pending job-queue depth, client count and node count, rendered under the server's hostname; failures show the reason instead of breaking the page | — |
+| **Single sign-on** | A password-free *Log in to ISPConfig* button for customers, using a single-use, short-lived token | Optional [`companion/ispconfig-sso`](companion/ispconfig-sso/README.md) |
+| **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — |
+
+Everything above degrades rather than breaks: a panel that is down costs a placeholder value, never
+an admin page, a failed cron run, or a lost provisioning result.
+
+### Why single sign-on needs a companion
+
+ISPConfig core has no one-time-login API — `client_login_get()` only validates a password, and the
+remote API's `login()` mints an API session rather than a panel session. Every abandoned
+WHMCS/ISPConfig module solved this the only way core allowed: by storing the customer's panel password
+and replaying it. **This module never stores or replays a password.** Instead, the optional GPLv3
+companion adds one remote function that mints a single-use token and one page that redeems it, without
+modifying a single ISPConfig core file. Install it and the login button appears; leave it out and the
+button is never rendered.
+
 ## Security posture
 
 This module holds panel credentials and runs on a production billing system, so it is built to a
@@ -66,8 +92,10 @@ higher bar than the abandoned modules it replaces:
   panel admin account. See [`docs/REMOTE-USER.md`](docs/REMOTE-USER.md).
 - **TLS verification on by default**, with an explicit opt-out and custom-CA support for self-signed
   panels.
-- **No credential is ever rendered** into the client area or admin HTML.
-- Every API call is logged through WHMCS's module log with password and session values scrubbed.
+- **No credential is ever rendered** into the client area or admin HTML, and no panel password is
+  ever stored or replayed — single sign-on uses single-use tokens instead.
+- Every API call is logged through WHMCS's module log with password, session and SSO-token values
+  scrubbed; the SSO redirect URL, which carries a token, is never logged at all.
 - Session handling respects ISPConfig's IP-bound sessions and login-failure lockout, and never retries
   into a lockout.
 
@@ -78,14 +106,19 @@ higher bar than the abandoned modules it replaces:
 
 ## Installation
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through, and
-[`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user.
+See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through,
+[`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user,
+and [`companion/ispconfig-sso/README.md`](companion/ispconfig-sso/README.md) if you want the single
+sign-on button.
 
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (200+ tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
-on the ISPConfig source, plus PHPStan static analysis. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md).
+suite (490 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+on the ISPConfig source, plus PHPStan level 6 static analysis. See
+[`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5 records the WHMCS-side
+contracts, including the ones that are not documented anywhere and had to be established on a live
+install.
 
 ## License
 

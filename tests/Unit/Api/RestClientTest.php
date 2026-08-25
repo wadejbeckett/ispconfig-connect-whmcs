@@ -422,6 +422,67 @@ final class RestClientTest extends TestCase
         self::assertContains('$5$storedhash$abcdef', $this->logged[0]['sensitive']);
     }
 
+    public function testPrivateKeyColumnsInRecordResponsesAreReportedSensitive(): void
+    {
+        // quota_get_by_user returns web_domain rows via SELECT * - INCLUDING
+        // ssl_key (the site's TLS private key) and ssl_request
+        // (install/sql/ispconfig3.sql:2036/:2033). Those must reach the
+        // masking list or they land verbatim in tblmodulelog.
+        $envelope = json_encode([
+            'code' => 'ok',
+            'message' => '',
+            'response' => [[
+                'domain_id' => '5',
+                'domain' => 'one.example',
+                'ssl_key' => "-----BEGIN PRIVATE KEY-----\nFAKE-TLS-KEY\n-----END PRIVATE KEY-----",
+                'ssl_request' => "-----BEGIN CERTIFICATE REQUEST-----\nFAKE-CSR\n-----END CERTIFICATE REQUEST-----",
+            ]],
+        ], JSON_THROW_ON_ERROR);
+        $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
+
+        $client->call('quota_get_by_user', ['session_id' => 's0000', 'client_id' => 1]);
+
+        self::assertContains(
+            "-----BEGIN PRIVATE KEY-----\nFAKE-TLS-KEY\n-----END PRIVATE KEY-----",
+            $this->logged[0]['sensitive']
+        );
+        self::assertContains(
+            "-----BEGIN CERTIFICATE REQUEST-----\nFAKE-CSR\n-----END CERTIFICATE REQUEST-----",
+            $this->logged[0]['sensitive']
+        );
+    }
+
+    public function testSshAndMailSecretColumnsInRecordResponsesAreReportedSensitive(): void
+    {
+        // client_get(-1) returns client rows including id_rsa - the client's
+        // SSH private key (install/sql/ispconfig3.sql:260); mail_domain reads
+        // carry dkim_private and relay_pass (:893/:897).
+        $envelope = json_encode([
+            'code' => 'ok',
+            'message' => '',
+            'response' => [[
+                'client_id' => '7',
+                'username' => 'c7',
+                'id_rsa' => "-----BEGIN RSA PRIVATE KEY-----\nFAKE-SSH-KEY\n-----END RSA PRIVATE KEY-----",
+                'dkim_private' => "-----BEGIN RSA PRIVATE KEY-----\nFAKE-DKIM-KEY\n-----END RSA PRIVATE KEY-----",
+                'relay_pass' => 'Relay-S3cret!',
+            ]],
+        ], JSON_THROW_ON_ERROR);
+        $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
+
+        $client->call('client_get', ['session_id' => 's0000', 'client_id' => -1]);
+
+        self::assertContains(
+            "-----BEGIN RSA PRIVATE KEY-----\nFAKE-SSH-KEY\n-----END RSA PRIVATE KEY-----",
+            $this->logged[0]['sensitive']
+        );
+        self::assertContains(
+            "-----BEGIN RSA PRIVATE KEY-----\nFAKE-DKIM-KEY\n-----END RSA PRIVATE KEY-----",
+            $this->logged[0]['sensitive']
+        );
+        self::assertContains('Relay-S3cret!', $this->logged[0]['sensitive']);
+    }
+
     public function testThrowingLoggerNeverBreaksTheApiCall(): void
     {
         $fake = new FakeIspconfigServer();

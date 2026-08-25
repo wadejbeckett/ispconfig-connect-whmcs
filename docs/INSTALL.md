@@ -36,6 +36,12 @@ cp -r modules/servers/ispconfigconnect  /path/to/whmcs/modules/servers/
 The directory name must remain exactly `ispconfigconnect`. Nothing else is
 required — WHMCS autoloads the module's `lib/` classes automatically.
 
+The module ships a `hooks.php` (it renders the ISPConfig status block on the
+servers page). WHMCS discovers a module's hook file when the module is
+activated, so if you are **upgrading** an installation that already used an
+earlier version, open one product's *Module Settings* tab and save it once to
+make WHMCS pick the file up.
+
 ## 3. Add the server in WHMCS
 
 **System Settings > Servers > Add New Server**, then:
@@ -158,6 +164,17 @@ not *already live on the web server*. The admin service tab shows the panel's
 current **job queue** depth; a non-zero value means changes are still being
 rolled out.
 
+### What the admin service tab shows
+
+Alongside the stored ISPConfig ids, the service's *Module* tab reads four
+things live from the panel, each degrading to a placeholder rather than
+failing the page: the job-queue depth, the client's current **disk usage** and
+**this month's bandwidth** (both against the panel's own limits, so they are
+current even between nightly imports), and whether **single sign-on** is
+available on this panel. All four share one login, and the probes stop
+immediately if the panel cannot be reached — an admin page must never spend
+failed logins against the panel's lockout counter.
+
 ### Login rate limit and NAT (lockout caveat)
 
 ISPConfig locks out a source IP for 5 minutes after **10 failed logins within
@@ -178,9 +195,160 @@ Every API call is recorded in **Utilities > Logs > Module Log** (enable
 debug logging in WHMCS to see it). Passwords and session ids are masked via
 WHMCS's replaceVars mechanism before storage.
 
-## 6. Uninstalling
+## 6. Usage, metrics, sync and single sign-on
+
+Everything in this section works with no extra configuration beyond the grants
+in [`docs/REMOTE-USER.md`](REMOTE-USER.md). Nothing here is required for
+provisioning — skip any part you do not want.
+
+### 6.1 Nightly disk and bandwidth import
+
+WHMCS's daily cron run calls the module once **per server** and the module
+writes the four usage columns of `tblhosting` for every service on it:
+`diskusage`, `disklimit`, `bwusage`, `bwlimit` (all in **megabytes**), plus
+`lastupdate`. The figures come from the panel's own accounting:
+
+| WHMCS column | ISPConfig source |
+|---|---|
+| `diskusage` | `quota_get_by_user` — the repquota block count for each of the client's websites |
+| `disklimit` | `web_domain.hd_quota` (MB; `-1`/`0` = unlimited, reported to WHMCS as a limit of `0`) |
+| `bwusage` | `trafficquota_get_by_user` — this calendar month's `web_traffic` bytes |
+| `bwlimit` | `web_domain.traffic_quota` (MB, same unlimited convention) |
+
+Requirements and behaviour worth knowing:
+
+- The server must be **enabled** in WHMCS (a disabled server is never visited)
+  and only services in the **Active** or **Suspended** status are read —
+  terminated services have no panel client left to ask about.
+- Only services this module provisioned are readable: the import needs the
+  `ispconfig_client_id` service property. Imported or hand-made services are
+  **skipped and named** in the log rather than silently ignored.
+- The whole sweep uses **one login**. It begins with a single reachability
+  probe, so an unreachable or mis-credentialed panel costs one failed login
+  for the entire run instead of one per service — which matters because ten
+  failed logins lock the WHMCS server's IP out of the panel for five minutes.
+- One unreadable service never costs the others their import.
+
+**Where to look afterwards:** *Utilities > Logs > Module Log*, action
+`UsageUpdate`. Each run records `updated` (how many services were written),
+`skipped` (service id → reason) and, if the sweep aborted, `error`.
+
+### 6.2 Usage-billing metrics
+
+The module also publishes nine metrics to WHMCS's usage-billing feature. The
+system names are stable — renaming one would orphan its stored history — and
+usage is keyed by the ISPConfig username:
+
+| System name | Shown as | Unit | Type |
+|---|---|---|---|
+| `diskusage` | Disk Usage | MB | snapshot |
+| `bandwidth` | Bandwidth | MB | monthly period |
+| `mailquota` | Mailbox Storage | MB | snapshot |
+| `databasequota` | Database Storage | MB | snapshot |
+| `websites` | Websites | accounts | snapshot |
+| `mailboxes` | Mailboxes | accounts | snapshot |
+| `databases` | Databases | accounts | snapshot |
+| `ftpusers` | FTP Users | accounts | snapshot |
+| `dnszones` | DNS Zones | domains | snapshot |
+
+`bandwidth` is a *monthly period* metric because ISPConfig sums `web_traffic`
+per calendar month; each collection overwrites that month's record. The other
+eight are snapshots of what exists right now.
+
+Collecting all nine costs up to six API calls per client (against two for the
+disk/bandwidth import above), so a panel with many services will spend
+noticeably longer on a metrics collection than on the nightly usage import.
+
+### 6.3 Server Sync ("Sync Accounts")
+
+**Configuration > System Settings > Servers**, then **Sync Accounts** on an
+ISPConfig server, lists every client the panel holds and compares it against
+WHMCS's service records — accounts on the panel with no WHMCS service, WHMCS
+services missing from the panel, and rows whose details differ.
+
+How this module fills the comparison in:
+
+- **Unique identifier** — the client's primary website domain, falling back to
+  the ISPConfig username for a client that owns no website (so a website-less
+  client still gets a distinct row rather than colliding on an empty value).
+- **Product** — the ISPConfig **master client template id**, which is exactly
+  what the product's *Client Template* option stores. A WHMCS product matches
+  a panel account when both point at the same template.
+- **Status** — *Suspended* when the ISPConfig client is locked **or** its
+  primary website is inactive (the module's website-only suspension mode), and
+  *Active* otherwise.
+- **Created** — `client.created_at`, which ISPConfig writes once at creation.
+  It is empty for clients created before that column was populated.
+
+The listing reads the whole client table in one call and the template list
+once for the panel, then two lookups per client to find its primary website.
+On a panel with hundreds of clients the sync therefore takes a while; it is an
+on-demand admin action, not something that runs on a schedule.
+
+### 6.4 The ISPConfig block on the servers page
+
+While rendering **Configuration > System Settings > Servers**, WHMCS asks each
+server's module for its remote metadata. This module answers with the panel
+version, the pending job-queue depth, the client count, the number of
+ISPConfig nodes, and whether the SSO companion is installed; WHMCS caches the
+answer and renders the client count as *Services: N* in the Remote Usage Stats
+cell, while the module's own hook renders the rest underneath the hostname.
+
+If a probe fails, its value is dropped and the reason is shown as *Probe
+Errors* instead — the page never breaks because a panel is down. Nothing on
+this page contacts the panel more than once per render.
+
+### 6.5 Single sign-on (optional companion)
+
+ISPConfig core has **no one-time-login API**: `client_login_get()` only
+validates a password, and the remote API's `login()` mints an API session, not
+a panel session. Every older WHMCS/ISPConfig module solved this by storing and
+replaying the customer's panel password. This module does not, so out of the
+box there is **no login button** — customers get the panel URL and their
+username, and nothing more.
+
+To offer a real login button, install the optional panel-side companion:
+
+```sh
+cd companion/ispconfig-sso
+./install.sh                    # or ./install.sh /path/to/ispconfig
+```
+
+Read [`companion/ispconfig-sso/README.md`](../companion/ispconfig-sso/README.md)
+first — it explains what the module adds (one remote function that mints a
+single-use, short-lived token, and one page that redeems it), that it modifies
+no ISPConfig core file, and how to remove it again.
+
+Then, in ISPConfig: **System > Remote Users > (your API user) > Functions**,
+tick *ISPConfig Connect: panel single sign-on (SSO token)* and save. This grant
+is **not** in the standard grant list, because the function does not exist on a
+stock panel.
+
+Finally, in WHMCS, open **Configuration > System Settings > Servers** once. That
+page refresh is what lets the module notice the companion; from the next page
+load on, WHMCS renders a **Log in to ISPConfig** action for services on that
+panel. Until then the button stays hidden — the module never shows a login
+button it cannot honour.
+
+Notes:
+
+- The button is per **service**. There is deliberately no server-level
+  "log in as admin" button: the companion refuses to mint tokens for
+  administrator accounts, because such a token would be a full panel takeover.
+- The token is single-use and expires in under a minute. It is masked in the
+  module log, and the redirect URL that carries it is never logged at all.
+- A suspended (locked) client cannot use SSO — the companion refuses, so a
+  suspension cannot be walked around by clicking the login button.
+- With several ISPConfig servers, the label is advertised as soon as **any** of
+  them reports the companion. On a server that does not have it, clicking the
+  button returns an error naming the companion instead of a blank failure.
+
+## 7. Uninstalling
 
 Remove the product/server assignments in WHMCS, then delete
 `modules/servers/ispconfigconnect/`. The module stores its state as WHMCS
 service properties (`ispconfig_client_id`, `ispconfig_domain_id`, …); it
 creates no extra database tables.
+
+If you installed the panel-side SSO companion, remove it separately on the
+ISPConfig server with `companion/ispconfig-sso/uninstall.sh`.
