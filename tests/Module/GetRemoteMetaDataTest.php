@@ -38,10 +38,13 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
             self::assertTrue(is_scalar($value), sprintf('meta_data[%s] must be scalar', $key));
         }
 
-        // Accounts are ISPConfig clients; services are their websites.
-        self::assertSame(3, $meta['service_count']);
-        self::assertSame(3, $meta['website_count']);
+        // Accounts and services are both ISPConfig CLIENTS: this module creates
+        // one client per WHMCS service. The three seeded websites are counted
+        // nowhere - reaching a vhost total would mean a `SELECT *` over
+        // web_domain, TLS private keys included (RemoteMetaData docblock).
+        self::assertSame(2, $meta['service_count']);
         self::assertSame(2, $meta['client_count']);
+        self::assertArrayNotHasKey('website_count', $meta);
         self::assertSame('3.3.1p1', $meta['ispconfig_version']);
         self::assertSame(4, $meta['pending_jobs']);
         self::assertSame(1, $meta['server_count']);

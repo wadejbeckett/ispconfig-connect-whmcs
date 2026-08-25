@@ -37,12 +37,16 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
  *                          tblservers_remote.updated_at is empty)
  *   ispconfig_error     -> panel line "Probe Errors"
  *   service_count       -> WHMCS CORE renders it as "Services: N"
- *   website_count       -> the same number under a self-describing name, so a
- *                          reader of the stored JSON needs no lookup table
  *   ispconfig_status    -> machine-readable ok/degraded/unavailable summary for
  *                          anything that reads the cached row
  *   sso_available       -> added by the entry file, not here; MetaData() reads
  *                          it to decide whether to offer the SSO button
+ *
+ * `website_count` USED TO BE HERE and was removed deliberately - see "Why
+ * there is no website count" below. Nothing else reads it: the operator-facing
+ * block renders a fixed field list (hooks/ispconfigconnect.php
+ * ISPCONFIGCONNECT_METAPANEL_FIELDS, mirrored by Server\MetaDataPanel::FIELDS)
+ * and neither list ever contained it.
  *
  * What is NOT here, and why: the panel's own "Accounts: N" comes from
  * `tblservers_remote.num_accounts`, a COLUMN this function cannot write. No
@@ -57,28 +61,64 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
  * ISPConfig 3.3.1p1 exposes exactly one counting function over the remote API
  * - `monitor_jobqueue_count` (remote.d/monitor.inc.php is the whole monitor
  * surface; interface/web/monitor/lib/remote.conf.php grants that one name).
- * Every other total has to be derived from a bulk record read, and
+ * Every other total has to be derived from reading records, and
  * remoting_lib.inc.php getDataRecord() answers an array/-1 primary_id with
- * `SELECT *`. That is a security problem before it is a performance one,
- * because every response reaches WHMCS's module log and tblmodulelog is
- * readable by every WHMCS admin:
+ * `SELECT *` - the whole row, secret columns included.
  *
- *   - `sites_web_domain_get(-1)` - which websiteCount() below DOES call -
- *     returns every vhost row INCLUDING `web_domain.ssl_key`, the site's TLS
- *     private key, and `ssl_request`, its CSR (install/sql/ispconfig3.sql);
- *   - `mail_domain_get([])` would likewise return `mail_domain.dkim_private`
- *     and `relay_pass` (same file).
+ * Besides that one count, every probe here reads IDENTIFIERS or a single
+ * version string - never a record - which is what makes them safe to repeat on
+ * a page render:
  *
- * What makes the website counter safe is NOT that it avoids the key material -
- * it cannot - but that `Api\RestClient::SENSITIVE_KEYS` masks those column
- * names at any nesting depth before anything is logged. This probe runs on an
- * admin page render, so it repeats far more often than the nightly sweeps do;
- * RemoteMetaDataTest keeps a leak regression test on exactly this path.
+ *   - `server_get_app_version(0)` answers with the interface's own
+ *     ISPC_APP_VERSION constant (remote.d/server.inc.php);
+ *   - `client_get_all` is `SELECT client_id FROM client` (remote.d/client.inc.php);
+ *   - `server_get_all` is `SELECT server_id, server_name FROM server`
+ *     (remote.d/server.inc.php).
  *
- * RULE for any probe added later: if it reads records rather than a count, its
- * secret columns must be in SENSITIVE_KEYS first. (A mail-domain counter is
- * still not here for a different reason - nothing on the page renders it, and
- * it would need a grant the module does not otherwise require.)
+ * None of them goes through getDataRecord(), so none can widen into a record
+ * read the way a `*_get` function does.
+ *
+ * RULE for any probe added later: this function may only call remote functions
+ * that answer with a count or with identifiers. A bulk record read is not made
+ * acceptable by `Api\RestClient` masking or dropping its secret columns -
+ * masking protects tblmodulelog, not the wire, WHMCS's memory or anything in
+ * between. RemoteMetaDataTest enforces the allowed call list.
+ *
+ * ## Why there is no website count
+ *
+ * This class used to answer `website_count`/`service_count` with
+ * `sites_web_domain_get(-1)`, i.e. `SELECT * FROM web_domain`: every vhost row
+ * on the panel, each carrying `web_domain.ssl_key` - the site's TLS PRIVATE KEY
+ * - and `ssl_request`, its CSR (install/sql/ispconfig3.sql:2036/:2033). Dragging
+ * every site's private key across the network on every Configuration > Servers
+ * render, to arrive at an integer, is indefensible on a panel with hundreds of
+ * sites, and no masking of the log changes that.
+ *
+ * ISPConfig 3.3.1p1 offers no cheap, safe substitute:
+ *
+ *   - there is no `sites_web_domain_count` and no site total in the monitor
+ *     module. `monitor_jobqueue_count` is the only remote function in remote.d
+ *     that RETURNS a count at all (openvz.inc.php counts rows too, but only
+ *     internally, to refuse a duplicate pending action);
+ *   - `client_get_sites_by_user` IS safe (its own SQL selects exactly `domain,
+ *     domain_id, document_root, active ... AND type = 'vhost'`, no key columns
+ *     - remote.d/sites.inc.php), but it is scoped to ONE client's sys_user and
+ *     group list, neither of which is on the client row. Getting a panel-wide
+ *     total that way costs a call per client - `client_get_groupid`, which also
+ *     needs the `client_get_id` grant this module does not otherwise require -
+ *     plus the site call itself. On a page render that is N+1 remote calls to
+ *     replace one integer, and every failure feeds ISPConfig's login lockout;
+ *   - an array filter (`sites_web_domain_get(['type' => 'vhost'])`) still runs
+ *     `SELECT *` (remoting_lib.inc.php getDataRecord()), so it fixes nothing.
+ *
+ * So the number is gone rather than approximated. `service_count` - the one key
+ * WHMCS core itself renders - now reports the ISPConfig CLIENT count, which is
+ * the truthful answer to what core is asking: this module provisions exactly
+ * one ISPConfig client per WHMCS service (Provision\Recipe::create), so the
+ * client population IS the service population, and it costs no extra call.
+ * (A mail-domain counter is absent for the same reason plus one more:
+ * `mail_domain_get([])` would return `mail_domain.dkim_private` and
+ * `relay_pass`, and nothing on the page renders the number.)
  *
  * ## Failure policy
  *
@@ -125,16 +165,17 @@ final class RemoteMetaData
         $probes = [
             'panel version' => fn (): array => ['ispconfig_version' => $this->panelVersion()],
             'pending jobs' => fn (): array => ['pending_jobs' => $this->pendingJobs()],
-            'clients' => fn (): array => ['client_count' => $this->clientCount()],
-            'websites' => function (): array {
-                // service_count is the key WHMCS itself renders ("Services: N")
-                // beneath the account count, mirroring how the bundled modules
-                // show customers vs their subscriptions: accounts are ISPConfig
-                // CLIENTS (one per WHMCS service - Provision\Recipe::create) and
-                // services are the websites those clients own.
-                $websites = $this->websiteCount();
+            'clients' => function (): array {
+                // ONE call answers both keys. service_count is the key WHMCS
+                // itself renders ("Services: N") beneath the account count, and
+                // the client count is the honest value for it: this module
+                // creates exactly one ISPConfig client per WHMCS service
+                // (Provision\Recipe::create). It used to report the panel's
+                // website total, which cost a bulk read of web_domain - see the
+                // class docblock, "Why there is no website count".
+                $clients = $this->clientCount();
 
-                return ['website_count' => $websites, 'service_count' => $websites];
+                return ['client_count' => $clients, 'service_count' => $clients];
             },
             'ISPConfig nodes' => fn (): array => ['server_count' => $this->serverCount()],
         ];
@@ -221,36 +262,6 @@ final class RemoteMetaData
     private function clientCount(): int
     {
         return $this->countOf($this->session->call('client_get_all', []), 'client_get_all');
-    }
-
-    /**
-     * Websites panel-wide in ONE call: remote.d/sites.inc.php
-     * sites_web_domain_get() delegates to remoting_lib::getDataRecord(), whose
-     * `$primary_id == -1` branch runs `SELECT * FROM web_domain` (no auth
-     * clause) and returns every record. Grant `sites_web_domain_get` is already
-     * required for provisioning, so this adds no new permission.
-     *
-     * Only `type = vhost` rows are real websites - the table also holds alias
-     * domains and vhost subdomains (web_vhost_domain.tform.php).
-     */
-    private function websiteCount(): int
-    {
-        $response = $this->session->call('sites_web_domain_get', ['primary_id' => -1]);
-        if ($response === false || $response === null) {
-            return 0;
-        }
-        if (!is_array($response)) {
-            throw new \UnexpectedValueException('sites_web_domain_get returned a non-list response');
-        }
-
-        $vhosts = 0;
-        foreach ($response as $record) {
-            if (is_array($record) && (string) ($record['type'] ?? 'vhost') === 'vhost') {
-                $vhosts++;
-            }
-        }
-
-        return $vhosts;
     }
 
     /**

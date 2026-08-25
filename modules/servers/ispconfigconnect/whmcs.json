@@ -17,7 +17,7 @@
             "Live panel version, node and job-queue health on Configuration > Servers",
             "Optional password-free single sign-on via the ispconfig-sso companion",
             "Actionable Test Connection diagnostics including missing API grants",
-            "Credential-scrubbed module logging of every API call"
+            "Every API call logged with credentials masked, and the panel's customer records - bank details, tax id, postal address, 2FA columns - dropped before they reach the log"
         ]
     },
     "support": {

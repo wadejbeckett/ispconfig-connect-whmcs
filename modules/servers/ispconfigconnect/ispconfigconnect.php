@@ -205,7 +205,14 @@ function ispconfigconnect_ConfigOptions(): array
         'Panel URL Override' => [
             'Type' => 'text',
             'Size' => '40',
-            'Description' => 'Panel URL shown to clients (empty = https://<hostname>:<port>/)',
+            // The requirement is stated here because enforcement is silent:
+            // the value is rendered as a link and used as an SSO redirect
+            // target, so anything that is not an absolute http(s) URL is
+            // ignored in favour of the server-derived address rather than
+            // shown to a customer (ispconfigconnect_panelUrlOverride()).
+            'Description' => 'Panel URL shown to clients (empty = https://<hostname>:<port>/).'
+                . ' Must be an absolute http:// or https:// URL with no query string;'
+                . ' anything else is ignored.',
         ],
     ];
 }
@@ -770,6 +777,11 @@ function ispconfigconnect_UsageUpdate(array $params, ?callable $rowProvider = nu
     $services = ispconfigconnect_serviceRefs($serverId, $rowProvider);
     $write = $writer ?? ispconfigconnect_usageWriter();
 
+    // What WHMCS already holds for each service's month-to-date bandwidth, so
+    // a later, lower reading (a suspended site stops accruing traffic on the
+    // panel) cannot erase it - see Usage\ServiceUsage::toHostingColumnsGiven().
+    $storedBandwidth = ispconfigconnect_storedBandwidth($serverId, $rowProvider);
+
     $updated = 0;
     /** @var array<int, string> $skipped WHMCS service id => reason */
     $skipped = [];
@@ -793,7 +805,10 @@ function ispconfigconnect_UsageUpdate(array $params, ?callable $rowProvider = nu
             $skipped = $report->failures;
             foreach ($report->usage as $usage) {
                 try {
-                    $write($usage->serviceId, $usage->toHostingColumns());
+                    $write(
+                        $usage->serviceId,
+                        $usage->toHostingColumnsGiven($storedBandwidth[$usage->serviceId] ?? null)
+                    );
                     $updated++;
                 } catch (\Throwable $writeFailure) {
                     $skipped[$usage->serviceId] = 'tblhosting update failed: '
@@ -1089,12 +1104,13 @@ function ispconfigconnect_AdminSingleSignOn(array $params): array
     }
 
     try {
-        $config = Params::serverConfig($params);
-        $override = trim((string) ($params['configoption14'] ?? ''));
-
+        // WHMCS sends the browser straight to this value, so it goes through
+        // the same validation as every other rendering of the panel URL - a
+        // configoption14 of `javascript:...` or an off-site host must not
+        // become a redirect target (ispconfigconnect_panelUrlOverride()).
         return [
             'success' => true,
-            'redirectTo' => $override !== '' ? $override : $config->panelUrl(),
+            'redirectTo' => ispconfigconnect_panelUrl($params),
         ];
     } catch (\Throwable $failure) {
         return [
@@ -1283,15 +1299,114 @@ function ispconfigconnect_errorString(string $operation, \Throwable $failure): s
 }
 
 /**
- * Panel URL shown to humans: the Panel URL Override product option when set,
- * else derived from the server config (spec 2.8).
+ * Panel URL shown to humans: the Panel URL Override product option when it is
+ * usable, else derived from the server config (spec 2.8).
+ *
+ * Every caller hands the result to a browser - as an href in the client area
+ * and the admin service tab, and as an SSO redirect target - so the override is
+ * validated first; see ispconfigconnect_panelUrlOverride().
  *
  * @param array<string, mixed> $params
  */
 function ispconfigconnect_panelUrl(array $params): string
 {
-    return Params::productConfig($params)->panelUrlOverride
+    return ispconfigconnect_panelUrlOverride($params)
         ?? Params::serverConfig($params)->panelUrl();
+}
+
+/**
+ * The Panel URL Override (configoption14) when it is a URL that is safe to put
+ * in front of a browser, otherwise null - meaning "fall back to the URL derived
+ * from the WHMCS server row".
+ *
+ * WHY THIS EXISTS. The option is a free-text product setting, and its value is
+ * consumed in three places that all hand it to a browser: the "Open Control
+ * Panel" button every customer of the product sees, the admin service tab's
+ * panel link, and the single sign-on redirect target (directly for
+ * AdminSingleSignOn, as the base of the companion login URL for
+ * ServiceSingleSignOn). HTML escaping does not make any of those safe -
+ * `javascript:alert(1)` passes through htmlspecialchars() and Smarty's |escape
+ * unchanged and still executes on click - so a mistyped or hostile value is
+ * stored XSS against customers, and an off-site absolute URL is an open
+ * redirect. An allowlist at the point of consumption is the only defence that
+ * holds regardless of how the value got stored.
+ *
+ * THE RULE. It is a superset of Sso\CompanionClient::normalizeBaseUrl(), so
+ * anything accepted here is also a legal SSO base:
+ *
+ *   - absolute, with an http or https scheme (case-insensitive) and a host;
+ *   - no credentials in the authority - `https://panel.example.net@evil.tld/`
+ *     reads as the panel and resolves to evil.tld;
+ *   - no query and no fragment, because the SSO path is appended to this base;
+ *   - no whitespace, control characters or backslashes ANYWHERE.
+ *
+ * The character screen runs BEFORE parse_url() and is not cosmetic: every one
+ * of those characters is a way to make parse_url() and a browser disagree about
+ * the same string. Browsers strip tabs, newlines and returns out of a URL before
+ * resolving it, so "java\nscript:alert(1)" is a live javascript: URL that
+ * parse_url() reports as a harmless relative path; they read a backslash inside
+ * an authority as '/', which parse_url() does not; and a bare trailing '?' or
+ * '#' yields no query/fragment member at all, so isset() alone would not see it.
+ *
+ * What is deliberately NOT checked is WHICH host the operator names: a vanity
+ * hostname that differs from the API host is the normal reason to set this
+ * option at all. The scheme is the part the module can decide; the host is the
+ * operator's, and the product config screen is already admin-only.
+ *
+ * Rejection is silent and non-fatal by design - this runs while a customer's
+ * page is being rendered, and a broken option must degrade to the panel's real
+ * address rather than blank the page or break login. The option's Description
+ * states the requirement (see ispconfigconnect_ConfigOptions()).
+ *
+ * @param array<string, mixed> $params
+ * @return string|null the override exactly as the operator typed it, or null
+ */
+function ispconfigconnect_panelUrlOverride(array $params): ?string
+{
+    $override = Params::productConfig($params)->panelUrlOverride; // trimmed; '' is null
+    if ($override === null) {
+        return null;
+    }
+
+    // Space (\x20) and DEL (\x7f) are inside the range endpoints on purpose.
+    // Byte-based and encoding-independent, so it holds whatever the operator
+    // pasted.
+    if (preg_match('/[\x00-\x20\x7f?#\\\\]/', $override) === 1) {
+        return null;
+    }
+
+    // The same rule, continued into non-ASCII. The screen above is bytewise,
+    // so UNICODE whitespace (U+00A0, U+2028, U+3000) and the zero-width and
+    // BiDi format characters (U+200B, U+FEFF, U+202E) walk straight through
+    // it. None of them is a scheme bypass - what they buy is a HOMOGRAPH: an
+    // invisible character in the authority makes a link read as the panel's
+    // own hostname while resolving somewhere else, and it survives a paste out
+    // of a document without ever showing up in the product config field. That
+    // matters most on the SSO path, where the base URL is what a live login
+    // token is handed to.
+    //
+    // \p{Z} is every separator, \p{Cf} every format character; \p{Cc} repeats
+    // the ASCII controls harmlessly. Non-ASCII in general is NOT rejected - an
+    // operator may legitimately type an IDN as raw UTF-8 instead of punycode.
+    // A non-1 result also covers preg_match()'s FALSE on malformed UTF-8,
+    // which is refused rather than waved through unexamined.
+    if (preg_match('/[\p{Z}\p{Cf}\p{Cc}]/u', $override) !== 0) {
+        return null;
+    }
+
+    $parts = parse_url($override);
+    if (
+        !is_array($parts)
+        || !isset($parts['scheme'], $parts['host'])
+        || !in_array(strtolower((string) $parts['scheme']), ['http', 'https'], true)
+        || (string) $parts['host'] === ''
+        || isset($parts['user'])
+        || isset($parts['pass'])
+    ) {
+        return null;
+    }
+
+    return $override;
 }
 
 /**
@@ -1398,7 +1513,12 @@ function ispconfigconnect_companionClient(array $params, SessionManager $session
     return new CompanionClient(
         $session,
         Params::serverConfig($params),
-        Params::productConfig($params)->panelUrlOverride
+        // Validated, not raw: this string becomes the base of the URL WHMCS
+        // redirects the customer's browser to. CompanionClient rejects an
+        // unusable base by throwing, which would turn a typo in a product
+        // option into "single sign-on is broken"; screening it here degrades
+        // to the panel's real address instead.
+        ispconfigconnect_panelUrlOverride($params)
     );
 }
 
@@ -1502,6 +1622,39 @@ function ispconfigconnect_serviceStatus(string $constant, string $fallback): str
 }
 
 /**
+ * tblhosting.bwusage as it currently stands, per service, from the same rows
+ * the sweep already reads. Missing or unreadable values map to null, which
+ * makes the write unconditional (previous behaviour).
+ *
+ * @param null|callable(int): list<array<string, mixed>> $rowProvider
+ * @return array<int, int>
+ */
+function ispconfigconnect_storedBandwidth(int $serverId, ?callable $rowProvider = null): array
+{
+    try {
+        $rows = $rowProvider === null
+            ? ispconfigconnect_serverServiceRows($serverId)
+            : $rowProvider($serverId);
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $stored = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $serviceId = (int) ($row['id'] ?? 0);
+        $bandwidth = $row['bwusage'] ?? null;
+        if ($serviceId > 0 && is_numeric($bandwidth)) {
+            $stored[$serviceId] = (int) $bandwidth;
+        }
+    }
+
+    return $stored;
+}
+
+/**
  * Every service on one WHMCS server, as the usage code addresses them.
  *
  * @param null|callable(int): list<array<string, mixed>> $rowProvider
@@ -1568,14 +1721,23 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
                 ispconfigconnect_serviceStatus('ACTIVE', 'Active'),
                 ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended'),
             ])
-            ->get(['id', 'username']);
+            // bwusage comes along so the sweep can refuse to overwrite an
+            // accumulated month's traffic with a lower reading (see
+            // Usage\ServiceUsage::toHostingColumnsGiven()).
+            ->get(['id', 'username', 'bwusage']);
 
         $rows = [];
         foreach (is_iterable($services) ? $services : [] as $service) {
             $columns = (array) $service;
             $id = (int) ($columns['id'] ?? 0);
             if ($id > 0) {
-                $rows[$id] = ['id' => $id, 'username' => (string) ($columns['username'] ?? '')];
+                $rows[$id] = [
+                    'id' => $id,
+                    'username' => (string) ($columns['username'] ?? ''),
+                    'bwusage' => isset($columns['bwusage']) && is_numeric($columns['bwusage'])
+                        ? (int) $columns['bwusage']
+                        : null,
+                ];
             }
         }
         if ($rows === []) {

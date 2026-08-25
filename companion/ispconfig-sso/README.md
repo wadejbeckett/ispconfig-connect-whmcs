@@ -7,6 +7,27 @@ billing system simply shows the panel URL and username instead.
 
 GPLv3. No ISPConfig core file is modified, read-only or otherwise.
 
+> ### ⚠ The panel must be served over HTTPS
+>
+> A token is a **password substitute travelling in a URL**. Over plain HTTP the mint response, the
+> redirect that carries the token and the panel session that follows are all readable by anything on
+> the path — and single use plus a 45-second lifetime buy nothing against an interceptor who simply
+> redeems the token before the customer's browser does.
+>
+> Both halves therefore **refuse to operate on a non-TLS request**. Minting answers
+> `Single sign-on requires an encrypted (https) connection to the panel.`; the redemption endpoint
+> refuses without touching the token. ISPConfig's own installer asks *"Do you want a secure (SSL)
+> connection to the ISPConfig web interface"* and **defaults to yes** (`install/install.php:608`), so
+> on a normal install this is already satisfied.
+>
+> **Behind a TLS-terminating reverse proxy** PHP sees the proxy's plaintext hop and cannot tell the
+> difference, so the gate steps aside when — and only when — the operator has declared that topology
+> in ISPConfig's own security settings:
+> `reverse_proxy_panel_allowed` in the `[permissions]` section of
+> `/usr/local/ispconfig/security/security_settings.ini`, set to anything other than the shipped
+> `none`. That is a local file only root can write. No request header is ever trusted for this, and
+> declaring it makes TLS termination the proxy's responsibility.
+
 ---
 
 ## 1. Why this exists
@@ -52,8 +73,15 @@ Two consequences of that mechanism, both deliberate here:
   therefore declares exactly **one** public method of its own, and `tests/run.php` asserts that it
   takes over nothing else.
 - Because the function is registered in the method map, `get_function_list` reports it. That is how
-  a client detects the companion: one call, no extra permission, and absence is distinguishable
-  from "installed but not granted".
+  a client detects the companion: one call, and because that call returns the handler's **whole**
+  method map rather than the caller's own grants (`remoting.inc.php:685-692` returns `$this->_methods`),
+  "not installed" stays distinguishable from "installed but not granted".
+  `get_function_list` is **not** an ungated call — it is permission-checked like any other
+  (`checkPerm($session_id, 'get_function_list')`, `remoting.inc.php:687`). The grant lives in the
+  panel's **Server functions** checkbox (`interface/web/admin/lib/remote.conf.php:3`), which a
+  billing system already needs for `server_get`; only `login` and `logout` are ungated. A remote user
+  without it gets `permission_denied` from the probe, which a client must read as *SSO unavailable*,
+  not as *companion absent*.
 
 ## 3. Install
 
@@ -70,7 +98,8 @@ That last step is what makes the permission checkbox appear: System → Remote U
 Functions list by including `<module>/lib/remote.conf.php` for the modules named in the **logged-in
 admin's** module column (`interface/web/admin/form/remote_user.tform.php:36-45`). Without it the
 checkbox never renders — and saving that form would then *drop* the grant, because a `CHECKBOXARRAY`
-field is rebuilt from the checkboxes that were posted (`tform_base.inc.php:832`).
+field is rebuilt from the checkboxes that were posted (`tform_base.inc.php:828-833`, the `VARCHAR`
+case of `_encode()`: an array is `implode()`d, and nothing posted stores `''`).
 
 It does **not** put anything in the panel navigation: `nav.php` renders only modules that ship
 `lib/module.conf.php`, and this one deliberately ships none.
@@ -79,6 +108,12 @@ It does **not** put anything in the panel navigation: `nav.php` renders only mod
 System → Remote Users → your API user → Functions →
 tick *ISPConfig Connect: panel single sign-on (SSO token)* → Save.
 (If the box is missing, log out and back in — the list is built from the logged-in admin's modules.)
+
+The same user also needs **Server functions**, because that is the checkbox carrying
+`get_function_list` — how a client discovers that this module is installed at all.
+
+**And confirm the panel is HTTPS.** Both halves refuse on a plaintext request; see the box at the
+top of this file, including what to set when a reverse proxy terminates TLS for you.
 
 Uninstall reverses all three steps:
 
@@ -127,11 +162,14 @@ Returns:
 The caller redirects the browser to `<panel base URL>` + `path` + `?token=` + `token`.
 `path` is reported rather than assumed so the endpoint can move without a client release.
 
-Faults (all flattened to `remote_fault` by the JSON handler, message preserved):
+Faults (all flattened to `remote_fault` by the JSON handler, message preserved). Every one of them
+is written to `sys_log` and `auth.log` first, with the real reason; the caller only ever sees the
+message in this table:
 
 | Message | Cause |
 |---|---|
 | `You do not have the permissions to access this function.` | grant not ticked, **or** the session is a client login (`login(u, p, true)`) rather than a remote user's — client sessions can never mint (core wording for both, on purpose) |
+| `Single sign-on requires an encrypted (https) connection to the panel.` | the API request did not arrive over TLS and no reverse proxy is declared — see the box at the top |
 | `The client id must be an integer greater than zero.` | bad `client_id` |
 | `The bind IP address is invalid.` | `bind_ip` is not a literal IP |
 | `There is no panel user for this client id.` | no `sys_user` row with that `client_id` |
@@ -153,7 +191,27 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   `client_login` sessions outright — otherwise one API-enabled customer could mint a panel login
   for **any other** non-admin client on the panel. The refusal reuses core's permission wording
   and is written to both audit logs.
-- Never for an administrator account, checked at mint **and** again at redemption.
+- Only over TLS, or on a panel whose operator has declared a reverse proxy in
+  `security_settings.ini`. See the box at the top of this file.
+
+**Who may be minted FOR — the exact boundary**
+
+The only account class the module refuses is `sys_user.typ = 'admin'`, checked at mint **and** again
+at redemption. Everything else on the panel is mintable, and that is a wider set than "customers":
+
+- **Resellers are mintable.** ISPConfig does not give a reseller its own user type — every client the
+  API creates gets `$type = 'user'` (`remoting_lib.inc.php:329`), and `limit_client > 0` merely adds
+  the `client` module to that user's module list (`:311-313`). A token for a reseller therefore opens
+  a panel session that can create, edit, suspend and delete **that reseller's sub-clients** and change
+  their passwords. If you sell reseller plans through your billing system this is the feature working
+  as intended; if you did not realise resellers were in scope, this is the sentence to re-read.
+- A client whose `sys_user` row is shared with other services, or hand-created in the panel, is
+  mintable too — the mint targets `client_id`, and takes the lowest `sys_user.userid` carrying it.
+- Admin accounts are refused in both halves. The redemption-side check is not redundant: it means a
+  hand-inserted row in `connectsso_token` still cannot become an admin login.
+
+So the blast radius of the grant is **every non-administrator panel account, resellers included** —
+not "customers". Size the grant accordingly (see *A leaked API grant is a leaked panel*, below).
 
 **The token itself**
 - 32 bytes from `random_bytes()` (256 bits), hex-encoded. Not `uniqid`, not `mt_rand`, not a hash of
@@ -176,7 +234,8 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   redeemable tokens can accumulate and means an abandoned SSO click cannot be redeemed later from a
   browser history entry.
 - Redeemed rows are kept for an hour so a replay is *recognisably* a replay and gets audited as one,
-  then garbage-collected on the next mint.
+  then garbage-collected — on the next mint, and at the start of the next redemption. There is no
+  cron job to install.
 
 **Binding**
 - Always bound to one `client_id`/`sys_userid`.
@@ -191,16 +250,43 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   Unbound is the safe default; bound is stronger where the topology allows it.
 
 **Redemption endpoint**
-- Rate-limited by source address before the token is even looked at: 10 attempts per 5 minutes
-  (`connectsso_attempt`), mirroring core's own `attempts_login` policy. **Every** rejection path
-  counts, so guessing is bounded regardless of which check rejects.
-- Rejections are indistinguishable to the visitor — expired, replayed, unknown and IP-mismatched all
-  produce the same page. The specific reason goes to the audit log only. The page is never an oracle
-  about someone else's token.
+- **TLS first.** A request that did not arrive over TLS is refused before the token is looked at,
+  before the rate limiter, before anything — see the box at the top. It costs no rate-limit budget:
+  it is a server-configuration refusal, not a guess at somebody's token.
+- Rate-limited by source address before the token is looked at: 10 failures per 5 minutes, in the
+  module's own `connectsso_attempt` table. That is the budget ISPConfig's **remote API** applies to
+  `attempts_login` (`remoting.inc.php:94` at login, `:578` on every session lookup), and this
+  endpoint matches it. Note that the panel's own **login form** is stricter and different —
+  more than 5 failures within 1 minute (`login/index.php:61-68`) — so "same as ISPConfig" is not one
+  number; this endpoint deliberately follows the API's. As in core, a request that arrives already at
+  the limit is refused *without* being counted, so hammering does not extend the block.
+- **What counts, exactly.** A failure counts when it was reached by **presenting a token value that
+  did not check out**: malformed, unknown, expired, replayed, IP-binding mismatch, or a burn that did
+  not take. Those are the guessing paths, and they are the ones the budget bounds.
+
+  Nothing else counts, and the two kinds of "nothing else" are worth naming:
+  - **Before the token is read at all** — the TLS refusal, and a request that arrives already at the
+    limit. Neither says anything about a token.
+  - **After the token checked out and was burned** — maintenance mode, a panel user that vanished or
+    went inactive, a client suspended in the seconds since minting, a session that could not be
+    started or regenerated. Each of these costs a genuine, already-spent token to reach, so they are
+    useless for guessing.
+
+  Counting either kind would let one server-configuration mistake, one maintenance window or one
+  suspended customer exhaust the shared budget of every visitor behind the same address — which,
+  behind a proxy that does not set `REMOTE_ADDR`, is everyone. All of them are still audited; the
+  rate limiter is a guessing bound, not the audit trail.
+- Rejections are indistinguishable to the visitor: every token-related refusal — malformed, unknown,
+  expired, replayed, IP-mismatched, failed burn — produces the identical 403 page. The specific
+  reason goes to the audit log only, so the page is never an oracle about someone else's token. The
+  two refusals that carry a different status say nothing about a token either: 429 for the rate limit
+  and 503 for maintenance mode, both properties of the server rather than of the link.
 - **Session fixation:** `session_regenerate_id(true)` before anything is written to the session, and
-  a failure to regenerate is fatal. ISPConfig's own login makes this optional (Security settings →
-  `session_regenerate_id`, because of core issue #3827); here it is mandatory, because a
-  token-based login with an attacker-chosen session id is worse than no SSO at all.
+  a failure to regenerate is fatal. ISPConfig's own login makes this optional — `session_regenerate_id`
+  in the `[permissions]` section of `/usr/local/ispconfig/security/security_settings.ini`, a
+  server-side file, not a panel form (`login/index.php:96-102`, because of core issue #3827). Here it
+  is mandatory, because a token-based login with an attacker-chosen session id is worse than no SSO
+  at all.
 - **Open redirect:** the destination is a fixed `/index.php`. The request cannot influence where it
   lands. The WHMCS-side client independently refuses any endpoint path from the panel that is not a
   plain local path, so neither half will build an off-site redirect.
@@ -217,8 +303,11 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   panel. The refusal is a 503.
 - The rate-limit counter is a single atomic `INSERT … ON DUPLICATE KEY UPDATE` on the `ip_hash`
   primary key, so parallel rejected redemptions cannot race the counter and be under-counted.
-- The PHP files under `lib/` sit inside the panel's document root (both stock vhosts serve
-  `interface/web/` and deny only `*.lng` and dotfiles), so each carries a direct-request guard:
+- The PHP files under `lib/` sit inside the panel's document root. Both stock vhost templates serve
+  `interface/web/`; the Apache one denies only `*.lng`
+  (`install/tpl/apache_ispconfig.vhost.master`, `<FilesMatch "\.lng$">`), and the nginx one denies
+  `*.lng` and dotfiles (`install/tpl/nginx_ispconfig.vhost.master`, `location ~ /\.`) — neither
+  denies a `.php` under `lib/`. So each such file carries a direct-request guard:
   requested over HTTP without the panel bootstrap (`ISPC_ROOT_PATH`), it answers 404 and stops —
   no fatal, no path disclosure. An `.htaccess` would not be reliable here (`AllowOverride None`
   in the mpm_itk vhost; nginx ignores it), which is why the guard is in the files themselves.
@@ -231,6 +320,12 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   property) and is why the token is single-use, expires in under a minute, and is stored hashed.
   The endpoint also accepts the token by **POST**, so a caller able to render an auto-submitting
   form can keep it out of access logs and browser history entirely.
+- **The TLS gate is a check on the connection PHP sees, not a proof of end-to-end encryption.** It
+  refuses the case that is unambiguously wrong (a plaintext request to the panel itself). It cannot
+  see the hop between a browser and a reverse proxy, or between the proxy and the panel; where the
+  operator declared `reverse_proxy_panel_allowed`, both of those are the operator's to get right. It
+  also says nothing about the *billing system's* side of the call — that end must verify the panel's
+  certificate itself, which is the connector's `Access Hash` / `insecure:` setting.
 - **`REMOTE_ADDR` only.** `X-Forwarded-For` and friends are client-supplied and are never consulted.
   Behind a reverse proxy, make the proxy set `REMOTE_ADDR` (`mod_remoteip`, nginx `realip`), or
   leave IP binding off; otherwise the rate limiter buckets every visitor together and binding
@@ -240,8 +335,13 @@ design assumes it will leak eventually and makes a leaked token worth as little 
   silent, and IP binding blocks it where topology allows, but it is not fully preventable in a
   redirect-based flow.
 - **A leaked API grant is a leaked panel.** A remote user holding `connect_sso_token_create` can
-  mint a login for any non-admin client on the panel. Grant it only to the API user your billing
-  system uses, and keep that user's Remote Access IP list populated.
+  mint a login for **every non-administrator account on the panel, resellers included** — see
+  *Who may be minted FOR* above. Grant it only to the API user your billing system uses, and keep
+  that user's Remote Access IP list populated. Note what that list actually is: ISPConfig resolves
+  any hostname in it with `dns_get_record()` **on every login**
+  (`remoting.inc.php:173-189`), with no caching and no failure handling — a hostname entry makes your
+  DNS an authorisation input, and a resolver failure silently drops the entry and locks the caller
+  out. Prefer literal addresses.
 
 ## 6. What it writes
 
@@ -255,7 +355,12 @@ Two tables, both module-owned, neither referenced by anything in ISPConfig:
 Neither survives uninstall by default, and losing them costs nothing: everything in them expires
 within a minute (tokens) or five (rate-limit buckets).
 
-Audit lines go to `sys_log` (Monitor → System Log) for every mint, refusal and successful sign-in.
+Audit lines go to `sys_log` (Monitor → System Log) for every mint, every refusal in **either** half —
+including a call from a remote user that does not hold the grant — and every successful sign-in.
+Core will not cover that first case for you: `checkPerm()`'s own `REMOTE-LIB DENY` line is written at
+`LOGLEVEL_WARN` (`remoting.inc.php:553`), which the priority rule below discards on a shipped
+install, so this module writes its own.
+
 They are written at **priority 2 (`LOGLEVEL_ERROR`) on purpose**: `app.inc.php` `log()` silently
 drops anything below `$conf['log_priority']`, and the installer sets that to 2 on every shipped
 distribution (`install/tpl/config.inc.php.master:145`, `install/dist/conf/*.conf.php:39`) — an
@@ -293,19 +398,27 @@ php tests/run.php
 A standalone harness — no panel, no database, no test framework. It replays core's remote.d
 auto-loader against this module (so a rename or an accidental second public method fails loudly),
 and drives the mint function through every refusal path and the happy path against a stand-in for
-`$app`, asserting among other things that the clear token appears in **no** stored column and in
-**no** log line.
+`$app`, asserting among other things that:
+
+- the clear token appears in **no** stored column and in **no** log line;
+- the TLS gate refuses plaintext and steps aside only for a declared reverse proxy;
+- **every** refusal writes an audit line to both `sys_log` and `auth.log` and mints nothing — that
+  one is table-driven, so a refusal added to the function without being added to the table fails the
+  count assertion rather than slipping through unaudited;
+- every SQL statement in the module survives core's `securityScan()`.
 
 What it cannot cover is the redemption endpoint, which is a top-level script that redirects and
 exits. That half is verified by hand on a real panel; the harness prints the checklist when it
-finishes (replay, expiry, IP binding, rate limit, 2FA hand-off, session-id rotation, and the
-install/uninstall round trip).
+finishes (replay, expiry, IP binding, rate limit, TLS gate, 2FA hand-off, session-id rotation, and
+the install/uninstall round trip).
 
 ## 9. Compatibility
 
-Developed against **ISPConfig 3.3.1p1**, whose source is cited inline throughout. The extension
-point (`remoting_handler_base.inc.php`) has existed since 3.1.x; `install.sh` checks for it and
-refuses to install where it is absent. Everything the module reads from core —
+Developed and verified against **ISPConfig 3.3.1p1**, whose source is cited inline throughout — that
+is the only version any claim here has been checked against. The extension point it depends on is
+`interface/lib/classes/remoting_handler_base.inc.php`; `install.sh` checks that the file exists and
+that it still globs `web/*/lib/classes/remote.d`, and refuses (or warns) where it does not, rather
+than installing something that would silently never register. Everything the module reads from core —
 `sys_user`, `client.locked` / `client.canceled`, the session keys written by `login/index.php`, the
 OTP hand-off — is long-standing, but nothing here is upstream API: **re-verify after a major
 ISPConfig upgrade**, and treat this README's line-number citations as version-specific.

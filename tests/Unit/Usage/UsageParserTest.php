@@ -7,6 +7,7 @@ namespace Ispconfigconnect\Tests\Unit\Usage;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Usage\ClientUsage;
+use WHMCS\Module\Server\Ispconfigconnect\Usage\ServiceUsage;
 use WHMCS\Module\Server\Ispconfigconnect\Usage\UsageParser;
 
 /**
@@ -139,6 +140,102 @@ final class UsageParserTest extends TestCase
 
         self::assertTrue($usage->diskUnlimited());
         self::assertTrue($usage->bandwidthUnlimited());
+    }
+
+    /**
+     * The traffic response and the disk response do NOT cover the same objects:
+     * get_trafficquota_data() selects "type='vhost' OR type='vhostsubdomain' OR
+     * type='vhostalias'" (quota_lib.inc.php:83) while get_quota_data() selects
+     * type='vhost' alone (:17). Bandwidth USAGE is therefore summed over all
+     * three types, but the traffic_quota COLUMN is only visible on the vhost
+     * rows - so a client with a quota'd website plus a subdomain would be given
+     * a limit that does not include the subdomain's own quota, while being
+     * charged for the subdomain's bytes.
+     *
+     * ISPConfig enforces traffic_quota PER DOMAIN, each against its own bytes
+     * (300-quota_notify.inc.php:86-96), so that combination bills overage the
+     * panel would never have charged. When the limit cannot be seen for every
+     * domain whose bytes are counted, the honest answer is "unlimited", which
+     * makes toHostingColumns() omit bwlimit and leaves the WHMCS admin's own
+     * configured limit alone.
+     */
+    public function testTrafficFromADomainWithNoVisibleQuotaMakesTheLimitUnknown(): void
+    {
+        $usage = UsageParser::parse(
+            clientId: 2,
+            // Only the vhost comes back from get_quota_data().
+            diskQuota: [self::siteRow(['traffic_quota' => '10240'])],
+            traffic: [
+                'example.com' => ['domain_id' => '5', 'this_month' => '1048576'],
+                // A vhostsubdomain: it has a web_domain row and a traffic_quota
+                // of its own, but get_quota_data() never returned it.
+                'staging.example.com' => ['domain_id' => '6', 'this_month' => '3145728'],
+            ],
+        );
+
+        // Its bytes are still billed - that part is correct and deliberate.
+        self::assertSame(4, $usage->bandwidthUsageMegabytes());
+
+        // But the limit is not knowable from this response set.
+        self::assertTrue(
+            $usage->bandwidthUnlimited(),
+            'traffic was counted for domain_id 6, whose traffic_quota is not in the disk response'
+        );
+        self::assertNull($usage->trafficLimitBytes);
+
+        $columns = ServiceUsage::fromClientUsage(101, $usage)->toHostingColumns();
+        self::assertArrayNotHasKey('bwlimit', $columns);
+        // Disk is unaffected: usage and limit both come from the vhost rows.
+        self::assertSame(1024, $columns['disklimit']);
+    }
+
+    /**
+     * The mirror of the case above: when every domain that carried traffic has
+     * a vhost row in the disk response, the limit IS complete and is reported.
+     */
+    public function testTrafficLimitSurvivesWhenEveryTrafficDomainHasAQuotaRow(): void
+    {
+        $usage = UsageParser::parse(
+            clientId: 2,
+            diskQuota: [
+                self::siteRow(['traffic_quota' => '10240']),
+                self::siteRow([
+                    'domain_id' => '6',
+                    'domain' => 'second.example',
+                    'system_user' => 'web6',
+                    'traffic_quota' => '1024',
+                ]),
+            ],
+            traffic: [
+                'example.com' => ['domain_id' => '5', 'this_month' => '1048576'],
+                'second.example' => ['domain_id' => '6', 'this_month' => '3145728'],
+            ],
+        );
+
+        self::assertFalse($usage->bandwidthUnlimited());
+        self::assertSame(11264, $usage->bandwidthLimitMegabytes());
+    }
+
+    /**
+     * A traffic entry is emitted for every ACTIVE domain even when it carried
+     * no bytes this month (quota_lib seeds $traffic_data[$domain]['domain_id']
+     * before the sums, :90). Such an entry must not poison the limit: nothing
+     * is being billed for it.
+     */
+    public function testATrafficEntryWithNoBytesDoesNotMakeTheLimitUnknown(): void
+    {
+        $usage = UsageParser::parse(
+            clientId: 2,
+            diskQuota: [self::siteRow(['traffic_quota' => '10240'])],
+            traffic: [
+                'example.com' => ['domain_id' => '5', 'this_month' => '1048576'],
+                // Present in the map, zero bytes, no vhost row.
+                'alias.example.net' => ['domain_id' => '7'],
+            ],
+        );
+
+        self::assertFalse($usage->bandwidthUnlimited());
+        self::assertSame(10240, $usage->bandwidthLimitMegabytes());
     }
 
     public function testMissingMonitorDataYieldsZeroUsedNotAFatal(): void
@@ -371,5 +468,85 @@ final class UsageParserTest extends TestCase
         self::assertSame(2, $counted->dnsZoneCount);
         self::assertSame(1, $counted->websiteCount);
         self::assertSame(512, $counted->diskUsageMegabytes());
+    }
+
+    /**
+     * Suspension must not erase the month's billable traffic. ISPConfig counts
+     * traffic only for ACTIVE sites (quota_lib.inc.php get_trafficquota_data
+     * filters active='y'), so a suspended service reports 0 bytes - and WHMCS
+     * keeps one figure per service, so writing that 0 would bill the month as
+     * if the customer had used nothing.
+     */
+    public function testAZeroReadingNeverErasesTheMonthsAccumulatedBandwidth(): void
+    {
+        $usage = new ClientUsage(
+            clientId: 7,
+            diskUsedBytes: 1024 * 1024 * 100,
+            diskLimitBytes: null,
+            trafficThisMonthBytes: 0,
+            trafficLimitBytes: null,
+            mailUsedBytes: 0,
+            mailQuotaBytes: null,
+            databaseUsedBytes: 0,
+            databaseQuotaBytes: null,
+            websiteCount: 1,
+            mailboxCount: 0,
+            databaseCount: 0,
+            ftpUserCount: 0,
+            dnsZoneCount: 0,
+        );
+
+        $columns = ServiceUsage::fromClientUsage(101, $usage)->toHostingColumnsGiven(4096);
+
+        self::assertSame(4096, $columns['bwusage'], 'accrued traffic must survive a suspension');
+        // Disk is a live snapshot, not an accumulation: a suspended site still
+        // occupies its disk, so that figure is written as measured.
+        self::assertSame(100, $columns['diskusage']);
+    }
+
+    public function testAHigherReadingStillReplacesTheStoredBandwidth(): void
+    {
+        $usage = new ClientUsage(
+            clientId: 7,
+            diskUsedBytes: 0,
+            diskLimitBytes: null,
+            trafficThisMonthBytes: 1024 * 1024 * 5000,
+            trafficLimitBytes: null,
+            mailUsedBytes: 0,
+            mailQuotaBytes: null,
+            databaseUsedBytes: 0,
+            databaseQuotaBytes: null,
+            websiteCount: 1,
+            mailboxCount: 0,
+            databaseCount: 0,
+            ftpUserCount: 0,
+            dnsZoneCount: 0,
+        );
+
+        $columns = ServiceUsage::fromClientUsage(101, $usage)->toHostingColumnsGiven(4096);
+
+        self::assertSame(5000, $columns['bwusage']);
+    }
+
+    public function testWithoutAStoredFigureTheMeasuredValueIsWrittenUnchanged(): void
+    {
+        $usage = new ClientUsage(
+            clientId: 7,
+            diskUsedBytes: 0,
+            diskLimitBytes: null,
+            trafficThisMonthBytes: 0,
+            trafficLimitBytes: null,
+            mailUsedBytes: 0,
+            mailQuotaBytes: null,
+            databaseUsedBytes: 0,
+            databaseQuotaBytes: null,
+            websiteCount: 0,
+            mailboxCount: 0,
+            databaseCount: 0,
+            ftpUserCount: 0,
+            dnsZoneCount: 0,
+        );
+
+        self::assertSame(0, ServiceUsage::fromClientUsage(101, $usage)->toHostingColumnsGiven(null)['bwusage']);
     }
 }

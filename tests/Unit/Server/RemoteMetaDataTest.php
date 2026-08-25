@@ -21,12 +21,31 @@ final class RemoteMetaDataTest extends TestCase
     private const USERNAME = 'whmcsremote';
     private const PASSWORD = 'remote-api-pw';
 
-    /** Every grant the metadata probes need (Permissions has the aliases). */
+    /**
+     * Every grant the metadata probes need (Permissions has the aliases).
+     *
+     * `sites_web_domain_get` is deliberately NOT here: the probes must not read
+     * website RECORDS, which is what makes the whole grant unnecessary for this
+     * page. See testTheRefreshNeverAsksThePanelForRecordsThatCarryKeyMaterial.
+     */
     private const PROBE_GRANTS = [
         'server_get',               // server_get_app_version + server_get_all
         'monitor_jobqueue_count',
         'client_get_all',
-        'sites_web_domain_get',     // website count (primary_id -1 = all records)
+    ];
+
+    /**
+     * The only remote functions a servers-page refresh may call. Each answers
+     * with a COUNT or a list of IDs; none returns a record, so none can carry
+     * key material (see the leak test below).
+     */
+    private const ALLOWED_WIRE_METHODS = [
+        'login',
+        'logout',
+        'server_get_app_version',
+        'monitor_jobqueue_count',
+        'client_get_all',
+        'server_get_all',
     ];
 
     private FakeIspconfigServer $fake;
@@ -60,14 +79,20 @@ final class RemoteMetaDataTest extends TestCase
     /**
      * WHMCS renders the 'service_count' key as "Services: N" beneath the
      * account count in the servers page's Remote Usage Stats cell
-     * (live-verified on WHMCS 9.0.6). Accounts are ISPConfig CLIENTS, services
-     * are the WEBSITES they own - mirroring how the bundled modules show
-     * customers vs their subscriptions.
+     * (live-verified on WHMCS 9.0.6).
+     *
+     * It reports the ISPConfig CLIENT count, because this module provisions
+     * exactly one client per WHMCS service (Provision\Recipe::create): the
+     * client population IS the service population. The websites those clients
+     * own are deliberately NOT counted - see
+     * testTheRefreshNeverAsksThePanelForRecordsThatCarryKeyMaterial.
      */
-    public function testServiceCountReportsWebsitesNotClients(): void
+    public function testServiceCountIsTheClientCountBecauseOneServiceIsOneClient(): void
     {
         $alpha = $this->fake->addClient('alpha');
         $bravo = $this->fake->addClient('bravo');
+        // Three websites across two clients: the vhost total must not leak
+        // into either number.
         $this->fake->addWebsite($alpha, 'alpha.example.com');
         $this->fake->addWebsite($alpha, 'alpha2.example.com');
         $this->fake->addWebsite($bravo, 'bravo.example.com');
@@ -75,24 +100,8 @@ final class RemoteMetaDataTest extends TestCase
         $meta = $this->gather();
 
         self::assertSame(2, $meta['client_count']);
-        self::assertSame(3, $meta['website_count']);
-        self::assertSame(3, $meta['service_count']);
-    }
-
-    /**
-     * web_domain also holds alias domains and vhost subdomains
-     * (web_vhost_domain.tform.php) - only type='vhost' rows are websites.
-     */
-    public function testServiceCountExcludesAliasAndSubdomainRecords(): void
-    {
-        $client = $this->fake->addClient('alpha');
-        $this->fake->addWebsite($client, 'alpha.example.com');
-        $this->fake->addWebsite($client, 'alias.example.com', -1, -1, 'alias');
-        $this->fake->addWebsite($client, 'sub.example.com', -1, -1, 'subdomain');
-
-        $meta = $this->gather();
-
-        self::assertSame(1, $meta['service_count']);
+        self::assertSame(2, $meta['service_count']);
+        self::assertArrayNotHasKey('website_count', $meta);
     }
 
     /** client_get_all returns FALSE, not [], on an empty panel (source quirk). */
@@ -101,7 +110,6 @@ final class RemoteMetaDataTest extends TestCase
         $meta = $this->gather();
 
         self::assertSame(0, $meta['client_count']);
-        self::assertSame(0, $meta['website_count']);
         self::assertSame(0, $meta['service_count']);
         self::assertSame(RemoteMetaData::STATUS_OK, $meta['ispconfig_status']);
     }
@@ -146,6 +154,8 @@ final class RemoteMetaDataTest extends TestCase
 
         // 'sso_available' is deliberately absent: the entry file adds it after
         // gather() returns, because the probe is not an ISPConfig core call.
+        // 'website_count' is gone for good - counting vhosts cost a bulk read
+        // of web_domain, key material included.
         self::assertSame([
             'checked_at',
             'client_count',
@@ -154,7 +164,6 @@ final class RemoteMetaDataTest extends TestCase
             'pending_jobs',
             'server_count',
             'service_count',
-            'website_count',
         ], $keys);
     }
 
@@ -192,28 +201,45 @@ final class RemoteMetaDataTest extends TestCase
     }
 
     /**
-     * Security regression, same class as tests/Unit/Usage/UsageLogSecretsTest.
+     * Security regression, same class as tests/Unit/Usage/UsageLogSecretsTest -
+     * but one step stronger: the secrets must never be REQUESTED, not merely
+     * masked before logging.
      *
-     * The website counter is a BULK read: sites_web_domain_get(-1) is a
-     * `SELECT *` over web_domain, so every row comes back carrying ssl_key -
-     * the site's TLS PRIVATE KEY - and ssl_request, its CSR
-     * (install/sql/ispconfig3.sql:2036/:2033). Unlike the nightly sweeps this
-     * probe runs on an ADMIN PAGE RENDER, so it repeats whenever an operator
-     * opens Configuration > Servers, and tblmodulelog is readable by every
-     * WHMCS admin.
+     * This probe runs on an ADMIN PAGE RENDER, so it repeats whenever an
+     * operator opens Configuration > Servers. The counting functions ISPConfig
+     * offers over the remote API are bulk record reads, and
+     * remoting_lib.inc.php getDataRecord() answers an array/-1 primary_id with
+     * `SELECT *`:
      *
-     * RestClient masks those columns (SENSITIVE_KEYS) precisely so bulk reads
-     * are safe; this proves the metadata refresh is inside that protection.
+     *   - sites_web_domain_get(-1) returns every vhost row INCLUDING
+     *     web_domain.ssl_key, the site's TLS PRIVATE KEY, and ssl_request, its
+     *     CSR (install/sql/ispconfig3.sql);
+     *   - client_get(-1) returns every client row INCLUDING client.id_rsa, the
+     *     client's SSH PRIVATE key (functions.inc.php generate_ssh_key()).
+     *
+     * Masking would keep both out of tblmodulelog; nothing keeps them out of
+     * the HTTP response, WHMCS's memory or any proxy in between. So the
+     * contract enforced here is the wire itself: every call this class makes
+     * answers with a count or a list of ids.
      */
-    public function testRefreshingTheMetadataNeverLeaksWebsiteKeyMaterial(): void
+    public function testTheRefreshNeverAsksThePanelForRecordsThatCarryKeyMaterial(): void
     {
         ModuleCallLog::reset();
 
         try {
+            // Grant everything: nothing but the code's own restraint decides
+            // which functions are called.
+            $this->fake->grantAll();
             $client = $this->fake->addClient('alpha');
             $domainId = $this->fake->addWebsite($client, 'alpha.example.com');
             $tlsKey = FakeIspconfigServer::websiteTlsPrivateKey($domainId);
             $csr = FakeIspconfigServer::websiteCertificateRequest($domainId);
+            $sshKey = FakeIspconfigServer::clientSshPrivateKey($client);
+
+            // Not a vacuous pass: the seeded panel really does hold this key
+            // material, and would hand it over to a record read.
+            self::assertSame($tlsKey, $this->fake->sites()[$domainId]['ssl_key']);
+            self::assertSame($sshKey, $this->fake->clients()[$client]['id_rsa']);
 
             $session = new SessionManager(
                 new RestClient($this->fake, Logging::wire('ispconfigconnect')),
@@ -221,18 +247,44 @@ final class RemoteMetaDataTest extends TestCase
                 self::PASSWORD
             );
             $meta = (new RemoteMetaData($session))->gather();
+            $session->close();
 
             self::assertSame(1, $meta['service_count']);
-            // Not a vacuous pass: the panel really did put the key on the wire.
-            self::assertTrue(
-                self::secretWasOnTheWire($tlsKey),
-                'sites_web_domain_get(-1) did not return ssl_key - the fake no longer emits it'
+            self::assertSame(
+                [],
+                array_diff(array_column($this->fake->requestLog, 'method'), self::ALLOWED_WIRE_METHODS),
+                'a servers-page refresh called a record-reading function'
             );
+            self::assertFalse(self::secretWasOnTheWire($tlsKey), 'a TLS private key crossed the wire');
+            self::assertFalse(self::secretWasOnTheWire($csr), 'a CSR crossed the wire');
+            self::assertFalse(self::secretWasOnTheWire($sshKey), 'an SSH private key crossed the wire');
             self::assertSame([], ModuleCallLog::entriesLeaking($tlsKey));
             self::assertSame([], ModuleCallLog::entriesLeaking($csr));
+            self::assertSame([], ModuleCallLog::entriesLeaking($sshKey));
         } finally {
             ModuleCallLog::reset();
         }
+    }
+
+    /**
+     * The cost side of the same decision: a panel with hundreds of websites
+     * must not make the servers page any more expensive than a panel with
+     * none. Five calls, whatever the panel holds.
+     */
+    public function testTheRefreshCostIsFixedNoMatterHowLargeThePanelIs(): void
+    {
+        $this->fake->addServer('web01.example.net');
+        for ($i = 1; $i <= 50; $i++) {
+            $this->fake->addWebsite($this->fake->addClient('client' . $i), 'site' . $i . '.example.com');
+        }
+
+        $meta = $this->gather();
+
+        self::assertSame(50, $meta['service_count']);
+        self::assertSame(
+            ['login', 'server_get_app_version', 'monitor_jobqueue_count', 'client_get_all', 'server_get_all'],
+            array_column($this->fake->requestLog, 'method')
+        );
     }
 
     // ---- graceful degradation --------------------------------------------

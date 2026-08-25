@@ -226,8 +226,22 @@ minutes without retrying — every further attempt extends the window.
 ### Module logging
 
 Every API call is recorded in **Utilities > Logs > Module Log** (enable
-debug logging in WHMCS to see it). Passwords and session ids are masked via
-WHMCS's replaceVars mechanism before storage.
+debug logging in WHMCS to see it). Two things happen to that entry before it is
+stored, because the module log is readable by every WHMCS admin:
+
+- **Credentials and key material are masked** via WHMCS's replaceVars
+  mechanism: panel and service passwords, the stored password hashes ISPConfig
+  echoes back (`client.password`, `sys_user.passwort`, `otp_recovery`), session
+  ids, SSO tokens, and the private keys that ride along on record reads
+  (`ssl_key`, `ssl_request`, `id_rsa`, `dkim_private`, `relay_pass`).
+- **Customer records are cut down before they are logged at all.** ISPConfig's
+  reads are `SELECT *`, so `client_get` and `client_get_by_username` answer with
+  the whole customer row — bank account and IBAN, VAT id, PayPal address, postal
+  address, notes, two-factor columns. Server Sync reads *every* client on the
+  panel, so the module keeps only the columns it actually uses (id, username,
+  e-mail, template, lock state, limits) and drops the rest before handing the
+  entry to WHMCS. Dropped columns are counted in the log entry, not silently
+  removed.
 
 ## 6. Usage, metrics, sync and single sign-on
 
@@ -369,10 +383,30 @@ first — it explains what the module adds (one remote function that mints a
 single-use, short-lived token, and one page that redeems it), that it modifies
 no ISPConfig core file, and how to remove it again.
 
+**The panel must be served over HTTPS.** An SSO token is a password substitute
+that travels in a URL, so the companion refuses to mint or redeem one on a
+plaintext request — minting answers *"Single sign-on requires an encrypted
+(https) connection to the panel."* and the redemption endpoint refuses without
+touching the token. ISPConfig's installer offers TLS by default and the stock
+panel is `https://…:8080`, so this is normally already true. If something in
+front of the panel terminates TLS, declare it on the ISPConfig server:
+`reverse_proxy_panel_allowed` in the `[permissions]` section of
+`/usr/local/ispconfig/security/security_settings.ini`, set to anything other
+than the shipped `none`. No request header (`X-Forwarded-Proto` and friends) is
+ever trusted for this.
+
 Then, in ISPConfig: **System > Remote Users > (your API user) > Functions**,
 tick *ISPConfig Connect: panel single sign-on (SSO token)* and save. This grant
 is **not** in the standard grant list, because the function does not exist on a
 stock panel.
+
+Understand what that grant is before you tick it: a remote user holding it can
+mint a panel login for **every non-administrator account on the panel**,
+**resellers included** — a reseller's panel session administers that reseller's
+own sub-clients. ISPConfig gives resellers no distinct user type, so only
+`typ = 'admin'` is refused. See
+[`docs/REMOTE-USER.md`](REMOTE-USER.md) §2a and the companion README's security
+model.
 
 Finally, in WHMCS, open **Configuration > System Settings > Servers** once. That
 page refresh is what lets the module notice the companion; from the next page
@@ -382,6 +416,14 @@ button it cannot honour.
 
 Notes:
 
+- Detection is one `get_function_list` call, which needs the **Server
+  functions** grant the module already requires (see
+  [`docs/REMOTE-USER.md`](REMOTE-USER.md) §2). Without it the module cannot tell
+  the companion is there and keeps the button hidden.
+- Detection cannot see the TLS gate. `get_function_list` is a core function and
+  answers over plain HTTP, so on an HTTP-only panel WHMCS will advertise the
+  button and the *click* will fail with the encrypted-connection message. Serve
+  the panel over HTTPS (or declare the reverse proxy) before enabling SSO.
 - The password-free login is per **service**. There is deliberately no
   "log in as admin" auto-login: the companion refuses to mint tokens for
   administrator accounts, because such a token would be a full panel takeover.

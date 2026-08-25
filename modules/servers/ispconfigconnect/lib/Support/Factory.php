@@ -53,15 +53,23 @@ final class Factory
     }
 
     /**
-     * Logging::wire() plus a defensive pass that adds any *password-keyed
-     * value (at any depth, in request AND response) to the sensitive list
-     * before it reaches logModuleCall's replaceVars. RestClient only flags
-     * the request key names it knows (password, new_password,
-     * remote_password, session_id - spec 2.2); ISPConfig traffic also
-     * carries secrets elsewhere - sites_database_user_add's
-     * database_password param, and client_get responses echo the stored
-     * password column - and an unmasked module-log entry is a credential
-     * leak.
+     * Logging::wire() plus a defensive second pass, immediately in front of
+     * logModuleCall: re-run RestClient's scrub over request and response, and
+     * re-collect the values that have to reach WHMCS's replaceVars.
+     *
+     * It runs over payloads RestClient has normally already cleaned, so in the
+     * happy path it changes nothing - the point is that this is the LAST code
+     * the payload passes through, and it catches anything that reaches the
+     * logger by another route.
+     *
+     * It delegates to RestClient rather than re-deciding what a secret is.
+     * The pass used to carry its own rule - "any key containing 'password'" -
+     * and that divergence is exactly how the panel login hash leaked: ISPConfig
+     * spells the sys_user column `passwort` (install/sql/ispconfig3.sql:1861),
+     * which the substring never matched, while `lost_password_function` - a
+     * 1/0 flag - is one it DID match, feeding "1" to logModuleCall as a
+     * str_replace masking needle. One vocabulary, in one place, or the two
+     * drift apart again.
      *
      * @return \Closure(string, array<string, mixed>, mixed, list<string>): void
      */
@@ -75,26 +83,17 @@ final class Factory
             mixed $response,
             array $sensitiveValues = []
         ) use ($inner): void {
-            $walk = static function (array $node) use (&$walk, &$sensitiveValues): void {
-                foreach ($node as $key => $value) {
-                    if (is_array($value)) {
-                        $walk($value);
-                    } elseif (
-                        is_string($value)
-                        && $value !== ''
-                        && is_string($key)
-                        && str_contains(strtolower($key), 'password')
-                    ) {
-                        $sensitiveValues[] = $value;
-                    }
-                }
-            };
-            $walk($request);
+            $sensitiveValues = array_merge($sensitiveValues, RestClient::maskableValues($request));
             if (is_array($response)) {
-                $walk($response);
+                $sensitiveValues = array_merge($sensitiveValues, RestClient::maskableValues($response));
             }
 
-            $inner($action, $request, $response, array_values(array_unique($sensitiveValues)));
+            $inner(
+                $action,
+                RestClient::scrubRequest($request),
+                RestClient::scrubResponse($action, $response),
+                array_values(array_unique($sensitiveValues))
+            );
         };
     }
 }

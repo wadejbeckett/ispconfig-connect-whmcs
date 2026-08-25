@@ -1,12 +1,18 @@
 # ISPConfig Connect for WHMCS
 
-A free, open-source **WHMCS provisioning module for [ISPConfig](https://www.ispconfig.org/) 3.x** —
-bringing the same automated provisioning, suspension, and billing integration that WHMCS ships for
+An open-source (GPLv3) **WHMCS provisioning module for [ISPConfig](https://www.ispconfig.org/) 3.x**
+— bringing the same automated provisioning, suspension, and billing integration that WHMCS ships for
 cPanel and Plesk to ISPConfig hosting servers.
 
-> **Status:** Phase 1 (full provisioning lifecycle) and Phase 2 (usage import, usage-billing metrics,
-> account sync, server health, optional single sign-on) complete; Phase 1 verified against a live
-> ISPConfig 3.3.1p1 + WHMCS 9.0.6 server. Licensed under **GPLv3**.
+> **Status:** the full provisioning lifecycle, account sync, single sign-on and the servers-page
+> health block are built **and proven on a live ISPConfig 3.3.1p1 + WHMCS 9.0.6 install**. Usage
+> import and usage-billing metrics are built and their definitions are confirmed registered in
+> WHMCS, but their **values have not yet been checked against a real service**, so usage-based
+> billing is not ready to sell. Reseller products, dedicated IPs and client-area management screens
+> are not started. Licensed under **GPLv3**.
+>
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) is the full current-state account: what is proven and how it
+> was verified, what is built but unproven, what is not built, and what happens next.
 
 ---
 
@@ -47,6 +53,9 @@ a customer's other accounts.
 
 ### Provisioning lifecycle
 
+Every action below has been run end to end against a live ISPConfig 3.3.1p1 panel from a live
+WHMCS 9.0.6 install.
+
 | WHMCS action | ISPConfig result |
 |---|---|
 | Create | Creates the ISPConfig client, then (per product config) website, FTP user, mail domain, DNS zone, and database — all-or-nothing, with automatic rollback on partial failure |
@@ -61,24 +70,25 @@ as Plesk operators manage service plans — selected per WHMCS product from a li
 
 ### The rest of the WHMCS surface
 
-| WHMCS feature | What this module does | Needs |
-|---|---|---|
-| **Usage import** (nightly cron) | Writes disk and bandwidth usage plus their panel limits onto every service on the server, in megabytes | — |
-| **Usage-billing metrics** | Publishes nine metrics — disk, bandwidth, mail and database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones | — |
-| **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services. A client that owns no website is listed under a reserved `.invalid` placeholder, so it is reported as an unknown account rather than matched to the wrong service | — |
-| **Servers page: Services count** | The number of websites on the panel, which WHMCS renders itself as *Services: N* | — |
-| **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's hostname; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) |
-| **Single sign-on** | A password-free *Log in to ISPConfig* button for customers, using a single-use, short-lived token | Optional [`companion/ispconfig-sso`](companion/ispconfig-sso/README.md) |
-| **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — |
+| WHMCS feature | What this module does | Needs | Live status |
+|---|---|---|---|
+| **Usage import** (nightly cron) | Writes disk and bandwidth usage plus their panel limits onto every service on the server, in megabytes | — | Built; **not yet observed under WHMCS's own cron**, and the values are not yet checked against a real service |
+| **Usage-billing metrics** | Publishes nine metrics — disk, bandwidth, mail and database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones | — | Definitions **confirmed live** (all nine render on the product's Module Settings tab with working *Configure Pricing* links); **values and the resulting invoices are unverified** |
+| **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services. A client that owns no website is listed under a reserved `.invalid` placeholder, so it is reported as an unknown account rather than matched to the wrong service | — | **Proven live** (analyse step). The step that imports or terminates services has deliberately not been run on production |
+| **Servers page: Services count** | The number of websites on the panel, which WHMCS renders itself as *Services: N* | — | **Proven live** |
+| **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's hostname; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) | **Proven live** |
+| **Single sign-on** | A password-free *Log in to ISPConfig* button for customers, using a single-use, short-lived token | Optional [`companion/ispconfig-sso`](companion/ispconfig-sso/README.md) | **Proven live** with the companion installed on the panel; not yet walked through by a real customer |
+| **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — | **Proven live** |
 
 Everything above degrades rather than breaks: a panel that is down costs a placeholder value, never
 an admin page, a failed cron run, or a lost provisioning result.
 
-Two figures on that page are **WHMCS's own, not the module's**, and are easy to misread: *Accounts* is
-a cached count that a **Sync Accounts** run fills in (blank until you run one), and *WHMCS Usage
-Stats* — the `1/200` — is WHMCS counting the services it has assigned to the server against that
-server's *Maximum No. of Accounts* field. Neither reports anything about the panel.
-[`docs/INSTALL.md`](docs/INSTALL.md) §6.4 breaks down every number on the page.
+Two figures on that page originate with **WHMCS, not the module**, and are easy to misread.
+*Accounts* is printed from a cached column that no module can write — for an ISPConfig server it
+would read `0` forever, so the hook replaces it on our own rows with the client count just probed
+from the panel. *WHMCS Usage Stats* — the `1/200` — is WHMCS counting the services it has assigned
+to the server against that server's *Maximum No. of Accounts* field, and reports nothing about the
+panel at all. [`docs/INSTALL.md`](docs/INSTALL.md) §6.4 breaks down every number on the page.
 
 ### Why single sign-on needs a companion
 
@@ -108,8 +118,11 @@ higher bar than the abandoned modules it replaces:
 
 ## Requirements
 
-- WHMCS 8.13 or 9.x (PHP 8.2 / 8.3)
-- ISPConfig **3.2 or newer** (CI-tested against 3.3.1p1), with the remote API enabled
+- WHMCS 8.13 or 9.x (PHP 8.2 / 8.3). Verified in use on **9.0.6**; 8.13 is expected to work but has
+  not been tested (see [`docs/ROADMAP.md`](docs/ROADMAP.md))
+- ISPConfig **3.2 or newer**, with the remote API enabled. All live verification to date has been
+  against **3.3.1p1**; 3.2 support rests on API signatures that have been stable for years, not on
+  testing.
 
 ## Installation
 
@@ -131,12 +144,14 @@ sign-on button.
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (539 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
-on the ISPConfig source, plus PHPStan level 6 static analysis. See
-[`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5 records the WHMCS-side
-contracts, including the ones that are not documented anywhere and had to be established on a live
-install, and its §6 is the settled, evidence-backed account of what the WHMCS servers page does and
-does not let a third-party module do.
+suite (544 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+on the ISPConfig source, plus PHPStan level 6 static analysis; the optional companion ships its own
+standalone harness (70 checks). Both suites and the static analysis are currently run by hand —
+there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5
+records the WHMCS-side contracts, including the ones that are not documented anywhere and had to be
+established on a live install, and its §6 is the settled, evidence-backed account of what the WHMCS
+servers page does and does not let a third-party module do. For project status and what is planned
+next, see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## License
 

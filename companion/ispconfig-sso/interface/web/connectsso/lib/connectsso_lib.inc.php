@@ -25,10 +25,12 @@
  * no typed properties) so the module loads on every panel its host supports.
  */
 
-//* Direct-request guard. This file lives under the panel DOCROOT — both vhost
-//* templates serve interface/web/ and deny only *.lng and dotfiles, so every
-//* .php below it executes over HTTP (install/tpl/apache_ispconfig.vhost.master,
-//* install/tpl/nginx_ispconfig.vhost.master). An .htaccess would not help:
+//* Direct-request guard. This file lives under the panel DOCROOT. Both stock
+//* vhost templates serve interface/web/; the Apache one denies only *.lng
+//* (install/tpl/apache_ispconfig.vhost.master, <FilesMatch "\.lng$">) and the
+//* nginx one denies *.lng plus dotfiles (install/tpl/nginx_ispconfig.vhost.master,
+//* location ~ /\.). Neither denies a .php under lib/, so every one of them
+//* executes over HTTP. An .htaccess would not help:
 //* AllowOverride is None in the mpm_itk branch and nginx ignores it entirely.
 //* Legitimate inclusion always happens after interface/lib/config.inc.php has
 //* run, which defines ISPC_ROOT_PATH (config.inc.php:85) — the remoting
@@ -149,8 +151,100 @@ if (!function_exists('connectsso_token_is_wellformed')) {
 	}
 
 	/**
-	 * Delete tokens that can no longer be redeemed. Called on every mint, so
-	 * the table stays small without a cron job.
+	 * Did this request arrive over TLS, as PHP sees it?
+	 *
+	 * Same signal ISPConfig itself uses to decide whether its session cookie
+	 * gets the Secure flag ($_SERVER['HTTPS'] == 'on', app.inc.php:101), widened
+	 * only to the spellings other SAPIs use: IIS sends HTTPS=1 and 'off' when
+	 * it is NOT on, and Apache/nginx set REQUEST_SCHEME.
+	 *
+	 * Deliberately NOT consulted: X-Forwarded-Proto and friends. They are
+	 * client-supplied, and this value gates whether a login credential may be
+	 * created at all. Where a proxy really does terminate TLS, the operator
+	 * declares it in security_settings.ini — see connectsso_proxy_declared().
+	 *
+	 * @return bool
+	 */
+	function connectsso_request_is_secure() {
+		if (isset($_SERVER['HTTPS'])) {
+			$https = strtolower(trim((string)$_SERVER['HTTPS']));
+			if ($https !== '' && $https !== 'off') {
+				return true;
+			}
+		}
+		if (isset($_SERVER['REQUEST_SCHEME'])
+			&& strtolower(trim((string)$_SERVER['REQUEST_SCHEME'])) === 'https'
+		) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Has the operator told ISPConfig that a reverse proxy sits in front of the
+	 * panel?
+	 *
+	 * `reverse_proxy_panel_allowed` in the [permissions] section of
+	 * /usr/local/ispconfig/security/security_settings.ini ships as `none`
+	 * (install/tpl/security_settings.ini.master:18) and is read through core's
+	 * own getconf (interface/lib/classes/getconf.inc.php:60-73). Anything other
+	 * than `none` is the operator stating that requests reach PHP through a
+	 * proxy — which is exactly the topology in which PHP cannot see the real
+	 * request scheme, so the TLS gate below cannot be enforced and TLS
+	 * termination becomes the proxy's job.
+	 *
+	 * Fails CLOSED: an $app without getconf, an unreadable ini, a missing
+	 * section or a missing key all read as "no proxy declared".
+	 *
+	 * @param object $app
+	 * @return bool
+	 */
+	function connectsso_proxy_declared($app) {
+		if (!is_object($app) || !isset($app->getconf) || !is_object($app->getconf)
+			|| !method_exists($app->getconf, 'get_security_config')
+		) {
+			return false;
+		}
+		//* @: get_security_config() file_get_contents() the ini and indexes a
+		//* section that a hand-edited file may not have. A warning on an auth
+		//* path is noise; the fail-closed default below is the real answer.
+		$permissions = @$app->getconf->get_security_config('permissions');
+		if (!is_array($permissions) || !isset($permissions['reverse_proxy_panel_allowed'])) {
+			return false;
+		}
+		$value = strtolower(trim((string)$permissions['reverse_proxy_panel_allowed']));
+
+		return $value !== '' && $value !== 'none';
+	}
+
+	/**
+	 * May this request mint or redeem a token?
+	 *
+	 * A token is a password substitute that travels in a URL. Over plain HTTP
+	 * the mint response, the redirect that carries the token and the panel
+	 * session that follows are all readable by anything on the path — and
+	 * single use plus a 45-second TTL buy nothing against an interceptor who
+	 * simply redeems the token before the customer's browser does. Both halves
+	 * therefore refuse on a non-TLS request.
+	 *
+	 * The one exception is a panel the operator has declared to be behind a
+	 * reverse proxy: there PHP sees the proxy's plaintext hop and the gate
+	 * would refuse every request, so it steps aside and the operator owns TLS
+	 * termination. That is an explicit local declaration in ISPConfig's own
+	 * security settings, never a request header.
+	 *
+	 * @param object $app
+	 * @return bool
+	 */
+	function connectsso_transport_is_acceptable($app) {
+		return connectsso_request_is_secure() || connectsso_proxy_declared($app);
+	}
+
+	/**
+	 * Delete tokens that can no longer be redeemed, and rate-limit buckets that
+	 * have fallen out of the window. Called on every mint and at the start of
+	 * every redemption, so both tables stay small without a cron job.
 	 *
 	 * @param object $app
 	 * @param int    $now
@@ -192,9 +286,23 @@ if (!function_exists('connectsso_token_is_wellformed')) {
 	}
 
 	/**
-	 * Record one failed redemption. Every rejection path calls this — a bad
-	 * token, an expired token, a replay, an IP-binding mismatch — so that
-	 * guessing is bounded no matter which check does the rejecting.
+	 * Record one failed redemption.
+	 *
+	 * Called from every refusal reached by PRESENTING A TOKEN VALUE THAT DID
+	 * NOT CHECK OUT — malformed, unknown, expired, replayed, IP-mismatched, and
+	 * a burn that did not take — so guessing is bounded no matter which of them
+	 * does the rejecting.
+	 *
+	 * It is deliberately NOT called from the refusals on either side of that:
+	 * the ones before the token is read (a non-TLS request, a request already
+	 * at the limit) and the ones after it checked out and was burned
+	 * (maintenance mode, a vanished or inactive panel user, a client suspended
+	 * since minting, a session that cannot be started or regenerated). Neither
+	 * kind can be used to guess — the first never touches a token, the second
+	 * costs a genuine one that is already spent — and counting them would let
+	 * one configuration mistake, one maintenance window or one suspended
+	 * customer exhaust the budget of every visitor sharing that source address.
+	 * index.php's header comment carries the same split; keep them in step.
 	 *
 	 * ONE atomic statement on purpose: a SELECT-then-INSERT/UPDATE pair loses
 	 * counts when two rejected redemptions race (both SELECT no row, one INSERT

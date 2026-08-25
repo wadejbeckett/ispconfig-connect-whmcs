@@ -317,10 +317,99 @@ final class FakeIspconfigServer implements HttpTransportInterface
             // tests exercise the real wire content.
             'id_rsa' => self::clientSshPrivateKey($id),
             'ssh_rsa' => 'ssh-rsa FAKE-PUBLIC-KEY-client' . $id,
-        ];
+        ] + self::clientCustomerRecord($id);
         $this->sysUserActive[$id] = 1;
 
         return $id;
+    }
+
+    /**
+     * The CUSTOMER half of a `client` row: the columns a panel operator fills
+     * in on Client > Edit Client > Address / Bank details, which the module
+     * never reads and never writes, but which `client_get` hands back on every
+     * read because it is `SELECT * FROM client` (remoting_lib.inc.php
+     * getDataRecord). Column names and order verified against
+     * install/sql/ispconfig3.sql:146-259 (ISPConfig 3.3.1p1).
+     *
+     * Server Sync reads EVERY client on the panel with one client_get(-1), so
+     * on a real install this is the banking and postal record of every hosting
+     * customer - including the ones that are not WHMCS customers at all. It is
+     * seeded here because a leak test whose fixture never emits the column
+     * cannot fail.
+     *
+     * @return array<string, string>
+     */
+    public static function clientCustomerRecord(int $clientId): array
+    {
+        return [
+            'company_name' => 'Panelcustomer ' . $clientId . ' GmbH',
+            'company_id' => 'HRB-FAKE-' . $clientId,
+            'gender' => 'f',
+            'contact_firstname' => 'Jane',
+            'customer_no' => 'R' . $clientId . 'C1',
+            'vat_id' => 'DE-FAKE-VATID-' . $clientId,
+            'street' => 'Fakestrasse ' . $clientId,
+            'zip' => '1000' . $clientId,
+            'city' => 'Faketown',
+            'state' => 'Fakestate',
+            'country' => 'DE',
+            'telephone' => '+49-30-FAKE-' . $clientId,
+            'mobile' => '+49-170-FAKE-' . $clientId,
+            'fax' => '+49-30-FAKEFAX-' . $clientId,
+            'internet' => 'https://panelcustomer' . $clientId . '.example.test',
+            'icq' => 'FAKEICQ' . $clientId,
+            'notes' => 'Internal note about panel customer ' . $clientId,
+            // install/sql/ispconfig3.sql:165-171 - the six bank columns plus
+            // PayPal, in schema order.
+            'bank_account_owner' => 'Jane Panelcustomer ' . $clientId,
+            'bank_account_number' => 'FAKE-ACCOUNT-000' . $clientId,
+            'bank_code' => 'FAKE-BLZ-370400' . $clientId,
+            'bank_name' => 'Fake Volksbank ' . $clientId,
+            'bank_account_iban' => 'DE00FAKEIBAN00000000' . $clientId,
+            'bank_account_swift' => 'FAKESWIFT' . $clientId . 'XXX',
+            'paypal_email' => 'paypal-client' . $clientId . '@example.test',
+            // :269 - the e-mail activation code for a self-registered client.
+            'activation_code' => 'FAKEACT' . $clientId,
+        ];
+    }
+
+    /**
+     * The `sys_user` row's private columns (install/sql/ispconfig3.sql:1861,
+     * :1871-1878). client_get_by_username answers with a bare
+     * `SELECT * FROM sys_user` (remote.d/client.inc.php:478), so all of this
+     * is on the wire once per client on every Server Sync:
+     *
+     *   - `passwort` is the PANEL LOGIN HASH (crypt SHA-512; the fake models
+     *     crypt_password() as 'crypt:<clear>', and client_change_password
+     *     writes client.password AND sys_user.passwort from one clear);
+     *   - `otp_recovery` is the bcrypt hash of the 2FA recovery codes;
+     *   - `otp_data` is the address 2FA mails go to - personal data, and a
+     *     value short enough that masking it by value would be a str_replace
+     *     needle across the whole log entry;
+     *   - `lost_password_hash` is the live password-reset token hash of a row
+     *     with a reset in flight;
+     *   - `lost_password_function` is a 1/0 FLAG whose name contains
+     *     "password" - the trap that catches substring-based scrubbers: hand
+     *     "1" to logModuleCall's replaceVars and every "1" in the entry is
+     *     blanked.
+     *
+     * @return array<string, string|int>
+     */
+    public static function sysUserPrivateRecord(int $clientId, string $passwordHash): array
+    {
+        return [
+            'passwort' => $passwordHash,
+            'id_rsa' => self::clientSshPrivateKey($clientId),
+            'ssh_rsa' => 'ssh-rsa FAKE-PUBLIC-KEY-client' . $clientId,
+            'lost_password_function' => 1,
+            'lost_password_hash' => 'FAKE-LOSTPW-RESET-HASH-' . $clientId,
+            'lost_password_reqtime' => '2026-01-0' . ($clientId % 9 + 1) . ' 12:00:00',
+            'otp_type' => 'email',
+            'otp_data' => 'two-factor-client' . $clientId . '@example.test',
+            'otp_recovery' => '$2y$10$FAKEOTPRECOVERYBCRYPTHASH' . $clientId,
+            'otp_attempts' => 0,
+            'last_password_change' => '2026-01-01',
+        ];
     }
 
     /** The fake SSH PRIVATE key every client row carries (client.id_rsa). */
@@ -955,27 +1044,43 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $record;
     }
 
-    /** @return array<string, mixed> the sys_user row, not the client record */
+    /**
+     * The WHOLE sys_user row, not the client record: remote.d/client.inc.php:478
+     * is a bare `SELECT * FROM sys_user WHERE username = ?`, so every column of
+     * install/sql/ispconfig3.sql:1853-1882 comes back - the panel login hash,
+     * the SSH private key, the password-reset token hash and the 2FA columns
+     * included. Server Sync makes this call once per client.
+     *
+     * @return array<string, mixed>
+     */
     public function api_client_get_by_username(mixed $session_id, mixed $username): array
     {
         $this->requireGrant($session_id, 'client_get_by_username');
 
-        // SELECT * FROM sys_user WHERE username = ? - returns the sys_user row.
         foreach ($this->clients as $id => $client) {
             if ($client['username'] === $username) {
                 return $this->dbRecord([
                     'userid' => $id + 1,        // admin is userid 1
+                    'sys_userid' => 1,
+                    'sys_groupid' => 1,
+                    'sys_perm_user' => 'riud',
+                    'sys_perm_group' => 'riud',
+                    'sys_perm_other' => '',
                     'username' => $client['username'],
-                    'client_id' => $id,
-                    'default_group' => $this->groupIdFor($id),
+                    'modules' => 'dashboard,client,mail,sites,dns,tools',
+                    'startmodule' => 'dashboard',
+                    'app_theme' => 'default',
+                    'typ' => 'user',
+                    // sys_user.active - toggled by func_client_cancel.
+                    'active' => $this->sysUserActive[$id] ?? 1,
+                    'language' => $client['language'] ?? 'en',
                     // sys_user.groups is a comma-separated group list; a client
                     // created through the API gets exactly its own group
                     // (remoting_lib.inc.php ispconfig_sysuser_add: $groups = $groupid).
                     'groups' => (string) $this->groupIdFor($id),
-                    // sys_user.active - toggled by func_client_cancel.
-                    'active' => $this->sysUserActive[$id] ?? 1,
-                    'language' => $client['language'] ?? 'en',
-                ]);
+                    'default_group' => $this->groupIdFor($id),
+                    'client_id' => $id,
+                ] + self::sysUserPrivateRecord($id, (string) ($client['password'] ?? '')));
             }
         }
 
@@ -1599,10 +1704,35 @@ final class FakeIspconfigServer implements HttpTransportInterface
         // quota_lib.inc.php:81), so an unknown client id yields NULL = no
         // match - zero rows, same outcome as the getAuthSQL degradation in
         // recordsVisibleTo(), reached by a different mechanism.
-        $clientId = is_numeric($client_id) ? (int) $client_id : 0;
+        //
+        // UNLESS the id is FALSY. Both gates on the way in are the loose
+        // "$client_id != null" (remote.d/sites.inc.php:992 and
+        // quota_lib.inc.php:80), which PHP fails for 0, '0', '' and null
+        // alike; a non-numeric string clears the first gate only to be
+        // intval()'d to 0 and fail the second. When it fails, $sql_where is
+        // never assigned and the query runs as
+        //   SELECT * FROM web_domain WHERE active='y'
+        //     AND (type='vhost' OR type='vhostsubdomain' OR type='vhostalias')
+        // - EVERY site on the panel, with no client scoping whatsoever, each
+        // carrying its own traffic sums. quota_get_by_user does NOT degrade
+        // the same way (clientid_to_groups_list(0) returns NULL and
+        // getAuthSQL falls back to "sys_perm_other like '%r%'", which matches
+        // nothing), so a falsy id yields ZERO websites and PANEL-WIDE traffic
+        // at the same time. That is the module's single largest over-billing
+        // hazard, so the double reproduces it instead of politely returning
+        // an empty map - see Collector's client id guard.
+        $gated = $client_id;
+        if (is_scalar($gated) && $gated != null) {           // sites.inc.php:992
+            $gated = is_numeric($gated) ? (int) $gated : 0;  // $app->functions->intval()
+        }
+        $scoped = is_scalar($gated) && $gated != null;       // quota_lib.inc.php:80
+        $clientId = is_numeric($gated) ? (int) $gated : 0;
         $traffic = [];
         foreach ($this->sites as $site) {
-            if ((int) ($site['client_id'] ?? 0) !== $clientId || ($site['active'] ?? 'y') !== 'y') {
+            if ($scoped && (int) ($site['client_id'] ?? 0) !== $clientId) {
+                continue;
+            }
+            if (($site['active'] ?? 'y') !== 'y') {
                 continue;
             }
             if (!in_array($site['type'] ?? 'vhost', ['vhost', 'vhostsubdomain', 'vhostalias'], true)) {

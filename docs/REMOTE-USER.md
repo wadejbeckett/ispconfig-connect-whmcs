@@ -13,9 +13,23 @@ In the ISPConfig panel: **System → Remote Users → Add new user**.
   password; it goes into the WHMCS server's *Password* field.
 - **Remote Access**: enabled.
 - **Remote Access IPs**: enter your WHMCS server's public IP address(es), comma-separated.
-  Hostnames are allowed (resolved at login). Leave empty only if you accept logins from anywhere.
+  Leave empty only if you accept logins from anywhere.
   *Gotcha:* ISPConfig compares the source address it sees — behind NAT or IPv6 privacy addressing,
   use whatever address the panel actually logs.
+
+  **Prefer literal addresses over hostnames.** ISPConfig accepts hostnames here, but it resolves
+  every one of them with `dns_get_record($name, DNS_A + DNS_AAAA)` **on every single login**
+  (`remoting.inc.php:173-189`, verified 3.3.1p1) — there is no cache and no error handling. Two
+  consequences follow:
+  - **Your DNS becomes an authorisation input.** Whoever can influence what that name resolves to on
+    the panel host — a poisoned resolver, an edited `/etc/hosts`, a hijacked zone — can add
+    themselves to the allowlist.
+  - **A resolver failure locks you out.** When the lookup returns nothing, the entry is silently
+    dropped from the allowlist rather than erroring, so every call fails with
+    *"The login is not allowed from &lt;ip&gt;"* until DNS recovers.
+
+  A hostname is the right choice only when the WHMCS server's address genuinely changes and you
+  control the zone. Otherwise pin the address.
 
 ## 2. Tick these permission checkboxes
 
@@ -25,7 +39,7 @@ exist on 3.2.x). The module needs these nine:
 
 | Checkbox | Why the module needs it |
 |---|---|
-| **Server functions** | `server_get` (Web Server dropdown, and the `server_get_app_version` panel-version probe — it checks `server_get`, verified), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
+| **Server functions** | `server_get` (Web Server dropdown, and the `server_get_app_version` panel-version probe — it checks `server_get`, verified), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics, and the probe that detects the optional SSO companion — §2a). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
 | **Client functions** | client create/update/lock/password/terminate (incl. both `client_delete_everything` and `client_delete`, which termination re-checks mid-cascade), plus `client_get_all` for the servers-page client counter |
 | **Quota functions** | the whole group — `quota_get_by_user`, `trafficquota_get_by_user`, `mailquota_get_by_user`, `databasequota_get_by_user` — for disk/bandwidth usage import and usage-billing metrics |
 | **Sites Domain functions** | website create/read/status (suspend) |
@@ -89,9 +103,11 @@ Why each (grouped):
 | `quota_get_by_user`, `trafficquota_get_by_user` | the nightly disk/bandwidth import into `tblhosting` (WHMCS's UsageUpdate cron), which also drives disk and bandwidth overage billing. When a service's quota answers come back empty, the sweep also spends one `client_get` (already granted above) to distinguish "client owns nothing" from "client was deleted in the panel" — a deleted client answers every quota call with zero rows rather than an error, and importing that as zero usage forever would be silent wrong billing; such services are skipped with a reason in the module log instead |
 | `mailquota_get_by_user`, `databasequota_get_by_user` | usage-billing metrics: mailbox and database storage, and the mailbox/database counts. Same **Quota functions** checkbox as the two above, so they cost no extra grant group |
 | `sites_ftp_user_get`, `dns_zone_get` | usage-billing metrics: the FTP-user and DNS-zone counts, read as `sys_groupid` filters. Both are already inside the **Sites FTP-User functions** and **DNS zone functions** checkboxes the module needs for provisioning |
-| `get_function_list` | connection diagnostics |
+| `get_function_list` | connection diagnostics, and the probe that detects the optional SSO companion (§2a) |
 
-`login`/`logout` need no grant.
+`login` and `logout` are the only ungated remote functions. Everything else — `get_function_list`
+included — goes through `checkPerm()` and needs its grant
+(`remoting.inc.php:685-692`, verified 3.3.1p1).
 
 ### 2a. Optional — the single sign-on grant
 
@@ -115,17 +131,36 @@ Notes:
 - If the checkbox is not on the form, the companion's installer could not add `connectsso` to your
   admin account's module list. Re-run its `install.sh`, then log out and back in — the Functions
   list is built from the modules of the admin who is logged in.
-- Without the grant, the module still detects the companion (via `get_function_list`, which needs no
-  extra permission) and reports an actionable error naming this grant when SSO is attempted.
-- A remote user holding this grant can mint a panel login for **any non-admin client on the panel**.
-  Grant it only to the API user WHMCS uses, and keep that user's Remote Access IP list populated.
-  The companion's own `README.md` carries the full security model.
+- Without this grant, the module still *detects* the companion and reports an actionable error
+  naming the grant when SSO is attempted. Detection is one `get_function_list` call, which returns
+  the panel's whole registered method list rather than the caller's own grants — so it distinguishes
+  "companion not installed" from "installed but not granted". It is **not** an ungated call: it
+  needs the **Server functions** grant the module already requires (see the note under the grant
+  list above). Without *that*, detection fails closed and the module treats SSO as unavailable.
+- **The panel must be served over HTTPS.** The companion refuses to mint or redeem a token on a
+  plaintext request — a token is a password substitute travelling in a URL. Behind a
+  TLS-terminating reverse proxy, declare it: `reverse_proxy_panel_allowed` in the `[permissions]`
+  section of `/usr/local/ispconfig/security/security_settings.ini`, set to anything other than the
+  shipped `none`.
+- **Know the blast radius before you tick this box.** A remote user holding this grant can mint a
+  panel login for **every non-administrator account on the panel** — and that includes
+  **resellers**, whose panel session administers their own sub-clients. ISPConfig gives a reseller
+  no distinct user type: every client the API creates gets `sys_user.typ = 'user'`
+  (`remoting_lib.inc.php:329`), and `limit_client > 0` only adds the `client` module
+  (`:311-313`). Only `typ = 'admin'` is refused. Grant it solely to the API user WHMCS uses, and
+  keep that user's Remote Access IP list populated. The companion's own `README.md` carries the full
+  security model.
 
 ## 3. Enable the remote API itself
 
-**System → Main Config → Security → Remote API allowed**: yes. If it is off, every call answers
-with the plain-text `Remote API is disabled in security settings.` — TestConnection reports this
-explicitly.
+`remote_api_allowed=yes` in the `[permissions]` section of
+`/usr/local/ispconfig/security/security_settings.ini` on the ISPConfig **server**. This is a
+server-side file that only root can edit — **there is no panel form for it** (verified: the value is
+read by `interface/web/remote/json.php:14` via `getconf::get_security_config('permissions')`, and
+its only definition is `install/tpl/security_settings.ini.master:15`).
+
+Stock installs ship it enabled. When it is off, every call answers with the plain-text
+`Remote API is disabled in security settings.` — TestConnection reports this explicitly.
 
 ## 4. Verify from WHMCS
 

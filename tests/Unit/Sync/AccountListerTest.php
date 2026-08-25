@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Ispconfigconnect\Tests\Unit\Sync;
 
+use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
 use Ispconfigconnect\Tests\Support\FakeIspconfigServer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\PermissionDeniedException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\RestClient;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
+use WHMCS\Module\Server\Ispconfigconnect\Support\Logging;
 use WHMCS\Module\Server\Ispconfigconnect\Sync\AccountLister;
 use WHMCS\Module\Server\Ispconfigconnect\Sync\RemoteAccount;
 
@@ -386,6 +388,57 @@ final class AccountListerTest extends TestCase
         self::assertSame(3, $this->countCalls('client_get_sites_by_user'));
         // ... and exactly one login for the batch.
         self::assertSame(['client_templates_get_all', 'client_get'], array_slice($methods, 0, 2));
+    }
+
+    /**
+     * The listing needs one field from each client's website - its domain - and
+     * there are two ways to get it. `client_get_sites_by_user` selects exactly
+     * `domain, domain_id, document_root, active` (its SQL is hand-written in
+     * remote.d/sites.inc.php, not a form read), while `sites_web_domain_get`
+     * goes through remoting_lib getDataRecord() and answers `SELECT *` - every
+     * vhost row including `web_domain.ssl_key`, the site's TLS PRIVATE KEY, and
+     * `ssl_request`, its CSR (install/sql/ispconfig3.sql:2036/:2033).
+     *
+     * This test pins the choice: a sync of every client on the panel must never
+     * put website key material on the wire. Server\RemoteMetaData made the same
+     * call for the same reason.
+     */
+    public function testTheSyncNeverReadsWebsiteRecordsAndSoNeverSeesTheirKeys(): void
+    {
+        $client = $this->addClient('keys');
+        $domainId = $this->addSite($client, 'keys.example');
+        $tlsKey = FakeIspconfigServer::websiteTlsPrivateKey($domainId);
+        // Not vacuous: the seeded panel really does hold the key material, and
+        // sites_web_domain_get would hand it over.
+        self::assertSame($tlsKey, $this->fake->sites()[$domainId]['ssl_key']);
+
+        ModuleCallLog::reset();
+
+        try {
+            // A LOGGING client, so every response body is inspectable here.
+            $session = new SessionManager(
+                new RestClient($this->fake, Logging::wire('ispconfigconnect')),
+                'remote',
+                'secret'
+            );
+            $mark = count($this->fake->requestLog);
+
+            $accounts = (new AccountLister($session, '203.0.113.10', new \DateTimeZone('UTC')))
+                ->listAccounts();
+
+            self::assertSame('keys.example', $accounts[0]->domain);
+            self::assertNotContains('sites_web_domain_get', array_slice($this->methods(), $mark));
+            self::assertNotSame([], ModuleCallLog::entries(), 'nothing was logged - the sweep below is vacuous');
+            foreach (ModuleCallLog::entries() as $entry) {
+                self::assertStringNotContainsString(
+                    $tlsKey,
+                    print_r($entry['response'], true),
+                    'a TLS private key crossed the wire during a Server Sync'
+                );
+            }
+        } finally {
+            ModuleCallLog::reset();
+        }
     }
 
     public function testAllClientsAreReadWithASingleWildcardClientGet(): void

@@ -32,10 +32,13 @@ final class Collector
     /**
      * Disk and bandwidth only.
      *
-     * @throws UsageException when the response cannot be attributed to $clientId
+     * @throws UsageException when $clientId is not a usable panel id, or when
+     *         the response cannot be attributed to it
      */
     public function usageFor(int $clientId): ClientUsage
     {
+        self::assertUsableClientId($clientId);
+
         $key = $clientId . '|usage';
         if (isset($this->cache[$key])) {
             return $this->cache[$key];
@@ -62,10 +65,13 @@ final class Collector
      *        record carried a sys_groupid (a DNS-only client owns no website,
      *        mailbox or database), in which case it is resolved from
      *        sys_user.default_group via client_get_by_username
-     * @throws UsageException when the response cannot be attributed to $clientId
+     * @throws UsageException when $clientId is not a usable panel id, or when
+     *         the response cannot be attributed to it
      */
     public function metricsFor(int $clientId, string $username = ''): ClientUsage
     {
+        self::assertUsableClientId($clientId);
+
         $key = $clientId . '|metrics';
         if (isset($this->cache[$key])) {
             return $this->cache[$key];
@@ -109,6 +115,56 @@ final class Collector
     }
 
     /**
+     * A FALSY client id must never reach the panel, because ISPConfig does not
+     * fail on one - it answers with somebody else's numbers.
+     *
+     * trafficquota_get_by_user() gates its scoping on the LOOSE
+     * "$clientid != null" (quota_lib.inc.php:80, after the identical gate at
+     * remote.d/sites.inc.php:992). PHP fails that test for 0, '0', '' and
+     * null, and a non-numeric string clears the first gate only to be
+     * intval()'d to 0 and fail the second. When it fails, $sql_where is never
+     * assigned and the SELECT runs unscoped:
+     *
+     *   SELECT * FROM web_domain WHERE active = 'y'
+     *     AND (type='vhost' OR type='vhostsubdomain' OR type='vhostalias')
+     *
+     * - every site on the panel, each with its own SUM(traffic_bytes). The
+     * disk, mail and database calls do NOT degrade the same way
+     * (clientid_to_groups_list(0) returns NULL, functions.inc.php:685, and
+     * getAuthSQL then falls back to "sys_perm_other like '%r%'" against
+     * columns that hold NULL/''), so a falsy id produces ZERO entity counts
+     * beside PANEL-WIDE bandwidth. That combination does get stopped further
+     * downstream today - assertAttributable() sees all-empty counts and probes
+     * client_get, which rejects id 0 outright ("The ID has to be > 0 or -1",
+     * remoting_lib) - but only by accident of the counts being empty: a single
+     * row anywhere with a readable sys_perm_other would satisfy the
+     * attribution check and let the panel's whole month of traffic through as
+     * one service's bill. And the unscoped read has already happened by then.
+     *
+     * The id arrives from the ispconfig_client_id service property, and
+     * ispconfigconnect_serviceRefs() keeps services that have none on purpose
+     * (so the operator sees them reported as skipped) - so 0 is a value this
+     * code really is handed. Refuse it here, below every caller and before
+     * the wire call, rather than relying on each caller to check.
+     *
+     * @throws UsageException
+     */
+    private static function assertUsableClientId(int $clientId): void
+    {
+        if ($clientId > 0) {
+            return;
+        }
+
+        throw new UsageException(sprintf(
+            'Refusing to read usage for ISPConfig client id %d: the panel does not reject a '
+                . 'non-positive client id, it answers trafficquota_get_by_user with EVERY domain '
+                . 'on the server (quota_lib.inc.php:80), which would bill one service for the '
+                . 'whole panel. The service has no usable ispconfig_client_id.',
+            $clientId
+        ));
+    }
+
+    /**
      * quota_lib scopes its queries with
      * getAuthSQL('r', '', '', clientid_to_groups_list($clientid))
      * (quota_lib.inc.php:18/:224/:290). Two hazards hide in that scoping:
@@ -120,6 +176,17 @@ final class Collector
      *    sites into one service's bill would be a catastrophic overcharge -
      *    the span is refused.
      *
+     *    KNOWN RESIDUAL: the test is "did the ANSWER span more than one
+     *    group", not "is this id a reseller", so it only fires once two
+     *    groups are actually represented in the rows. A reseller that owns
+     *    nothing itself and has exactly ONE sub-client produces rows from a
+     *    single group and passes. Closing that would cost a
+     *    client_get_by_username per service per sweep to compare the observed
+     *    group against sys_user.default_group; it is not paid, because the
+     *    module only ever stores the id of a client it created itself (which
+     *    by construction has no sub-clients) and reaching the hole requires an
+     *    operator to hand-link a service to a reseller row.
+     *
      * 2. A DELETED client id - a service whose panel client was removed by
      *    hand: clientid_to_groups_list() returns NULL, and getAuthSQL()'s
      *    fallback clause then matches NOTHING. (Not the whole panel: the '1'
@@ -127,12 +194,23 @@ final class Collector
      *    tform_base.inc.php:1633, and the only typ='admin' writes are in
      *    loadUserProfile, remoting_lib.inc.php:143/:155, which the quota
      *    remote path never calls; with no session groups the WHERE collapses
-     *    to "sys_perm_other like '%r%'" against rows whose perm_other is ''.)
+     *    to "sys_perm_other like '%r%'", and that column holds '' on a
+     *    tform-written web_domain row (web_vhost_domain.tform.php:76
+     *    auth_preset, over a schema default of NULL, ispconfig3.sql:1996) and
+     *    '' on mail_user (:1067) - neither matches.)
      *    So a stale id answers every quota call with ZERO rows and code ok -
      *    byte-identical to a client that simply owns nothing. Importing that
      *    as 0 forever would be silent wrong billing, so an all-empty answer is
      *    only accepted after client_get confirms the client row still exists
      *    (a miss is null - queryOneRecord, remoting_lib getDataRecord).
+     *
+     *    A DELETED id degrades safely only because it is still non-zero:
+     *    trafficquota_get_by_user scopes on "sys_groupid = (SELECT
+     *    default_group FROM sys_user WHERE client_id=?)" (quota_lib.inc.php:81)
+     *    rather than on getAuthSQL, and that subselect yields NULL - no match.
+     *    A FALSY id skips that WHERE entirely and reads the whole panel, which
+     *    is why assertUsableClientId() refuses it before the call rather than
+     *    leaving it to this check.
      *
      * @throws UsageException
      */

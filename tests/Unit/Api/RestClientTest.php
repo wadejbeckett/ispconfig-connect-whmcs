@@ -514,4 +514,302 @@ final class RestClientTest extends TestCase
         self::assertSame('client_add', $this->logged[0]['action']);
         self::assertIsString($this->logged[0]['response']);
     }
+
+    // ---- scrubbing the copy that goes to the log --------------------------
+
+    public function testTheClientRecordReachesTheLoggerWithoutTheCustomerRecord(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $clientId = $fake->addClient('panelcust');
+        $client = new RestClient($fake, $this->recordingLogger());
+        $sessionId = $client->login('remote', 'secret');
+
+        $record = $client->call('client_get', ['session_id' => $sessionId, 'client_id' => $clientId]);
+
+        // The MODULE gets the panel's answer in full - scrubbing is for the
+        // log copy only, never for the caller.
+        self::assertIsArray($record);
+        $seeded = FakeIspconfigServer::clientCustomerRecord($clientId);
+        self::assertSame($seeded['bank_account_iban'], $record['bank_account_iban']);
+        self::assertSame($seeded['street'], $record['street']);
+
+        $logged = $this->logged[1]['response'];
+        self::assertIsArray($logged);
+        // Gone, not masked: money, tax id, postal address, free-text notes.
+        foreach (
+            [
+                'bank_account_owner', 'bank_account_number', 'bank_code', 'bank_name',
+                'bank_account_iban', 'bank_account_swift', 'paypal_email', 'vat_id',
+                'activation_code', 'street', 'zip', 'city', 'telephone', 'notes',
+                'contact_firstname', 'company_name', 'customer_no',
+            ] as $column
+        ) {
+            self::assertArrayNotHasKey($column, $logged, 'client.' . $column . ' reached the log');
+        }
+        // Kept, because the module reads them and a log entry that identifies
+        // nothing is worth nothing.
+        self::assertSame($record['client_id'], $logged['client_id']);
+        self::assertSame($record['username'], $logged['username']);
+        self::assertSame($record['email'], $logged['email']);
+        self::assertSame($record['locked'], $logged['locked']);
+        self::assertSame($record['template_master'], $logged['template_master']);
+        // Kept and MASKED: key material is high-entropy, so replaceVars is an
+        // exact control, and seeing the column tells the operator the panel
+        // returned a private key at all.
+        self::assertSame($record['id_rsa'], $logged['id_rsa']);
+        self::assertContains($record['id_rsa'], $this->logged[1]['sensitive']);
+        // The dropped columns are accounted for rather than silently missing.
+        self::assertArrayHasKey(RestClient::SCRUB_NOTICE_KEY, $logged);
+    }
+
+    public function testTheWildcardClientGetIsProjectedRowByRow(): void
+    {
+        // client_get(-1) is SELECT * FROM client - EVERY client on the panel
+        // in one response, so the projection has to reach into each row.
+        $fake = new FakeIspconfigServer();
+        $first = $fake->addClient('panelcust1');
+        $second = $fake->addClient('panelcust2');
+        $client = new RestClient($fake, $this->recordingLogger());
+        $sessionId = $client->login('remote', 'secret');
+
+        $client->call('client_get', ['session_id' => $sessionId, 'client_id' => -1]);
+
+        $logged = $this->logged[1]['response'];
+        self::assertIsArray($logged);
+        self::assertCount(2, $logged);
+        foreach ($logged as $row) {
+            self::assertIsArray($row);
+            self::assertArrayNotHasKey('bank_account_iban', $row);
+            self::assertArrayNotHasKey('paypal_email', $row);
+            self::assertArrayHasKey('client_id', $row);
+        }
+        self::assertSame((string) $first, $logged[0]['client_id']);
+        self::assertSame((string) $second, $logged[1]['client_id']);
+    }
+
+    public function testTheSysUserRowReachesTheLoggerWithoutItsPrivateColumns(): void
+    {
+        // client_get_by_username is a bare SELECT * FROM sys_user
+        // (remote.d/client.inc.php:478).
+        $fake = new FakeIspconfigServer();
+        $clientId = $fake->addClient('panelcust');
+        $client = new RestClient($fake, $this->recordingLogger());
+        $sessionId = $client->login('remote', 'secret');
+
+        $row = $client->call('client_get_by_username', [
+            'session_id' => $sessionId,
+            'username' => 'panelcust',
+        ]);
+
+        self::assertIsArray($row);
+        $logged = $this->logged[1]['response'];
+        self::assertIsArray($logged);
+
+        // The panel login hash and the 2FA recovery hash: kept, masked.
+        self::assertSame($row['passwort'], $logged['passwort']);
+        self::assertContains($row['passwort'], $this->logged[1]['sensitive']);
+        self::assertContains($row['otp_recovery'], $this->logged[1]['sensitive']);
+        // The 2FA mail address, the reset-token hash: gone.
+        self::assertArrayNotHasKey('otp_data', $logged);
+        self::assertArrayNotHasKey('lost_password_hash', $logged);
+        self::assertArrayNotHasKey('lost_password_reqtime', $logged);
+        // What Sync\AccountLister and Usage\Collector read off this row.
+        self::assertSame($row['userid'], $logged['userid']);
+        self::assertSame($row['groups'], $logged['groups']);
+        self::assertSame($row['default_group'], $logged['default_group']);
+    }
+
+    /**
+     * The projection map is keyed by METHOD NAME, so it is only as complete as
+     * the list of remote functions that answer with a full customer row.
+     * `client_get_by_groupid` is one of them and is easy to miss: it does not
+     * run a SELECT of its own, it resolves the group to a client_id and then
+     * `return $this->client_get($session_id, $client_id)`
+     * (remote.d/client.inc.php:690-703), so its response is byte-for-byte the
+     * `SELECT * FROM client` record - bank block, tax id, postal address and
+     * the free-text `notes` column included.
+     *
+     * Without an entry of its own it would fall through to the PRIVATE_KEYS
+     * scrub, which blanks the enumerated money columns but keeps `notes`,
+     * `street`, `company_name` and every column ISPConfig adds in a future
+     * release. Same row, same treatment as client_get.
+     */
+    public function testTheGroupIdClientReadIsProjectedLikeClientGet(): void
+    {
+        $row = FakeIspconfigServer::clientCustomerRecord(7) + [
+            'client_id' => '7',
+            'username' => 'panelcust',
+            'email' => 'panelcust@example.test',
+            'locked' => 'n',
+            // Free text: an operator can type anything here, and no value-based
+            // masking can catch it. Only the allowlist drops it.
+            'notes' => 'Chased about the SEPA mandate on 2026-04-02.',
+        ];
+
+        $logged = RestClient::scrubResponse('client_get_by_groupid', $row);
+        self::assertIsArray($logged);
+
+        foreach (['bank_account_iban', 'paypal_email', 'vat_id', 'notes', 'street'] as $column) {
+            self::assertArrayNotHasKey(
+                $column,
+                $logged,
+                'client.' . $column . ' survived client_get_by_groupid into the log'
+            );
+        }
+        // Still identifiable, exactly as client_get is.
+        self::assertSame('7', $logged['client_id']);
+        self::assertSame('panelcust', $logged['username']);
+        self::assertArrayHasKey(RestClient::SCRUB_NOTICE_KEY, $logged);
+    }
+
+    /**
+     * The scrub runs TWICE on every real call: once in RestClient::log() and
+     * again in Factory's defensive pass, which is deliberate (Factory is the
+     * last code the payload passes through). The projection therefore has to be
+     * idempotent, and it was not: on the second pass the only key left that the
+     * allowlist does not recognise is the module's OWN notice key, so it was
+     * dropped and replaced with a freshly counted "1 further column(s)".
+     *
+     * The effect was that every record-shaped entry in tblmodulelog claimed
+     * exactly one column had been dropped, whatever the real number - the
+     * accountability the notice exists to provide, quietly reporting a
+     * constant. Nothing leaked; the count simply lied.
+     */
+    public function testTheScrubNoticeSurvivesASecondScrubWithItsCountIntact(): void
+    {
+        $row = [
+            'userid' => '42',
+            'username' => 'panelcust',
+            'passwort' => 'crypt:seeded',
+            // Five columns the sys_user allowlist drops.
+            'lost_password_function' => '1',
+            'lost_password_hash' => 'reset-token-hash',
+            'lost_password_reqtime' => '2026-08-20 11:02:14',
+            'otp_data' => 'otp-target@example.test',
+            'last_password_change' => '2026-07-01',
+        ];
+
+        $once = RestClient::scrubResponse('client_get_by_username', $row);
+        self::assertIsArray($once);
+        self::assertStringStartsWith(
+            '5 further column(s)',
+            (string) $once[RestClient::SCRUB_NOTICE_KEY],
+            'the first pass must report the true number of dropped columns'
+        );
+
+        $twice = RestClient::scrubResponse('client_get_by_username', $once);
+        self::assertSame(
+            $once,
+            $twice,
+            'scrubbing an already-scrubbed record must be a no-op'
+        );
+    }
+
+    public function testAFlagColumnNamedLikeAPasswordIsRedactedAndNeverMasked(): void
+    {
+        // sys_user.lost_password_function is a 1/0 flag. A substring rule for
+        // "password" matches it, and "1" as a replaceVars needle blanks every
+        // "1" in the stored entry. It must be dropped, never masked.
+        $fake = new FakeIspconfigServer();
+        $fake->addClient('panelcust');
+        $client = new RestClient($fake, $this->recordingLogger());
+        $sessionId = $client->login('remote', 'secret');
+
+        $client->call('client_get_by_username', [
+            'session_id' => $sessionId,
+            'username' => 'panelcust',
+        ]);
+
+        $logged = $this->logged[1]['response'];
+        self::assertIsArray($logged);
+        self::assertArrayNotHasKey('lost_password_function', $logged);
+        self::assertNotContains('1', $this->logged[1]['sensitive']);
+        self::assertNotContains('0', $this->logged[1]['sensitive']);
+    }
+
+    public function testAnUnenumeratedPasswordColumnIsRedactedRatherThanMasked(): void
+    {
+        // A column no one listed - a future ISPConfig release, a companion
+        // function. It is removed from the log copy; its value is NOT promoted
+        // to a masking needle, because an unknown column may hold a flag.
+        $envelope = json_encode([
+            'code' => 'ok',
+            'message' => '',
+            'response' => ['smtp_password' => 'hunter2-smtp', 'has_password' => 'y', 'name' => 'box1'],
+        ], JSON_THROW_ON_ERROR);
+        $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
+
+        $result = $client->call('mail_user_get', ['session_id' => 's0000', 'primary_id' => 1]);
+
+        self::assertIsArray($result);
+        self::assertSame('hunter2-smtp', $result['smtp_password'], 'the caller must see the panel answer');
+
+        $logged = $this->logged[0]['response'];
+        self::assertIsArray($logged);
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['smtp_password']);
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['has_password']);
+        self::assertSame('box1', $logged['name']);
+        self::assertNotContains('hunter2-smtp', $this->logged[0]['sensitive']);
+        self::assertNotContains('y', $this->logged[0]['sensitive']);
+    }
+
+    public function testKeyMatchingIgnoresCaseAndSeparators(): void
+    {
+        // The original leak was a spelling mismatch, so matching is exact on a
+        // NORMALIZED name: mysqli hands back the column as the schema spells
+        // it, but a companion or a future release may not.
+        $envelope = json_encode([
+            'code' => 'ok',
+            'message' => '',
+            'response' => [
+                'Bank-Account-IBAN' => 'DE00FAKEIBAN00000000',
+                'PASSWORT' => 'crypt:$6$panelhash',
+                'domain' => 'one.example',
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
+
+        $client->call('sites_web_domain_get', ['session_id' => 's0000', 'primary_id' => 1]);
+
+        $logged = $this->logged[0]['response'];
+        self::assertIsArray($logged);
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['Bank-Account-IBAN']);
+        self::assertContains('crypt:$6$panelhash', $this->logged[0]['sensitive']);
+        self::assertSame('one.example', $logged['domain']);
+    }
+
+    public function testTheRequestStaysReadableExceptForColumnsTheModuleNeverAuthors(): void
+    {
+        // Asymmetry on purpose. A REQUEST is written by this module out of
+        // WHMCS's own record, and reading it back is the whole point of the
+        // module log, so it reaches the logger intact and its secrets are
+        // covered by replaceVars (spec 2.2). A RESPONSE is the panel's copy of
+        // every customer it hosts, which is a different question.
+        $client = new RestClient(
+            self::transportReturning('{"code":"ok","message":"","response":7}'),
+            $this->recordingLogger()
+        );
+
+        $client->call('client_add', [
+            'session_id' => 's0000',
+            'reseller_id' => 0,
+            'params' => [
+                'username' => 'jane',
+                'contact_name' => 'Jane Doe',
+                'street' => 'Main Street 1',
+                'password' => 'Cl13nt-Pw!',
+                'vat_id' => 'DE-FAKE-VATID-1',
+            ],
+        ]);
+
+        $logged = $this->logged[0]['request'];
+        self::assertSame('jane', $logged['params']['username']);
+        self::assertSame('Jane Doe', $logged['params']['contact_name']);
+        self::assertSame('Main Street 1', $logged['params']['street']);
+        // Intact, and masked by value.
+        self::assertSame('Cl13nt-Pw!', $logged['params']['password']);
+        self::assertContains('Cl13nt-Pw!', $this->logged[0]['sensitive']);
+        // A column this module never authors: dropped even on the way out.
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['params']['vat_id']);
+    }
 }

@@ -38,11 +38,17 @@
 # Nothing can use SSO until that box is ticked — the installer deliberately does
 # not grant permissions on an operator's behalf.
 #
+# THE PANEL MUST BE SERVED OVER HTTPS. A token is a password substitute carried
+# in a URL, so both halves refuse on a plaintext request. Behind a
+# TLS-terminating reverse proxy, declare that topology in
+# <ispconfig>/security/security_settings.ini: reverse_proxy_panel_allowed, in
+# the [permissions] section, set to anything other than the shipped 'none'.
+#
 set -euo pipefail
 
-# See ispconfig-theme-customizer's installer for the reasoning: a closed stdout
-# (`./install.sh | head`) must never be able to interrupt a half-finished
-# install, so SIGPIPE is ignored and informational output tolerates EPIPE.
+# A closed stdout (`./install.sh | head`) must never be able to interrupt a
+# half-finished install, so SIGPIPE is ignored and informational output
+# tolerates EPIPE.
 trap '' PIPE
 say() { echo "$@" 2>/dev/null || true; }
 
@@ -92,8 +98,8 @@ VERSION="$(cat "$HERE/VERSION" 2>/dev/null || echo unknown)"
 # install silently and never register — fail loudly instead.
 [ -f "$ISPCONFIG_ROOT/interface/lib/classes/remoting_handler_base.inc.php" ] || {
   echo "ERROR: interface/lib/classes/remoting_handler_base.inc.php is missing." >&2
-  echo "       This ISPConfig is too old for the remote.d module auto-loader" >&2
-  echo "       (added in 3.1.x). SSO cannot be installed here." >&2
+  echo "       This ISPConfig has no remote.d module auto-loader, which is the" >&2
+  echo "       only extension point this module uses. SSO cannot be installed here." >&2
   exit 1
 }
 if ! grep -q "web/\*/lib/classes/remote.d" "$ISPCONFIG_ROOT/interface/lib/classes/remoting_handler_base.inc.php"; then
@@ -102,10 +108,12 @@ if ! grep -q "web/\*/lib/classes/remote.d" "$ISPCONFIG_ROOT/interface/lib/classe
   echo "         Installing anyway, but the SSO function may not register." >&2
 fi
 
-# A symlinked directory is SERVED THROUGH the link, so editor/agent/VCS state
-# inside this clone would be reachable over HTTP as /connectsso/.git/...
+# A symlinked directory is SERVED THROUGH the link, so anything sitting inside
+# this clone would be reachable over HTTP as /connectsso/... — VCS metadata,
+# editor or tooling state, dependency trees. The module itself ships no
+# dot-entries, so ANY of them here is foreign and a reason to stop.
 if [ "$MODE" = "symlink" ]; then
-  stray="$(find "$SRC" \( -name '.git' -o -name '.omc' -o -name 'node_modules' \) -print -quit 2>/dev/null || true)"
+  stray="$(find "$SRC" -mindepth 1 \( -name '.*' -o -name 'node_modules' \) -print -quit 2>/dev/null || true)"
   if [ -n "$stray" ]; then
     echo "ERROR: $stray is inside the directory you are about to symlink." >&2
     echo "       It would be served over HTTP. Remove it, or install with --copy." >&2
@@ -141,8 +149,10 @@ if [ "$MODE" = "symlink" ]; then
   ln -s "$SRC" "$DEST"
   say "  symlinked interface/web/connectsso"
 else
-  # tar, not `cp -a`, so the excludes are honoured.
-  tar cf - --exclude='.git' --exclude='.omc' --exclude='node_modules' \
+  # tar, not `cp -a`, so the excludes are honoured. The module ships no
+  # dot-entries, so excluding all of them costs nothing and keeps VCS, editor
+  # and tooling state out of a directory the panel serves over HTTP.
+  tar cf - --exclude='.*' --exclude='node_modules' \
       -C "$HERE/interface/web" connectsso | tar xf - -C "$WEB_DIR"
   say "  copied interface/web/connectsso"
   if id -u ispconfig >/dev/null 2>&1; then
@@ -210,6 +220,14 @@ say "  2. Point your billing system at this panel. ISPConfig Connect for WHMCS"
 say "     detects the companion by itself (one get_function_list call) and shows"
 say "     its SSO buttons only once it is present and granted."
 say
+say
+say "REQUIREMENT: serve the panel over HTTPS. A token is a password substitute in"
+say "a URL, so both halves REFUSE on a plaintext request. Behind a TLS-terminating"
+say "reverse proxy, declare it: reverse_proxy_panel_allowed in the [permissions]"
+say "section of $ISPCONFIG_ROOT/security/security_settings.ini"
+say "(anything other than the shipped 'none')."
+say
 say "Read README.md before exposing this to customers: it documents the token"
-say "lifetime, the optional IP binding, what ends up in your access log, and how"
-say "two-factor authentication is preserved."
+say "lifetime, the optional IP binding, what ends up in your access log, who can"
+say "be minted for (resellers included), and how two-factor authentication is"
+say "preserved."

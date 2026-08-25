@@ -1,8 +1,14 @@
 # Implementation Notes — ISPConfig Connect for WHMCS
 
-Working spec for the build. Companion to `docs/superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md`
-(the approved scope & design). Everything in §1 below was re-verified on 2026-08-24 directly against the
-ISPConfig **3.3.1p1** source tarball (extracted locally; see the session scratchpad `ispconfig-src/` tree).
+Working spec for the build, and the reference for anyone changing the module. Companion to the scope
+& design document in this repository,
+[`docs/superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md`](superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md).
+
+Everything in §1 below was re-verified on 2026-08-24 directly against the ISPConfig **3.3.1p1**
+release tarball. To re-verify it — or to answer anything this file does not — download the matching
+ISPConfig release from ispconfig.org, extract it, and read the cited files: every citation here is a
+path plus a line range inside that tree. **Line numbers are version-specific.** Re-check them against
+the version you are actually running before relying on one.
 
 ## 1. Verified wire contract (ISPConfig 3.3.1p1 source)
 
@@ -132,9 +138,9 @@ check can only be made by calling a function and catching `PermissionDeniedExcep
 therefore login-checks + read-probes only (`server_get_all`, `client_templates_get_all`,
 `monitor_jobqueue_count`); the full required grant list ships as documentation.
 
-When exact `$params` field requirements matter, READ THE FORM DEFINITIONS in the extracted source
-(`interface/web/<module>/form/*.tform.php`) rather than guessing — the scratchpad path is in your task
-brief. Validation failures surface as `data_processing_error` remote faults.
+When exact `$params` field requirements matter, read the form definitions in the ISPConfig source
+(`interface/web/<module>/form/*.tform.php`) rather than guessing. Validation failures surface as
+`data_processing_error` remote faults.
 
 ### 1.6 Known pitfalls (design §4, all source-verified)
 
@@ -174,11 +180,27 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
 
 - `__construct(HttpTransportInterface $transport, ?LoggerCallback $logger = null)` — logger is
   `callable(string $action, array $request, mixed $response): void`; called for **every** API call,
-  success or failure (failure: response = exception message). The callback receives the request with
-  the password/session values INTACT — scrubbing is the wiring's job (Support\Logging), because only
-  the wiring knows WHMCS's replaceVars convention. RestClient must pass the values it knows are
-  sensitive (password, session_id, remote_password) to the callback separately:
+  success or failure (failure: response = exception message). The callback receives the **request**
+  with the password/session values INTACT — masking is the wiring's job (Support\Logging), because
+  only the wiring knows WHMCS's replaceVars convention. RestClient passes the values it knows are
+  sensitive (password, passwort, session_id, remote_password, …) to the callback separately:
   signature `callable(string $action, array $request, mixed $response, list<string> $sensitiveValues)`.
+- **Two mechanisms, not one list** (see the class docblock for the full argument). Masking by value is
+  right for credentials and key material: long, unique, high-entropy strings, where WHMCS's
+  str_replace masking is exact and the visible-but-masked key is itself a useful diagnostic. It is
+  wrong for personal and financial columns — a bank code or a country code is too short to be a safe
+  needle, and masking still hands the raw value to `logModuleCall`. Those are **removed from the copy
+  handed to the logger**, inside RestClient, before it leaves the class. The value returned to the
+  caller is never touched.
+- **The customer-record reads are projected, not filtered.** `client_get` (which with `client_id = -1`
+  returns every client on the panel) and `client_get_by_username` (a bare `SELECT * FROM sys_user`)
+  are logged through an ALLOWLIST of the columns the module actually reads, plus the masked ones, with
+  a count of what was dropped. A blocklist rots the moment ISPConfig adds a column; an allowlist makes
+  an unknown column private by default.
+- **Key matching is exact on a normalized name** (lowercased, separators stripped) — never a substring
+  test. Substring matching is what produced the original leak: the rule looked for `password` and the
+  sys_user column is the German `passwort`; in the other direction it matched `lost_password_function`,
+  a 1/0 flag whose value as a masking needle would have blanked every "1" in the entry.
 - `call(string $method, array $params): mixed` — json_encode (JSON_UNESCAPED_SLASHES|UNESCAPED_UNICODE,
   throw on failure), transport->post, then decode:
   - body starts with `Remote API is disabled` → `ApiDisabledException`
@@ -212,8 +234,9 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
 - `grantFor(string $function): string` — checkPerm name for a callable function.
 - `readProbes(): array<string, array>` — the safe read-only calls TestConnection makes:
   `server_get_all` (no extra params), `client_templates_get_all`, `monitor_jobqueue_count`.
-- Unit tests assert the alias mapping against a fixture extracted from source (grep `checkPerm`
-  in the scratchpad tree and hard-code the expected pairs in the test).
+- Unit tests assert the alias mapping against a fixture extracted from source: grep `checkPerm` in
+  the ISPConfig tree and hard-code the expected function → grant pairs in the test, so a change in
+  either direction fails loudly.
 
 ### 2.5 `Support\Params`
 
@@ -336,7 +359,7 @@ return `'success'` or error string). Functions (MVP):
 ### 2.9 `tests/Support/FakeIspconfigServer implements HttpTransportInterface`
 
 In-process behavioral double of `remote/json.php` + `remoting.inc.php`. This is the compatibility
-contract in executable form — model it on the REAL code (read it in the scratchpad tree), including:
+contract in executable form — model it on the real ISPConfig code, not on this summary, including:
 
 - envelope shapes (§1.2), fault messages VERBATIM (§1.3), plain-text disabled-API body, invalid_data
   for non-JSON body, invalid_method for unknown method;
@@ -409,8 +432,13 @@ GetRemoteMetaData + the servers-page hook, and single sign-on via the optional
 - TDD: write the test first, watch it fail, implement, watch it pass; every component's tests run green
   before its task is done. No `test.skip`, no `@todo`, no commented-out assertions.
 - `php -l` clean on every file (PHP 8.2 syntax); PHPStan level 6 clean on the paths you touched.
-- Security tests are first-class: TLS defaults, credential scrubbing (`ModuleCallLog::entriesLeaking`),
-  no-password-in-HTML, lockout circuit, rollback on partial create.
+- Security tests are first-class: TLS defaults, credential scrubbing (`ModuleCallLog::entriesLeaking`
+  and the stricter `entriesLeakingAfterMasking`, which applies the masking rather than trusting the
+  replaceVars list), no-password-in-HTML, lockout circuit, rollback on partial create.
+- A leak test is only worth what its fixture emits. `FakeIspconfigServer` seeds the FULL rows the panel
+  really returns — `client` with the bank block, tax id and postal record, `sys_user` with `passwort`,
+  `otp_data`, `otp_recovery` and `lost_password_*` — because a regression test whose fixture never
+  emits the column cannot fail. Before trusting a scrubbing assertion, prove the value was on the wire.
 - Style: PSR-12, `declare(strict_types=1)`, final classes by default, readonly VOs, no abbreviations in
   public API names. Comments only for non-obvious constraints (wire facts, ISPConfig quirks) — cite
   the source file when stating a wire fact.
