@@ -22,6 +22,7 @@ final class RemoteMetaDataTest extends TestCase
         'server_get',               // server_get_app_version + server_get_all
         'monitor_jobqueue_count',
         'client_get_all',
+        'sites_web_domain_get',     // website count (primary_id -1 = all records)
     ];
 
     private FakeIspconfigServer $fake;
@@ -53,20 +54,41 @@ final class RemoteMetaDataTest extends TestCase
     }
 
     /**
-     * WHMCS renders the 'service_count' key as "Services: N" in the servers
-     * page's Remote Usage Stats cell (live-verified on WHMCS 9.0.6). The
-     * module provisions exactly one ISPConfig client per WHMCS service, so the
-     * client count is the number that belongs there.
+     * WHMCS renders the 'service_count' key as "Services: N" beneath the
+     * account count in the servers page's Remote Usage Stats cell
+     * (live-verified on WHMCS 9.0.6). Accounts are ISPConfig CLIENTS, services
+     * are the WEBSITES they own - mirroring how the bundled modules show
+     * customers vs their subscriptions.
      */
-    public function testServiceCountMirrorsTheClientCount(): void
+    public function testServiceCountReportsWebsitesNotClients(): void
     {
-        $this->fake->addClient('alpha');
-        $this->fake->addClient('bravo');
+        $alpha = $this->fake->addClient('alpha');
+        $bravo = $this->fake->addClient('bravo');
+        $this->fake->addWebsite($alpha, 'alpha.example.com');
+        $this->fake->addWebsite($alpha, 'alpha2.example.com');
+        $this->fake->addWebsite($bravo, 'bravo.example.com');
 
         $meta = $this->gather();
 
-        self::assertSame(2, $meta['service_count']);
-        self::assertSame($meta['client_count'], $meta['service_count']);
+        self::assertSame(2, $meta['client_count']);
+        self::assertSame(3, $meta['website_count']);
+        self::assertSame(3, $meta['service_count']);
+    }
+
+    /**
+     * web_domain also holds alias domains and vhost subdomains
+     * (web_vhost_domain.tform.php) - only type='vhost' rows are websites.
+     */
+    public function testServiceCountExcludesAliasAndSubdomainRecords(): void
+    {
+        $client = $this->fake->addClient('alpha');
+        $this->fake->addWebsite($client, 'alpha.example.com');
+        $this->fake->addWebsite($client, 'alias.example.com', -1, -1, 'alias');
+        $this->fake->addWebsite($client, 'sub.example.com', -1, -1, 'subdomain');
+
+        $meta = $this->gather();
+
+        self::assertSame(1, $meta['service_count']);
     }
 
     /** client_get_all returns FALSE, not [], on an empty panel (source quirk). */
@@ -75,6 +97,7 @@ final class RemoteMetaDataTest extends TestCase
         $meta = $this->gather();
 
         self::assertSame(0, $meta['client_count']);
+        self::assertSame(0, $meta['website_count']);
         self::assertSame(0, $meta['service_count']);
         self::assertSame(RemoteMetaData::STATUS_OK, $meta['ispconfig_status']);
     }

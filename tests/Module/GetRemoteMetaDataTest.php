@@ -20,8 +20,11 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
 {
     public function testReturnsAFlatScalarArrayWithTheKeysWhmcsAndThePanelNeed(): void
     {
-        $this->fake->addClient('one');
-        $this->fake->addClient('two');
+        $one = $this->fake->addClient('one');
+        $two = $this->fake->addClient('two');
+        $this->fake->addWebsite($one, 'one.example.com');
+        $this->fake->addWebsite($two, 'two.example.com');
+        $this->fake->addWebsite($two, 'two-extra.example.com');
         $this->fake->jobqueueCount = 4;
 
         $meta = ispconfigconnect_GetRemoteMetaData($this->params());
@@ -35,7 +38,9 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
             self::assertTrue(is_scalar($value), sprintf('meta_data[%s] must be scalar', $key));
         }
 
-        self::assertSame(2, $meta['service_count']);
+        // Accounts are ISPConfig clients; services are their websites.
+        self::assertSame(3, $meta['service_count']);
+        self::assertSame(3, $meta['website_count']);
         self::assertSame(2, $meta['client_count']);
         self::assertSame('3.3.1p1', $meta['ispconfig_version']);
         self::assertSame(4, $meta['pending_jobs']);
@@ -63,7 +68,7 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
         $meta = ispconfigconnect_GetRemoteMetaData($this->params());
 
         self::assertSame(RemoteMetaData::STATUS_DEGRADED, $meta['ispconfig_status']);
-        self::assertArrayNotHasKey('service_count', $meta);
+        self::assertArrayNotHasKey('client_count', $meta);
         self::assertSame('3.3.1p1', $meta['ispconfig_version']);
         self::assertStringContainsString('database_error', (string) $meta['ispconfig_error']);
     }

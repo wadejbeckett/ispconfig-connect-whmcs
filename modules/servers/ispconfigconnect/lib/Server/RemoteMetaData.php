@@ -88,14 +88,16 @@ final class RemoteMetaData
         $probes = [
             'panel version' => fn (): array => ['ispconfig_version' => $this->panelVersion()],
             'pending jobs' => fn (): array => ['pending_jobs' => $this->pendingJobs()],
-            'clients' => function (): array {
-                $clients = $this->clientCount();
+            'clients' => fn (): array => ['client_count' => $this->clientCount()],
+            'websites' => function (): array {
+                // service_count is the key WHMCS itself renders ("Services: N")
+                // beneath the account count, mirroring how the bundled modules
+                // show customers vs their subscriptions: accounts are ISPConfig
+                // CLIENTS (one per WHMCS service - Provision\Recipe::create) and
+                // services are the websites those clients own.
+                $websites = $this->websiteCount();
 
-                // service_count is the key WHMCS itself renders ("Services: N").
-                // One ISPConfig client per WHMCS service is this module's
-                // provisioning model (Provision\Recipe::create), so the client
-                // count is the number that belongs there.
-                return ['client_count' => $clients, 'service_count' => $clients];
+                return ['website_count' => $websites, 'service_count' => $websites];
             },
             'ISPConfig nodes' => fn (): array => ['server_count' => $this->serverCount()],
         ];
@@ -182,6 +184,36 @@ final class RemoteMetaData
     private function clientCount(): int
     {
         return $this->countOf($this->session->call('client_get_all', []), 'client_get_all');
+    }
+
+    /**
+     * Websites panel-wide in ONE call: remote.d/sites.inc.php
+     * sites_web_domain_get() delegates to remoting_lib::getDataRecord(), whose
+     * `$primary_id == -1` branch runs `SELECT * FROM web_domain` (no auth
+     * clause) and returns every record. Grant `sites_web_domain_get` is already
+     * required for provisioning, so this adds no new permission.
+     *
+     * Only `type = vhost` rows are real websites - the table also holds alias
+     * domains and vhost subdomains (web_vhost_domain.tform.php).
+     */
+    private function websiteCount(): int
+    {
+        $response = $this->session->call('sites_web_domain_get', ['primary_id' => -1]);
+        if ($response === false || $response === null) {
+            return 0;
+        }
+        if (!is_array($response)) {
+            throw new \UnexpectedValueException('sites_web_domain_get returned a non-list response');
+        }
+
+        $vhosts = 0;
+        foreach ($response as $record) {
+            if (is_array($record) && (string) ($record['type'] ?? 'vhost') === 'vhost') {
+                $vhosts++;
+            }
+        }
+
+        return $vhosts;
     }
 
     /**

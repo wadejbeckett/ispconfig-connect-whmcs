@@ -1313,10 +1313,22 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $id;
     }
 
-    /** @return array<string, mixed>|null miss is null (queryOneRecord), not false */
-    public function api_sites_web_domain_get(mixed $session_id, mixed $primary_id): ?array
+    /**
+     * primary_id -1 returns EVERY record (remoting_lib.inc.php getDataRecord():
+     * `$primary_id == -1` runs `SELECT * FROM <table>` with no auth clause), so
+     * one call counts all vhosts panel-wide. Any other id is a single-record
+     * lookup whose miss is null (queryOneRecord), not false.
+     *
+     * @return array<string, mixed>|list<array<string, mixed>>|null
+     */
+    public function api_sites_web_domain_get(mixed $session_id, mixed $primary_id): array|null
     {
         $this->requireGrant($session_id, 'sites_web_domain_get');
+
+        if ((is_int($primary_id) || (is_string($primary_id) && ctype_digit(ltrim($primary_id, '-')))) && (int) $primary_id === -1) {
+            return array_values(array_map(fn (array $site): array => $this->dbRecord($site), $this->sites));
+        }
+
         $id = $this->assertRecordId($primary_id);
 
         return isset($this->sites[$id]) ? $this->dbRecord($this->sites[$id]) : null;
