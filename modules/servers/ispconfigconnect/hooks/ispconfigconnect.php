@@ -328,11 +328,21 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
 
             $id = $row['id'] ?? null;
             $hostname = $row['hostname'] ?? null;
-            $payload[] = [
+            $entry = [
                 'id' => (int) (is_scalar($id) ? $id : 0),
                 'hostname' => is_scalar($hostname) ? trim((string) $hostname) : '',
                 'lines' => $lines,
             ];
+
+            // The live client count, for the "Accounts: N" cell core would
+            // otherwise print as 0 forever (see correctAccountCount() in the
+            // script). Only sent when the probe actually answered.
+            $clients = $values['client_count'] ?? null;
+            if (is_int($clients) || (is_string($clients) && ctype_digit($clients))) {
+                $entry['accounts'] = (int) $clients;
+            }
+
+            $payload[] = $entry;
         }
 
         return $payload;
@@ -553,6 +563,39 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                         if (!cell) { cell = cellWithExactText(server.hostname); }
                         if (!cell || cell.querySelector('.__CLASS__')) { continue; }
                         cell.appendChild(buildBlock(server.lines));
+                        correctAccountCount(cell, server);
+                    }
+                }
+
+                /**
+                 * Core prints "Accounts: N" from tblservers_remote.num_accounts,
+                 * a column no module can write: it is reset to 0 on every
+                 * metadata refresh and only core's own sync process() step ever
+                 * fills it, so for this module it reads 0 forever (see
+                 * docs/IMPLEMENTATION-NOTES.md, "WHMCS servers page"). We know
+                 * the true figure - it was just probed live - so put it in the
+                 * cell rather than leave a permanently wrong zero on the page.
+                 *
+                 * Strictly presentational, strictly our own rows: the Services
+                 * figure beside it is core's and is left untouched, and if the
+                 * cell is not in the shape core renders, nothing happens.
+                 */
+                function correctAccountCount(hostnameCell, server) {
+                    if (typeof server.accounts !== 'number') { return; }
+                    var row = hostnameCell.parentNode;
+                    if (!row || !row.getElementsByClassName) { return; }
+                    var counts = row.getElementsByClassName('server-usage-count');
+                    if (!counts || !counts.length) { return; }
+                    var cell = counts[0];
+                    var nodes = cell.childNodes;
+                    for (var n = 0; n < nodes.length; n++) {
+                        var node = nodes[n];
+                        if (node.nodeType !== 3) { continue; }
+                        var text = node.nodeValue || '';
+                        if (!/^\s*Accounts:\s*\d+\s*$/.test(text)) { continue; }
+                        node.nodeValue = text.replace(/(\d+)/, String(server.accounts));
+                        cell.setAttribute('title', 'Live count from the ISPConfig panel');
+                        return;
                     }
                 }
 

@@ -615,6 +615,28 @@ final class HooksTest extends TestCase
     }
 
     /**
+     * Core prints "Accounts: N" from tblservers_remote.num_accounts, a column
+     * no module can write - it is reset to 0 on every metadata refresh - so the
+     * payload carries the live client count for the script to put in that cell.
+     */
+    public function testPayloadCarriesTheLiveClientCountForTheAccountsCell(): void
+    {
+        $payload = ispconfigconnect_metaPanelPayload([$this->row()], (int) strtotime(self::UPDATED_AT));
+
+        self::assertSame(9, $payload[0]['accounts']);
+    }
+
+    public function testAccountsCountIsOmittedWhenTheClientProbeDidNotAnswer(): void
+    {
+        $row = $this->row();
+        $row['meta_data'] = '{"ispconfig_version":"3.3.1p1","ispconfig_status":"degraded"}';
+
+        $payload = ispconfigconnect_metaPanelPayload([$row], (int) strtotime(self::UPDATED_AT));
+
+        self::assertArrayNotHasKey('accounts', $payload[0] ?? []);
+    }
+
+    /**
      * @param array<string, mixed> $vars
      * @param list<array<string, mixed>> $rows
      */
