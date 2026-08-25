@@ -263,7 +263,8 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
      * @return list<array{
      *     id: int,
      *     hostname: string,
-     *     lines: list<array{label: string, value: string, warn?: bool, hint?: string}>
+     *     lines: list<array{label: string, value: string, warn?: bool, hint?: string}>,
+     *     accounts?: int
      * }>
      */
     function ispconfigconnect_metaPanelPayload(array $rows, int $now): array
