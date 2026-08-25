@@ -18,7 +18,8 @@
  * without it this file is never included, the checkbox never renders, and —
  * worse — saving the Remote Users form would drop the grant, because
  * CHECKBOXARRAY fields are rebuilt from the POSTed checkboxes on save
- * (tform_base.inc.php:832).
+ * (tform_base.inc.php:828-833, the VARCHAR case of _encode(): the posted array
+ * is imploded, and nothing posted stores '').
  */
 
 //* Direct-request guard: this file sits under the panel docroot. Legitimate

@@ -43,7 +43,7 @@
  */
 
 //* Direct-request guard: this file sits under the panel docroot (both vhost
-//* templates serve interface/web/ and deny only *.lng and dotfiles), and
+//* templates serve interface/web/, and neither denies a .php under lib/), and
 //* requesting it over HTTP would otherwise fatal on `extends remoting` with
 //* the class undefined. Legitimate loading — the remoting handler's glob, or
 //* the tests — always has ISPC_ROOT_PATH (config.inc.php:85) or runs on the
@@ -72,10 +72,24 @@ class remoting_connectsso extends remoting {
 	public function connect_sso_token_create($session_id, $client_id, $bind_ip = '') {
 		global $app;
 
+		//* Every exit from here is either the token or an AUDITED refusal.
+		//* Core will not audit for us: checkPerm()'s own "REMOTE-LIB DENY" line
+		//* is written at LOGLEVEL_WARN, and app.inc.php log() drops anything
+		//* below $conf['log_priority'], which every shipped install sets to 2
+		//* (interface/lib/app.inc.php:190-192,
+		//* install/tpl/config.inc.php.master:145). A refused attempt to mint a
+		//* password substitute must not be the one event that is recorded
+		//* nowhere, so this function writes its own line at priority 2 to
+		//* sys_log and to auth.log for each of them.
 		if (!$this->checkPerm($session_id, CONNECTSSO_REMOTE_FUNCTION)) {
-			// Verbatim core wording (remoting.inc.php) so existing clients
-			// classify it as a permission problem, not an unknown fault.
-			throw new SoapFault('permission_denied', 'You do not have the permissions to access this function.');
+			$this->refuse(
+				$client_id,
+				'the remote user does not hold the ' . CONNECTSSO_REMOTE_FUNCTION . ' grant',
+				// Verbatim core wording (remoting.inc.php) so existing clients
+				// classify it as a permission problem, not an unknown fault.
+				'permission_denied',
+				'You do not have the permissions to access this function.'
+			);
 		}
 
 		//* checkPerm() alone does NOT authorise this function. For a
@@ -95,23 +109,54 @@ class remoting_connectsso extends remoting {
 		//* key must refuse, not default to "remote user".
 		$session = $this->getSession($session_id);
 		if (!is_array($session) || !isset($session['client_login']) || (int)$session['client_login'] !== 0) {
-			connectsso_audit(
-				$app,
-				'refused to mint a token for client ' . intval($client_id)
-				. ': the API session is a client session, not a remote user',
-				true
+			$this->refuse(
+				$client_id,
+				'the API session is a client session, not a remote user',
+				'permission_denied',
+				'You do not have the permissions to access this function.'
 			);
-			throw new SoapFault('permission_denied', 'You do not have the permissions to access this function.');
+		}
+
+		//* TLS GATE. This function hands back a password substitute that the
+		//* caller is about to put in a URL. On a plaintext request the response
+		//* is readable on the wire, and an interceptor who redeems the token
+		//* first wins outright — single use and a 45-second TTL do not help
+		//* when the attacker is ahead of the customer's browser. So: refuse,
+		//* unless the operator declared a reverse proxy in ISPConfig's own
+		//* security_settings.ini, the one topology where PHP cannot see the
+		//* real scheme and TLS termination is the proxy's job.
+		//* Placed AFTER the two authorisation gates on purpose: only a session
+		//* that already proved itself can write these audit lines, so a panel
+		//* accidentally served over HTTP cannot be turned into a log flood by
+		//* anonymous requests.
+		if (!connectsso_transport_is_acceptable($app)) {
+			$this->refuse(
+				$client_id,
+				'the API request did not arrive over TLS and no reverse proxy is declared'
+				. ' in security_settings.ini (reverse_proxy_panel_allowed)',
+				'sso_insecure_transport',
+				'Single sign-on requires an encrypted (https) connection to the panel.'
+			);
 		}
 
 		$client_id = intval($client_id);
 		if ($client_id < 1) {
-			throw new SoapFault('invalid_client_id', 'The client id must be an integer greater than zero.');
+			$this->refuse(
+				$client_id,
+				'the client id is not a positive integer',
+				'invalid_client_id',
+				'The client id must be an integer greater than zero.'
+			);
 		}
 
 		$bind_ip = trim((string)$bind_ip);
 		if ($bind_ip !== '' && !filter_var($bind_ip, FILTER_VALIDATE_IP)) {
-			throw new SoapFault('invalid_bind_ip', 'The bind IP address is invalid.');
+			$this->refuse(
+				$client_id,
+				'the bind IP is not a literal address',
+				'invalid_bind_ip',
+				'The bind IP address is invalid.'
+			);
 		}
 
 		//* The panel user this client logs in as. sys_user.client_id is set by
@@ -121,17 +166,39 @@ class remoting_connectsso extends remoting {
 			$client_id
 		);
 		if (!is_array($user)) {
-			throw new SoapFault('sso_no_user', 'There is no panel user for this client id.');
+			$this->refuse(
+				$client_id,
+				'no sys_user row carries that client id',
+				'sso_no_user',
+				'There is no panel user for this client id.'
+			);
 		}
 
 		//* Never mint for an administrator. Tokens bypass password and IP
 		//* checks by design; an admin token is a full panel takeover, and no
 		//* legitimate caller of this function needs one.
+		//* NOTE the boundary this does NOT draw: a RESELLER's panel user is
+		//* typ = 'user' like any other customer (remoting_lib.inc.php:329 sets
+		//* $type = 'user' for every client the API creates; limit_client > 0
+		//* only adds the `client` module, :311-313). A reseller is therefore
+		//* mintable, and their panel session administers their sub-clients.
+		//* That is deliberate — resellers are sold through billing systems too
+		//* — but it is documented in README §5 rather than left implied.
 		if ($user['typ'] === 'admin') {
-			throw new SoapFault('sso_refused', 'Single sign-on is not available for administrator accounts.');
+			$this->refuse(
+				$client_id,
+				'the target panel user ' . $user['username'] . ' is an administrator',
+				'sso_refused',
+				'Single sign-on is not available for administrator accounts.'
+			);
 		}
 		if ((int)$user['active'] !== 1) {
-			throw new SoapFault('sso_user_inactive', 'The panel user for this client is not active.');
+			$this->refuse(
+				$client_id,
+				'the target panel user ' . $user['username'] . ' is not active',
+				'sso_user_inactive',
+				'The panel user for this client is not active.'
+			);
 		}
 
 		//* A locked or cancelled client is a SUSPENDED customer. Handing out a
@@ -142,7 +209,12 @@ class remoting_connectsso extends remoting {
 			$client_id
 		);
 		if (is_array($client) && ($client['locked'] === 'y' || $client['canceled'] === 'y')) {
-			throw new SoapFault('sso_client_locked', 'The client account is locked; single sign-on is refused.');
+			$this->refuse(
+				$client_id,
+				'the client account is locked or cancelled',
+				'sso_client_locked',
+				'The client account is locked; single sign-on is refused.'
+			);
 		}
 
 		$now = time();
@@ -193,5 +265,35 @@ class remoting_connectsso extends remoting {
 			'client_id'  => $client_id,
 			'username'   => (string)$user['username'],
 		);
+	}
+
+	/**
+	 * Audit a refused mint and throw. The internal $reason is written to
+	 * sys_log and auth.log; the caller only ever sees $message, which for the
+	 * authorisation paths is core's verbatim wording.
+	 *
+	 * PRIVATE on purpose. remoting_handler_base maps every method
+	 * get_class_methods() reports into the remote API's method map, and that
+	 * call is made from outside the class, so only public methods are exposed
+	 * — this class still declares exactly one public method of its own, which
+	 * tests/run.php asserts.
+	 *
+	 * @param mixed  $client_id as received, before validation
+	 * @param string $reason    internal, for the audit trail only
+	 * @param string $code      SoapFault code
+	 * @param string $message   SoapFault message, seen by the caller
+	 * @return void
+	 * @throws SoapFault always
+	 */
+	private function refuse($client_id, $reason, $code, $message) {
+		global $app;
+
+		connectsso_audit(
+			$app,
+			'refused to mint a token for client ' . intval($client_id) . ': ' . $reason,
+			true
+		);
+
+		throw new SoapFault($code, $message);
 	}
 }

@@ -118,8 +118,25 @@ class FakeDb {
     }
 }
 
+/**
+ * Stand-in for $app->getconf. Only get_security_config('permissions') is used,
+ * and only for `reverse_proxy_panel_allowed` — the operator's own declaration
+ * that something in front of the panel terminates TLS, which is the one case
+ * where PHP cannot see the real request scheme.
+ */
+class FakeGetconf {
+    public $permissions = array('reverse_proxy_panel_allowed' => 'none');
+
+    public function get_security_config($section = '') {
+        if ($section === 'permissions') { return $this->permissions; }
+
+        return array('permissions' => $this->permissions);
+    }
+}
+
 class FakeApp {
     public $db;
+    public $getconf;
     public $log = array();
     public $authlog = array();
     //* Mirrors a SHIPPED install, not the dev tree: app.inc.php log() drops
@@ -130,7 +147,7 @@ class FakeApp {
     //* an audit trail that a real panel silently discards.
     public $log_priority = 2;
 
-    public function __construct() { $this->db = new FakeDb(); }
+    public function __construct() { $this->db = new FakeDb(); $this->getconf = new FakeGetconf(); }
     public function log($msg, $priority = 0) {
         if ($priority >= $this->log_priority) { $this->log[] = $msg; }
     }
@@ -217,6 +234,64 @@ ok(connectsso_ip_equals('2001:db8::1', '2001:0db8:0000:0000:0000:0000:0000:0001'
 ok(!connectsso_ip_equals('2001:db8::1', '192.0.2.1'), 'IPv6 does not match IPv4');
 ok(!connectsso_ip_equals('not-an-ip', 'not-an-ip'), 'garbage never compares equal');
 ok(!connectsso_ip_equals('', ''), 'empty never compares equal');
+
+// ---------------------------------------------------------------------------
+section('transport security (TLS gate)');
+// ---------------------------------------------------------------------------
+//* A token is a password substitute that travels in a URL. Over plain HTTP the
+//* mint response, the redirect and the panel session that follows are all
+//* readable by anything on the path, and the single-use/45-second design does
+//* nothing about an interceptor who simply redeems the token first. So both
+//* halves refuse unless the request is TLS — or unless the operator has told
+//* ISPConfig itself that a reverse proxy sits in front, which is the one case
+//* where PHP genuinely cannot see the scheme.
+
+$saved_server = $_SERVER;
+
+unset($_SERVER['HTTPS'], $_SERVER['REQUEST_SCHEME']);
+ok(!connectsso_request_is_secure(), 'no HTTPS marker -> not secure');
+$_SERVER['HTTPS'] = 'off';
+ok(!connectsso_request_is_secure(), 'HTTPS=off -> not secure');
+$_SERVER['HTTPS'] = 'OFF';
+ok(!connectsso_request_is_secure(), 'HTTPS=OFF -> not secure (case-insensitive)');
+$_SERVER['HTTPS'] = '';
+ok(!connectsso_request_is_secure(), 'HTTPS empty -> not secure');
+$_SERVER['HTTPS'] = 'on';
+ok(connectsso_request_is_secure(), 'HTTPS=on -> secure');
+$_SERVER['HTTPS'] = '1';
+ok(connectsso_request_is_secure(), 'HTTPS=1 (IIS-style) -> secure');
+unset($_SERVER['HTTPS']);
+$_SERVER['REQUEST_SCHEME'] = 'https';
+ok(connectsso_request_is_secure(), 'REQUEST_SCHEME=https -> secure');
+$_SERVER['REQUEST_SCHEME'] = 'http';
+ok(!connectsso_request_is_secure(), 'REQUEST_SCHEME=http -> not secure');
+unset($_SERVER['REQUEST_SCHEME']);
+
+$probe = new FakeApp();
+ok(!connectsso_proxy_declared($probe),
+    'reverse_proxy_panel_allowed=none (the shipped default) declares no proxy');
+$probe->getconf->permissions = array('reverse_proxy_panel_allowed' => 'sites');
+ok(connectsso_proxy_declared($probe), 'reverse_proxy_panel_allowed=sites declares a proxy');
+$probe->getconf->permissions = array('reverse_proxy_panel_allowed' => 'all');
+ok(connectsso_proxy_declared($probe), 'reverse_proxy_panel_allowed=all declares a proxy');
+$probe->getconf->permissions = array();
+ok(!connectsso_proxy_declared($probe), 'a security_settings.ini without the key declares no proxy');
+$probe->getconf = null;
+ok(!connectsso_proxy_declared($probe), 'an $app with no getconf fails closed');
+ok(!connectsso_proxy_declared(null), 'a missing $app fails closed');
+
+$probe = new FakeApp();
+$_SERVER['HTTPS'] = 'on';
+ok(connectsso_transport_is_acceptable($probe), 'TLS is acceptable on a stock panel');
+unset($_SERVER['HTTPS']);
+ok(!connectsso_transport_is_acceptable($probe), 'plain HTTP is refused on a stock panel');
+$probe->getconf->permissions = array('reverse_proxy_panel_allowed' => 'all');
+ok(connectsso_transport_is_acceptable($probe),
+    'plain HTTP is accepted only where the operator declared a reverse proxy');
+
+$_SERVER = $saved_server;
+//* Everything below drives the mint function, which now requires TLS.
+$_SERVER['HTTPS'] = 'on';
 
 // ---------------------------------------------------------------------------
 section('every query survives ISPConfig\'s SQL scanner');
@@ -350,6 +425,30 @@ ok(fault_from(function () use ($sso) { $sso->connect_sso_token_create('sid', 5, 
     'a session without a client_login flag is refused (fail closed)');
 remoting::$session = array('remote_userid' => 42, 'client_login' => 0);
 
+//* TLS GATE. A minted token is a password substitute that the caller is about
+//* to put in a URL. Over plain HTTP the mint response itself is readable on the
+//* wire, and an interceptor can redeem the token before the customer's browser
+//* does — single use and a 45-second TTL do not help when the attacker is
+//* first. Refuse, unless the operator declared a reverse proxy in ISPConfig's
+//* own security_settings.ini (the one case where PHP cannot see the scheme).
+unset($_SERVER['HTTPS'], $_SERVER['REQUEST_SCHEME']);
+scenario($active_user, $open_client);
+ok(fault_from(function () use ($sso) { $sso->connect_sso_token_create('sid', 5, ''); })
+    === 'Single sign-on requires an encrypted (https) connection to the panel.',
+    'minting over plain HTTP is refused');
+ok($app->db->writesMatching('INSERT INTO `' . CONNECTSSO_TOKEN_TABLE . '`') === array(),
+    'a plain-HTTP request mints nothing');
+ok(strpos(implode(' | ', $app->log), 'not arrive over') !== false,
+    'the plain-HTTP refusal is audited');
+
+scenario($active_user, $open_client);
+$app->getconf->permissions = array('reverse_proxy_panel_allowed' => 'all');
+$proxied = $sso->connect_sso_token_create('sid', 5, '');
+ok(is_array($proxied) && connectsso_token_is_wellformed($proxied['token']),
+    'a declared reverse proxy is trusted to have terminated TLS');
+
+$_SERVER['HTTPS'] = 'on';
+
 scenario($active_user, $open_client);
 ok(fault_from(function () use ($sso) { $sso->connect_sso_token_create('sid', 0, ''); })
     === 'The client id must be an integer greater than zero.', 'client id 0 is refused');
@@ -392,6 +491,94 @@ ok(fault_from(function () use ($sso) { $sso->connect_sso_token_create('sid', 5, 
 //* left $app in place, so assert nothing was written on the way out.
 ok($app->db->writesMatching('INSERT INTO `' . CONNECTSSO_TOKEN_TABLE . '`') === array(),
     'a refused mint inserts no token row');
+
+// ---------------------------------------------------------------------------
+section('EVERY mint refusal is audited to both logs');
+// ---------------------------------------------------------------------------
+//* The README promises an audit line for every mint, every refusal and every
+//* sign-in. Core will not supply one: checkPerm()'s own "REMOTE-LIB DENY" is
+//* written at LOGLEVEL_WARN, which app.inc.php log() DROPS on every shipped
+//* install (log_priority = 2). So each refusal below must write its own line,
+//* at priority 2, to sys_log AND to auth.log — and none of them may contain a
+//* token. This table is the enumeration: add a refusal to the function without
+//* adding it here and the count assertion at the end fails.
+$refusals = array(
+    'missing grant' => array(
+        'perm' => false, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'client_login session' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 1),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'session with no client_login flag' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'plain HTTP' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(5, ''),
+        'insecure' => true,
+    ),
+    'bad client id' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(0, ''),
+    ),
+    'bad bind ip' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => $active_user, 'client' => $open_client, 'args' => array(5, 'evil.example.com'),
+    ),
+    'no panel user' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => null, 'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'administrator target' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => array('userid' => 1, 'username' => 'admin', 'active' => 1, 'typ' => 'admin'),
+        'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'inactive panel user' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => array('userid' => 9, 'username' => 'acmeltd', 'active' => 0, 'typ' => 'user'),
+        'client' => $open_client, 'args' => array(5, ''),
+    ),
+    'locked client' => array(
+        'perm' => true, 'session' => array('remote_userid' => 42, 'client_login' => 0),
+        'user' => $active_user, 'client' => array('locked' => 'y', 'canceled' => 'n'),
+        'args' => array(5, ''),
+    ),
+);
+
+$unaudited = array();
+foreach ($refusals as $label => $case) {
+    remoting::$perm = $case['perm'];
+    remoting::$session = $case['session'];
+    if (!empty($case['insecure'])) {
+        unset($_SERVER['HTTPS'], $_SERVER['REQUEST_SCHEME']);
+    } else {
+        $_SERVER['HTTPS'] = 'on';
+    }
+    scenario($case['user'], $case['client']);
+    $message = fault_from(function () use ($sso, $case) {
+        $sso->connect_sso_token_create('sid', $case['args'][0], $case['args'][1]);
+    });
+    $sys  = implode(' | ', $app->log);
+    $auth = implode(' | ', $app->authlog);
+    if ($message === ''
+        || strpos($sys, '[connectsso] refused') === false
+        || strpos($auth, '[connectsso] refused') === false
+        || $app->db->writesMatching('INSERT INTO `' . CONNECTSSO_TOKEN_TABLE . '`') !== array()) {
+        $unaudited[] = $label;
+    }
+}
+$_SERVER['HTTPS'] = 'on';
+remoting::$perm = true;
+remoting::$session = array('remote_userid' => 42, 'client_login' => 0);
+
+ok(count($refusals) === 10, 'the refusal table still enumerates 10 paths (found ' . count($refusals) . ')');
+ok($unaudited === array(),
+    'every mint refusal writes an audit line to sys_log AND auth.log and mints nothing'
+    . ($unaudited ? ': ' . implode(', ', $unaudited) . ' did not' : ''));
 
 //* ---- happy path ----
 scenario($active_user, $open_client);
@@ -487,6 +674,16 @@ Not covered here (needs a real panel — verify by hand before shipping):
      each returns 404 with an empty body (no fatal, no path disclosure)
  15. burn race: two parallel redemptions of one token (e.g. xargs -P2 curl)
      -> exactly one lands on /index.php, the other is refused
+ 16. TLS gate, redemption half: with reverse_proxy_panel_allowed=none, open a
+     valid token over http:// -> refused, audit line names the setting, and
+     the token is still unused afterwards (no attempt recorded either); the
+     same token over https:// still signs in
+ 17. TLS gate, mint half: call connect_sso_token_create over http://
+     -> fault 'Single sign-on requires an encrypted (https) connection to the
+     panel.', no row in connectsso_token, refusal in sys_log and auth.log
+ 18. reverse proxy: set reverse_proxy_panel_allowed=sites (or all) in
+     /usr/local/ispconfig/security/security_settings.ini -> both halves work
+     again over the proxy's plaintext hop
 
 NOTE;
 

@@ -22,7 +22,17 @@
  *     session, and refuses to continue if that fails (session fixation);
  *   - it never takes a redirect target from the request — the destination is
  *     always the panel's own start page;
- *   - it rate-limits by source address, and every rejection path counts;
+ *   - it refuses outright unless the request arrived over TLS (or the operator
+ *     declared a reverse proxy in security_settings.ini);
+ *   - it rate-limits by source address. A failure counts when it was reached by
+ *     PRESENTING A TOKEN VALUE THAT DID NOT CHECK OUT — malformed, unknown,
+ *     expired, replayed, IP-mismatched, failed burn. Those are the guessing
+ *     paths. Refusals BEFORE the token is read (transport, already at the
+ *     limit) and refusals AFTER it checked out and was burned (maintenance,
+ *     vanished/inactive user, suspended client, broken session handling)
+ *     deliberately do NOT count: neither kind can be used to guess, and
+ *     counting them would let one config mistake or one suspended customer
+ *     exhaust the budget of every visitor sharing that source address;
  *   - it never emits the token, the token hash, or the reason for a refusal.
  *
  * The session it builds mirrors interface/web/login/index.php exactly (verified
@@ -77,6 +87,23 @@ function connectsso_refuse($reason, $status = 403) {
 		. '<a href="/login/">sign in with your username and password</a>.</p>'
 		. '</body></html>';
 	die();
+}
+
+//* ------------------------------------------------------------------- TLS
+//* Before ANYTHING else, including the token lookup. A token that arrived over
+//* plain HTTP has already been exposed on the wire, and finishing the login
+//* would hand the customer a panel session that is exposed for its whole life.
+//* Refuse unless the operator declared a reverse proxy in ISPConfig's own
+//* security_settings.ini — the only topology where PHP cannot see the real
+//* scheme, and where TLS termination is therefore the proxy's job.
+//* No attempt is recorded: this is a server-configuration refusal, not a guess
+//* at somebody's token, and it must not spend a real visitor's rate-limit
+//* budget (which on a shared/NATed address is shared with everyone else).
+if (!connectsso_transport_is_acceptable($app)) {
+	connectsso_refuse(
+		'the request did not arrive over TLS and no reverse proxy is declared in'
+		. ' security_settings.ini (reverse_proxy_panel_allowed); single sign-on is disabled'
+	);
 }
 
 //* ---------------------------------------------------------------- rate limit
