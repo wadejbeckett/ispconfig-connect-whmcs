@@ -31,9 +31,23 @@ namespace WHMCS\Module\Server\Ispconfigconnect\Server;
  * event handlers, no jQuery assumption, no network calls.
  *
  * Pure rendering: no WHMCS calls, no I/O, no API calls. Reading the cached
- * values out of tblservers_remote is hooks.php's job - Configuration > Servers
- * renders one row per server, and probing the panel from there would be slow
- * and could trip its login lockout.
+ * values out of tblservers_remote is the hook file's job - Configuration >
+ * Servers renders one row per server, and probing the panel from there would be
+ * slow and could trip its login lockout.
+ *
+ * ## Status: not wired to the live panel
+ *
+ * The only caller was modules/servers/ispconfigconnect/hooks.php, which was
+ * deleted once WHMCS 9.0.6 proved it never loads a server module's hooks.php.
+ * The panel an operator actually sees is rendered by the self-contained
+ * hooks/ispconfigconnect.php, which installs into <whmcs>/includes/hooks and
+ * cannot rely on this class - a file in that directory has no guarantee the
+ * module's PSR-4 autoloader is registered.
+ *
+ * This class is kept because it is the pure, unit-testable statement of the
+ * same contract, and RemoteMetaDataTest round-trips stored meta_data through it.
+ * FIELDS below must therefore stay in step with
+ * ISPCONFIGCONNECT_METAPANEL_FIELDS in the hook file; they have drifted once.
  */
 final class MetaDataPanel
 {

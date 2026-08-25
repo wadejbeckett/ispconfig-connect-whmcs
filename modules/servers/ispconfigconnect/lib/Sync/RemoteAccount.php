@@ -27,15 +27,24 @@ final readonly class RemoteAccount
     public const STATUS_SUSPENDED = 'Suspended';
 
     /**
-     * @param string $product        the value that matches the product's
-     *                               configoption1 (ListAccountsProductField):
-     *                               the ISPConfig master template id, because
-     *                               WHMCS stores the Loader array KEY, not its
-     *                               display label
-     * @param string $templateName   the template's display name, '' when the
-     *                               template row no longer exists
-     * @param string $created        'Y-m-d H:i:s', '' when ISPConfig never
-     *                               stamped client.created_at
+     * @param string $domain           the PANEL fact: the client's primary
+     *                                 website domain, '' when it owns none.
+     *                                 Not what WHMCS matches on - see
+     *                                 $uniqueIdentifier and toWhmcsArray()
+     * @param string $uniqueIdentifier the value WHMCS matches this account on.
+     *                                 Never empty and unique within a listing;
+     *                                 AccountLister::identifier() substitutes a
+     *                                 synthetic name when the domain is missing
+     *                                 or already claimed
+     * @param string $product          the value that matches the product's
+     *                                 configoption1 (ListAccountsProductField):
+     *                                 the ISPConfig master template id, because
+     *                                 WHMCS stores the Loader array KEY, not its
+     *                                 display label
+     * @param string $templateName     the template's display name, '' when the
+     *                                 template row no longer exists
+     * @param string $created          'Y-m-d H:i:s', '' when ISPConfig never
+     *                                 stamped client.created_at
      */
     public function __construct(
         public int $clientId,
@@ -53,6 +62,16 @@ final readonly class RemoteAccount
     }
 
     /**
+     * The 'domain' and 'uniqueIdentifier' keys deliberately carry the SAME
+     * value, the match key - never the raw panel domain.
+     *
+     * WHMCS's MetaData names the identifier field 'domain', which is the only
+     * value core accepts (AccountLister::WHMCS_METADATA), and core is encoded:
+     * which of the two keys it reads the value out of cannot be observed. Both
+     * therefore answer identically, so the match cannot depend on the answer -
+     * and neither key is ever empty, which is the shape that would match
+     * unrelated WHMCS services (AccountLister::identifier()).
+     *
      * @return array{
      *     email: string, username: string, domain: string,
      *     uniqueIdentifier: string, product: string, primaryip: string,
@@ -66,7 +85,7 @@ final readonly class RemoteAccount
         return [
             'email' => $this->email,
             'username' => $this->username,
-            'domain' => $this->domain,
+            'domain' => $this->uniqueIdentifier,
             'uniqueIdentifier' => $this->uniqueIdentifier,
             'product' => $this->product,
             'primaryip' => $this->primaryIp,

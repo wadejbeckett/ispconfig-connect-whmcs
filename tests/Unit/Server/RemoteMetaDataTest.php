@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Ispconfigconnect\Tests\Unit\Server;
 
+use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
 use Ispconfigconnect\Tests\Support\FakeIspconfigServer;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\RestClient;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
+use WHMCS\Module\Server\Ispconfigconnect\Server\MetaDataPanel;
 use WHMCS\Module\Server\Ispconfigconnect\Server\RemoteMetaData;
+use WHMCS\Module\Server\Ispconfigconnect\Server\ServerMetaData;
+use WHMCS\Module\Server\Ispconfigconnect\Support\Logging;
 
 #[CoversClass(RemoteMetaData::class)]
 final class RemoteMetaDataTest extends TestCase
@@ -121,6 +125,114 @@ final class RemoteMetaDataTest extends TestCase
         $meta = $this->gather(clock: static fn (): int => 1_700_000_000);
 
         self::assertSame('2023-11-14 22:13:20 UTC', $meta['checked_at']);
+    }
+
+    // ---- the servers-page key contract ------------------------------------
+    //
+    // meta_data is a shared surface: core reads 'service_count', the module's
+    // admin hook reads the rest, and a renamed key does not fail anywhere - it
+    // just silently drops a line off Configuration > Servers. These two tests
+    // are what makes that impossible to do by accident.
+
+    public function testTheEmittedKeySetIsExactlyWhatTheServersPageConsumes(): void
+    {
+        $this->fake->appVersion = '3.3.1p1';
+        $this->fake->jobqueueCount = 2;
+        $this->fake->addServer('web01.example.net');
+        $this->fake->addWebsite($this->fake->addClient('alpha'), 'alpha.example.com');
+
+        $keys = array_keys($this->gather());
+        sort($keys);
+
+        // 'sso_available' is deliberately absent: the entry file adds it after
+        // gather() returns, because the probe is not an ISPConfig core call.
+        self::assertSame([
+            'checked_at',
+            'client_count',
+            'ispconfig_status',
+            'ispconfig_version',
+            'pending_jobs',
+            'server_count',
+            'service_count',
+            'website_count',
+        ], $keys);
+    }
+
+    public function testEveryProbeValueSurvivesTheRoundTripOntoTheServersPage(): void
+    {
+        $this->fake->appVersion = '3.3.1p1';
+        $this->fake->jobqueueCount = 7;
+        $this->fake->addServer('web01.example.net');
+        $this->fake->addServer('mail01.example.net');
+        foreach (['alpha', 'bravo', 'charlie'] as $name) {
+            $this->fake->addClient($name);
+        }
+
+        $lines = self::panelLines($this->gather(clock: static fn (): int => 1_700_000_000));
+
+        self::assertSame('3.3.1p1', $lines['ISPConfig Version'] ?? null);
+        self::assertSame('7', $lines['Pending Jobs'] ?? null);
+        self::assertSame('3', $lines['Clients'] ?? null);
+        self::assertSame('2', $lines['ISPConfig Nodes'] ?? null);
+        // checked_at stands in for WHMCS's own updated_at on a row it has not
+        // written yet.
+        self::assertSame('2023-11-14 22:13:20 UTC', $lines['Last Updated'] ?? null);
+        self::assertArrayNotHasKey('Probe Errors', $lines);
+    }
+
+    public function testAFailedProbeReachesTheOperatorInsteadOfLeavingAGap(): void
+    {
+        $this->fake->setGrants(['server_get', 'monitor_jobqueue_count']);
+        $this->fake->appVersion = '3.3.1p1';
+
+        $lines = self::panelLines($this->gather());
+
+        self::assertArrayNotHasKey('Clients', $lines);
+        self::assertStringContainsString('clients', $lines['Probe Errors'] ?? '');
+    }
+
+    /**
+     * Security regression, same class as tests/Unit/Usage/UsageLogSecretsTest.
+     *
+     * The website counter is a BULK read: sites_web_domain_get(-1) is a
+     * `SELECT *` over web_domain, so every row comes back carrying ssl_key -
+     * the site's TLS PRIVATE KEY - and ssl_request, its CSR
+     * (install/sql/ispconfig3.sql:2036/:2033). Unlike the nightly sweeps this
+     * probe runs on an ADMIN PAGE RENDER, so it repeats whenever an operator
+     * opens Configuration > Servers, and tblmodulelog is readable by every
+     * WHMCS admin.
+     *
+     * RestClient masks those columns (SENSITIVE_KEYS) precisely so bulk reads
+     * are safe; this proves the metadata refresh is inside that protection.
+     */
+    public function testRefreshingTheMetadataNeverLeaksWebsiteKeyMaterial(): void
+    {
+        ModuleCallLog::reset();
+
+        try {
+            $client = $this->fake->addClient('alpha');
+            $domainId = $this->fake->addWebsite($client, 'alpha.example.com');
+            $tlsKey = FakeIspconfigServer::websiteTlsPrivateKey($domainId);
+            $csr = FakeIspconfigServer::websiteCertificateRequest($domainId);
+
+            $session = new SessionManager(
+                new RestClient($this->fake, Logging::wire('ispconfigconnect')),
+                self::USERNAME,
+                self::PASSWORD
+            );
+            $meta = (new RemoteMetaData($session))->gather();
+
+            self::assertSame(1, $meta['service_count']);
+            // Not a vacuous pass: the panel really did put the key on the wire.
+            self::assertTrue(
+                self::secretWasOnTheWire($tlsKey),
+                'sites_web_domain_get(-1) did not return ssl_key - the fake no longer emits it'
+            );
+            self::assertSame([], ModuleCallLog::entriesLeaking($tlsKey));
+            self::assertSame([], ModuleCallLog::entriesLeaking($csr));
+        } finally {
+            ModuleCallLog::reset();
+        }
     }
 
     // ---- graceful degradation --------------------------------------------
@@ -261,6 +373,58 @@ final class RemoteMetaDataTest extends TestCase
     }
 
     // ---- helpers ----------------------------------------------------------
+
+    /** True when some logged entry's raw response really carried $secret. */
+    private static function secretWasOnTheWire(string $secret): bool
+    {
+        foreach (ModuleCallLog::entries() as $entry) {
+            if (str_contains(print_r($entry['response'], true), $secret)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Pushes a gather() result through the path a real install uses - stored as
+     * JSON in tblservers_remote, decoded by ServerMetaData, rendered by
+     * MetaDataPanel - and returns the block's label => value lines.
+     *
+     * The block travels as a JSON payload the hook's script places in the DOM,
+     * so reading it back is a decode rather than HTML scraping.
+     *
+     * @param array<string, scalar> $meta
+     * @return array<string, string>
+     */
+    private static function panelLines(array $meta): array
+    {
+        $html = MetaDataPanel::render([ServerMetaData::fromRow([
+            'id' => 3,
+            'name' => 'ISPConfig',
+            'hostname' => 'panel.example.net',
+            'meta_data' => json_encode($meta, JSON_THROW_ON_ERROR),
+            // A server WHMCS has never refreshed has no updated_at.
+            'updated_at' => null,
+        ])]);
+
+        $found = preg_match(
+            '#<script type="application/json" id="' . MetaDataPanel::PAYLOAD_ELEMENT_ID . '">(.*?)</script>#s',
+            $html,
+            $match
+        );
+        self::assertSame(1, $found, 'the hook payload must be present');
+
+        /** @var list<array{lines: list<array{label: string, value: string}>}> $payload */
+        $payload = json_decode($match[1], true, 512, JSON_THROW_ON_ERROR);
+
+        $lines = [];
+        foreach ($payload[0]['lines'] as $line) {
+            $lines[$line['label']] = $line['value'];
+        }
+
+        return $lines;
+    }
 
     /** @return array<string, scalar> */
     private function gather(?\Closure $clock = null): array

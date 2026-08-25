@@ -21,27 +21,64 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
  * `tblservers_remote.meta_data` (live-verified on WHMCS 9.0.6 - a
  * success/metaData wrapper is NOT accepted). Core renders one key itself:
  * `service_count` becomes "Services: N" in the Remote Usage Stats cell. The
- * rest is read back by this module's own hooks.php panel.
+ * rest is read back by this module's own admin hook.
+ *
+ * ## Who consumes each key
+ *
+ * Nothing here is decorative - every key has exactly one reader, and renaming
+ * one silently removes a line from the servers page (the round trip is locked
+ * down in tests/Unit/Server/RemoteMetaDataTest):
+ *
+ *   ispconfig_version   -> panel line "ISPConfig Version"
+ *   pending_jobs        -> panel line "Pending Jobs"
+ *   client_count        -> panel line "Clients"
+ *   server_count        -> panel line "ISPConfig Nodes"
+ *   checked_at          -> panel line "Last Updated" (only when WHMCS's own
+ *                          tblservers_remote.updated_at is empty)
+ *   ispconfig_error     -> panel line "Probe Errors"
+ *   service_count       -> WHMCS CORE renders it as "Services: N"
+ *   website_count       -> the same number under a self-describing name, so a
+ *                          reader of the stored JSON needs no lookup table
+ *   ispconfig_status    -> machine-readable ok/degraded/unavailable summary for
+ *                          anything that reads the cached row
+ *   sso_available       -> added by the entry file, not here; MetaData() reads
+ *                          it to decide whether to offer the SSO button
+ *
+ * What is NOT here, and why: the panel's own "Accounts: N" comes from
+ * `tblservers_remote.num_accounts`, a COLUMN this function cannot write. No
+ * returned key populates it (num_accounts, numAccounts, ownedAccounts and
+ * accounts were all tried live and ignored) - it is filled by a Server Sync
+ * run, i.e. by ListAccounts. `client_count` is this module's own, always-fresh
+ * answer to the same question. See docs/IMPLEMENTATION-NOTES.md, "WHMCS servers
+ * page".
  *
  * ## Why these probes and not others
  *
  * ISPConfig 3.3.1p1 exposes exactly one counting function over the remote API
  * - `monitor_jobqueue_count` (remote.d/monitor.inc.php is the whole monitor
  * surface; interface/web/monitor/lib/remote.conf.php grants that one name).
- * Every other total would have to be derived from a bulk record read, and
+ * Every other total has to be derived from a bulk record read, and
  * remoting_lib.inc.php getDataRecord() answers an array/-1 primary_id with
- * `SELECT *`. That rules out the obvious candidates on security grounds, not
- * performance ones:
+ * `SELECT *`. That is a security problem before it is a performance one,
+ * because every response reaches WHMCS's module log and tblmodulelog is
+ * readable by every WHMCS admin:
  *
- *   - `sites_web_domain_get(['type' => 'vhost'])` returns every vhost row
- *     INCLUDING `web_domain.ssl_key` - the site's TLS private key
- *     (install/sql/ispconfig3.sql);
- *   - `mail_domain_get([])` returns `mail_domain.dkim_private` and
- *     `relay_pass` (same file).
+ *   - `sites_web_domain_get(-1)` - which websiteCount() below DOES call -
+ *     returns every vhost row INCLUDING `web_domain.ssl_key`, the site's TLS
+ *     private key, and `ssl_request`, its CSR (install/sql/ispconfig3.sql);
+ *   - `mail_domain_get([])` would likewise return `mail_domain.dkim_private`
+ *     and `relay_pass` (same file).
  *
- * Those responses reach WHMCS's module log, so a website/mail counter would
- * copy private keys into tblmodulelog on every metadata refresh. The probes
- * below return ids, counts and a version string only.
+ * What makes the website counter safe is NOT that it avoids the key material -
+ * it cannot - but that `Api\RestClient::SENSITIVE_KEYS` masks those column
+ * names at any nesting depth before anything is logged. This probe runs on an
+ * admin page render, so it repeats far more often than the nightly sweeps do;
+ * RemoteMetaDataTest keeps a leak regression test on exactly this path.
+ *
+ * RULE for any probe added later: if it reads records rather than a count, its
+ * secret columns must be in SENSITIVE_KEYS first. (A mail-domain counter is
+ * still not here for a different reason - nothing on the page renders it, and
+ * it would need a grant the module does not otherwise require.)
  *
  * ## Failure policy
  *

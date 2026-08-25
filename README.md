@@ -65,13 +65,20 @@ as Plesk operators manage service plans — selected per WHMCS product from a li
 |---|---|---|
 | **Usage import** (nightly cron) | Writes disk and bandwidth usage plus their panel limits onto every service on the server, in megabytes | — |
 | **Usage-billing metrics** | Publishes nine metrics — disk, bandwidth, mail and database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones | — |
-| **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services | — |
-| **Servers page health** | Panel version, pending job-queue depth, client count and node count, rendered under the server's hostname; failures show the reason instead of breaking the page | — |
+| **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services. A client that owns no website is listed under a reserved `.invalid` placeholder, so it is reported as an unknown account rather than matched to the wrong service | — |
+| **Servers page: Services count** | The number of websites on the panel, which WHMCS renders itself as *Services: N* | — |
+| **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's hostname; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) |
 | **Single sign-on** | A password-free *Log in to ISPConfig* button for customers, using a single-use, short-lived token | Optional [`companion/ispconfig-sso`](companion/ispconfig-sso/README.md) |
 | **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — |
 
 Everything above degrades rather than breaks: a panel that is down costs a placeholder value, never
 an admin page, a failed cron run, or a lost provisioning result.
+
+Two figures on that page are **WHMCS's own, not the module's**, and are easy to misread: *Accounts* is
+a cached count that a **Sync Accounts** run fills in (blank until you run one), and *WHMCS Usage
+Stats* — the `1/200` — is WHMCS counting the services it has assigned to the server against that
+server's *Maximum No. of Accounts* field. Neither reports anything about the panel.
+[`docs/INSTALL.md`](docs/INSTALL.md) §6.4 breaks down every number on the page.
 
 ### Why single sign-on needs a companion
 
@@ -106,6 +113,16 @@ higher bar than the abandoned modules it replaces:
 
 ## Installation
 
+Copy `modules/servers/ispconfigconnect/` into your WHMCS `modules/servers/` directory. The panel
+health block on the servers page needs one extra step, because WHMCS loads hook files only from
+`includes/hooks/`:
+
+```sh
+modules/servers/ispconfigconnect/hooks/install-hook.sh /path/to/whmcs
+```
+
+Re-run it after a module upgrade; `--uninstall` removes the file again.
+
 See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through,
 [`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user,
 and [`companion/ispconfig-sso/README.md`](companion/ispconfig-sso/README.md) if you want the single
@@ -114,11 +131,12 @@ sign-on button.
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (490 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (539 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. See
 [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5 records the WHMCS-side
 contracts, including the ones that are not documented anywhere and had to be established on a live
-install.
+install, and its §6 is the settled, evidence-backed account of what the WHMCS servers page does and
+does not let a third-party module do.
 
 ## License
 

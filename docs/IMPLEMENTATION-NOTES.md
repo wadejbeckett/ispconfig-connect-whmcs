@@ -386,7 +386,8 @@ fidelity is load-bearing for the whole suite.
 
 ### 3.2 Deferred out of MVP (tracked, not stubbed)
 
-Keep-DNS-on-terminate toggle (Phase 3), hooks.php contact sync (Phase 3), reseller products /
+Keep-DNS-on-terminate toggle (Phase 3), hook-driven contact sync (Phase 3 — in the admin hook file,
+which per §6.1 lives in `includes/hooks/`, not in the module), reseller products /
 dedicated IP (Phase 3), client-area management views (Phase 4). Do NOT create placeholder functions
 or empty files for these.
 
@@ -436,14 +437,14 @@ Settings > Servers**. Established on the live install:
   those two literal keys — it is not unwrapped.
 - The key **`service_count`** is rendered by core as *"Services: N"* in the row's Remote Usage Stats
   cell. That is the only key core renders itself.
-- The `num_accounts` column was **not** written by any key tried (`num_accounts`, `ownedAccounts`,
-  `accounts`).
-- The styled `<div class="remote-meta-data">` block that bundled modules render under the hostname
-  (Plesk shows *Plesk Version / Load Averages / License Max # of Accounts* there) did **not** appear
-  for this module even when returning Plesk's exact key vocabulary. Those label strings exist in no
-  plain file of the install, so that block is rendered from encoded core and appears to be gated to
-  bundled modules. `Server\MetaDataPanel` + `hooks.php` (AdminAreaFooterOutput) therefore build the
-  equivalent block themselves.
+- The `num_accounts` column was **not** written by any key tried (`num_accounts`, `numAccounts`,
+  `ownedAccounts`, `accounts`) — see §6.3, which also records where that number does come from.
+- The styled `<div class="remote-meta-data">` block that bundled modules render under the hostname is
+  **not reachable from this function** — §6.2 has the elimination that settled it.
+  `Server\MetaDataPanel` plus the admin hook (AdminAreaFooterOutput) build the equivalent block
+  themselves.
+
+§6 is the full, dated record of that page; this section stays limited to the function's own contract.
 
 Module-side consequences: `ispconfigconnect_GetRemoteMetaData()` never throws (it runs mid-render),
 always returns a flat scalar array, and on total failure still returns `checked_at`,
@@ -459,7 +460,7 @@ the **Sync Accounts** action appear at all (Configuration > System Settings > Se
 
 ```
 'ListAccountsUniqueIdentifierDisplayName' => 'Domain'
-'ListAccountsUniqueIdentifierField'       => 'uniqueIdentifier'
+'ListAccountsUniqueIdentifierField'       => 'domain'
 'ListAccountsProductField'                => 'configoption1'
 ```
 
@@ -472,8 +473,11 @@ Two mapping decisions worth keeping:
 - `ListAccountsProductField` points at **configoption1**, the *Client Template* dropdown. WHMCS
   stores a Loader dropdown's array KEY, so that option holds the ISPConfig **template id** — which is
   what `RemoteAccount::product` emits, making the match id-to-id rather than label-to-label.
-- The identifier field is `uniqueIdentifier`, not `domain`: an ISPConfig client without a website has
-  no domain, and those rows fall back to the panel username so they stay distinct.
+- The identifier field **must be `domain`** (LIVE-VERIFIED, WHMCS 9.0.6). Core only accepts a field
+  name it can match a service on and rejects everything else with *"Unsupported unique identifier
+  field provided by module"* — including `uniqueIdentifier`, which is the documentation's name for the
+  account **array key**, not a WHMCS service field. The bundled cPanel and Plesk modules both ship
+  `domain`. See §6.6 for what that forces on to every row the module emits.
 
 `WHMCS\Service\Status` is resolved through `defined()`/`constant()` with the module's own copy of the
 values as a fallback, so lib code stays free of WHMCS classes (§2 rule) while the entry file still
@@ -577,3 +581,136 @@ cannot be unit-tested against a real dependency. Two conventions keep it testabl
 
 `WHMCS\Database\Capsule` is used only behind `class_exists()` guards (which is also what lets PHPStan
 resolve it), and every Capsule block degrades to an empty result rather than an exception.
+
+## 6. The WHMCS servers page (verified 2026-08-25, WHMCS 9.0.6)
+
+**Configuration > System Settings > Servers** is the one WHMCS screen where a provisioning module's
+behaviour is almost entirely undocumented, and where guessing costs hours. Everything below was
+established on a live WHMCS 9.0.6 install running this module against ISPConfig 3.3.1p1, on
+2026-08-25. WHMCS core is ionCube-encoded: each finding was obtained by **observing behaviour and by
+elimination**, never by decompiling. Each one states how it was proven, so a later reader can
+re-check it rather than re-derive it.
+
+**These five findings are settled. Do not re-litigate them; build on them.**
+
+### 6.1 Finding 1 — WHMCS does not load `modules/servers/<module>/hooks.php`
+
+A file-level marker — code at the top of the file, outside any function and before any `add_hook()`
+call, so that merely *including* the file would record it — was placed in the deployed
+`modules/servers/ispconfigconnect/hooks.php` on a live install with the module active and an
+ISPConfig server configured. It **never fired**, across many admin page loads, including the Servers
+page itself.
+
+The developer docs describe a module `hooks.php` as auto-discovered ("hook files are detected when
+the module is activated"). On 9.0.6, for a **provisioning (servers) module**, that did not happen.
+
+Consequence for this module: a hook file under `modules/servers/ispconfigconnect/` is **dead code**.
+The admin-area hook therefore ships as `modules/servers/ispconfigconnect/hooks/ispconfigconnect.php`
+and is **copied by the operator into `includes/hooks/`**, which is the documented, always-scanned
+location (INSTALL §2 and §6.4).
+
+### 6.2 Finding 2 — the styled `remote-meta-data` block is core-rendered and gated to bundled modules
+
+The block WHMCS draws under a server's hostname — `<div class="remote-meta-data">`, where the bundled
+Plesk module shows *Plesk Version / Load Averages / License Max # of Accounts* — **cannot be reached
+by returning different keys from `GetRemoteMetaData`.**
+
+Proven by elimination: `tblservers_remote.meta_data` for our server was hand-populated with Plesk's
+**exact** key vocabulary —
+
+```json
+{"version": "...", "load": {"one": ..., "five": ..., "fifteen": ...}, "max_accounts": ...,
+ "max_domains": ..., "service_count": ..., "ownedAccounts": ..., "sitejet_packages": ...,
+ "sitejet_available": ...}
+```
+
+— together with a fresh `updated_at`. Our row still rendered **no block**, while the Plesk server's
+row rendered its block normally **on the same page**. The block's label strings appear in no plain
+file of the install, so the markup comes from encoded core, and the only variable left that
+distinguishes the two rows is which module the server runs.
+
+**Do not chase this further with more key guesses.** The module renders its own equivalent block
+through the documented `AdminAreaFooterOutput` hook (`Server\MetaDataPanel`).
+
+### 6.3 Finding 3 — "Accounts: N" is `tblservers_remote.num_accounts`, which no metadata key sets
+
+The *Accounts* figure in the row's Remote Usage Stats cell is printed from the
+`tblservers_remote.num_accounts` **column**, not from the `meta_data` JSON.
+
+Proven from both directions:
+
+- returning `num_accounts`, `numAccounts`, `ownedAccounts` and `accounts` from `GetRemoteMetaData`
+  stored each of them verbatim **inside `meta_data`** and left the column untouched — the page showed
+  no account count;
+- writing the column directly made the page show the number immediately.
+
+So the column is populated somewhere else. `GetRemoteMetaData` is not that place, and the module has
+no other write path to it. **The remaining candidate is the Server Sync (`ListAccounts`) run** — that
+is the only other module entry point core invokes with the whole account list in hand.
+
+Status: **not yet proven.** The check is one step, and it is falsifiable: run *Sync Accounts* on the
+server, then re-read `tblservers_remote.num_accounts` for that `server_id`. `ListAccounts` emits **one
+row per ISPConfig client**, so if the sync is what writes the column, the number that appears must
+equal the `client_count` this module reports in the same page's block. If it stays empty after a
+successful sync, the column is written by something else again and this finding is the place to say
+so.
+
+The module's side of that flow is in place either way: `ListAccounts` returns `success` with one row
+per client, each row carrying an identifier core accepts (§6.6), and `tests/Module/ListAccountsTest`
+covers the return shape. Until the column is confirmed, the module's own always-fresh answer to the
+same question is the **Clients** line in its own block (`client_count`), which never depends on a
+sync having been run.
+
+### 6.4 Finding 4 — the flat return IS stored verbatim, and `service_count` IS rendered
+
+`GetRemoteMetaData`'s return is stored **verbatim as JSON** in `tblservers_remote.meta_data`; a
+`['success' => true, 'metaData' => [...]]` wrapper is stored as those two literal keys rather than
+being unwrapped, so the return **must be flat**. Of everything in it, core renders exactly one key
+itself: **`service_count`** becomes *"Services: N"* in the Remote Usage Stats cell. That works today
+and is covered by `tests/Unit/Server/RemoteMetaDataTest`.
+
+The full key list and its consumer for each key is in the `Server\RemoteMetaData` class docblock;
+`RemoteMetaDataTest` locks both the key set and the round trip through `ServerMetaData` and
+`MetaDataPanel`, so a rename cannot quietly drop a line from the page.
+
+### 6.5 Finding 5 — "WHMCS Usage Stats" (e.g. `1/200`) is core's own arithmetic
+
+The *WHMCS Usage Stats* figure is core counting the **WHMCS services assigned to that server** over
+the server's own **Maximum No. of Accounts** field (Servers > Edit). It has **nothing to do with the
+module**, reports nothing about the panel, and no module return value changes it. A module that
+provisions perfectly still shows `0/200` until WHMCS services point at the server.
+
+### 6.6 What this forces on `ListAccounts`
+
+Finding 3 makes Server Sync the only lever the module has on the account count, and the sync's
+matching rules are strict:
+
+- `ListAccountsUniqueIdentifierField` **must be `domain`** — core rejects any other value with
+  *"Unsupported unique identifier field provided by module"* (§5.2).
+- Core matches that value against `tblhosting.domain` and **validates nothing else**. Rows pushed
+  through core's own `SyncItem` on the live install were accepted as-is: `client-42.no-domain.invalid`
+  and `client-43.no-domain.invalid` were both `ACCEPTED` with `matches=0`, coexisting without
+  colliding — and so was an **empty** domain. Non-emptiness and uniqueness are therefore **entirely
+  the module's job**; nothing downstream will catch a bad identifier.
+
+Hence `Sync\AccountLister::identifier()`: every row carries a non-empty, batch-unique value in
+**both** the `domain` and `uniqueIdentifier` keys (encoded core makes it unobservable which one it
+reads, so they answer identically), and a client whose primary domain is missing or already claimed
+gets a synthetic `client-<ispconfig client id>.no-domain.invalid`.
+
+Why a reserved TLD rather than the panel username, which the module used before:
+
+- an **empty** identifier is the dangerous shape, not a harmless one — every WHMCS service whose
+  `tblhosting.domain` is blank would be a candidate match for it, and several blank rows are
+  ambiguous against each other;
+- `.invalid` is reserved by RFC 2606 §2 and can never be a real service domain, so a synthetic row
+  can only ever be reported as *an account WHMCS does not know about* — never mispaired with an
+  unrelated service. An unmatched row is an operator's decision; a wrong match is an operator's
+  incident.
+
+Known limitation, deliberately not worked around: an ISPConfig client with **no website** can never
+match a WHMCS service, because core matches on domain only. If a future build wants those rows to
+reconcile, the material exists — the module stores `ispconfig_client_id` as a service property, so the
+**entry file** (the only layer allowed to touch Capsule) could resolve each panel client id to its
+WHMCS service domain and pass that in as the identifier. `AccountLister` is deliberately free of
+WHMCS calls, so that resolution belongs in `ispconfigconnect_ListAccounts()`, not here.

@@ -33,14 +33,48 @@ Copy the module directory into your WHMCS installation:
 cp -r modules/servers/ispconfigconnect  /path/to/whmcs/modules/servers/
 ```
 
-The directory name must remain exactly `ispconfigconnect`. Nothing else is
-required — WHMCS autoloads the module's `lib/` classes automatically.
+The directory name must remain exactly `ispconfigconnect`. Provisioning,
+suspension, usage import, metrics, sync and single sign-on all work from this
+one directory — WHMCS autoloads the module's `lib/` classes automatically.
 
-The module ships a `hooks.php` (it renders the ISPConfig status block on the
-servers page). WHMCS discovers a module's hook file when the module is
-activated, so if you are **upgrading** an installation that already used an
-earlier version, open one product's *Module Settings* tab and save it once to
-make WHMCS pick the file up.
+### The admin hook file (optional, one extra step)
+
+One feature needs a second file: the **ISPConfig block on the servers page**
+(panel version, pending jobs, client count — see §6.4). It is a WHMCS *hook*,
+and WHMCS **does not load hook files from inside a provisioning module** — that
+was verified on a live WHMCS 9.0.6 install, where a marker at the top of
+`modules/servers/ispconfigconnect/hooks.php` never once fired, including on the
+Servers page itself. Hooks are only ever loaded from `includes/hooks/`.
+
+So the file ships in the module and is copied into place:
+
+```sh
+modules/servers/ispconfigconnect/hooks/install-hook.sh /path/to/whmcs
+```
+
+which installs it as `/path/to/whmcs/includes/hooks/ispconfigconnect.php`. The
+installer is idempotent, refuses to touch a file it did not write, and checks
+the file parses before installing it. Two more modes:
+
+```sh
+modules/servers/ispconfigconnect/hooks/install-hook.sh --status    /path/to/whmcs
+modules/servers/ispconfigconnect/hooks/install-hook.sh --uninstall /path/to/whmcs
+```
+
+The equivalent by hand is a plain copy:
+
+```sh
+cp modules/servers/ispconfigconnect/hooks/ispconfigconnect.php  /path/to/whmcs/includes/hooks/
+```
+
+Notes:
+
+- **Re-run it after every module upgrade.** The copy in `includes/hooks/` is a
+  copy: updating `modules/servers/ispconfigconnect/` does not update it.
+  `--status` reports when the installed file differs from the shipped one.
+- Skipping this step costs only that block. Nothing else in the module depends
+  on it.
+- Remove it with `--uninstall` when you uninstall the module (§7).
 
 ## 3. Add the server in WHMCS
 
@@ -268,9 +302,15 @@ services missing from the panel, and rows whose details differ.
 
 How this module fills the comparison in:
 
-- **Unique identifier** — the client's primary website domain, falling back to
-  the ISPConfig username for a client that owns no website (so a website-less
-  client still gets a distinct row rather than colliding on an empty value).
+- **Unique identifier** — the client's **primary website domain**. WHMCS can
+  only match a sync row against a service's *Domain* field (it rejects every
+  other choice), so a client that owns no website — or whose domain is already
+  claimed by another client — is listed under a placeholder of the form
+  `client-<ispconfig client id>.no-domain.invalid` instead. `.invalid` is a
+  reserved suffix that can never be a real domain, which is the point: such a
+  row is reported as *an account WHMCS does not know about*, and can never be
+  paired with the wrong service. Expect those rows if you sell a product that
+  creates a client but no website.
 - **Product** — the ISPConfig **master client template id**, which is exactly
   what the product's *Client Template* option stores. A WHMCS product matches
   a panel account when both point at the same template.
@@ -285,18 +325,28 @@ once for the panel, then two lookups per client to find its primary website.
 On a panel with hundreds of clients the sync therefore takes a while; it is an
 on-demand admin action, not something that runs on a schedule.
 
-### 6.4 The ISPConfig block on the servers page
+### 6.4 Reading the servers page
 
-While rendering **Configuration > System Settings > Servers**, WHMCS asks each
-server's module for its remote metadata. This module answers with the panel
-version, the pending job-queue depth, the client count, the number of
-ISPConfig nodes, and whether the SSO companion is installed; WHMCS caches the
-answer and renders the client count as *Services: N* in the Remote Usage Stats
-cell, while the module's own hook renders the rest underneath the hostname.
+**Configuration > System Settings > Servers** shows several numbers per server,
+from three different sources. They are easy to mistake for each other, so:
 
-If a probe fails, its value is dropped and the reason is shown as *Probe
-Errors* instead — the page never breaks because a panel is down. Nothing on
-this page contacts the panel more than once per render.
+| What you see | Where it comes from | What it means |
+|---|---|---|
+| **WHMCS Usage Stats**, e.g. `1/200` | WHMCS itself | The number of **WHMCS services assigned to this server**, over the server's own **Maximum No. of Accounts** field (Servers > Edit). Pure WHMCS arithmetic — it says nothing about the panel, and no module can change it. A perfectly healthy panel reads `0/200` until WHMCS services point at it. |
+| **Accounts: N** | WHMCS's cache (`tblservers_remote.num_accounts`) | WHMCS's own cached count of accounts on the server. Nothing the module reports while the page renders reaches this figure — that was tested on WHMCS 9.0.6 — so it stays **blank on a freshly added server**. The run that hands WHMCS an account list is **Sync Accounts** (§6.3); run that once if you want a number here. |
+| **Services: N** | This module | The number of **websites** on the panel (ISPConfig vhosts, excluding alias domains and subdomains). Refreshed every time the page renders. |
+| **ISPConfig Version / Pending Jobs / Clients / ISPConfig Nodes / Last Updated** | This module, via the admin hook (§2) | Panel version; the depth of ISPConfig's datalog job queue (mutations accepted but not yet applied — a number that keeps climbing means the panel's cron is not running); the number of **ISPConfig clients**, which is this module's own always-fresh answer to "how many accounts"; how many servers the panel fronts; and when WHMCS last refreshed the block. |
+| **Probe Errors** | This module | Shown instead of a missing value when a probe fails: the page shows *why*, rather than breaking or quietly reading zero. |
+
+Two consequences worth knowing:
+
+- **Clients vs Accounts.** *Clients* is live; *Accounts* is a cached sync
+  result. They can legitimately disagree until the next *Sync Accounts* run.
+- If the **ISPConfig Version / Pending Jobs / Clients** lines are missing
+  entirely, the admin hook file is not installed — see §2.
+
+Nothing on this page contacts the panel more than once per render, and a panel
+that is down costs the block, never the page.
 
 ### 6.5 Single sign-on (optional companion)
 
@@ -332,9 +382,16 @@ button it cannot honour.
 
 Notes:
 
-- The button is per **service**. There is deliberately no server-level
-  "log in as admin" button: the companion refuses to mint tokens for
+- The password-free login is per **service**. There is deliberately no
+  "log in as admin" auto-login: the companion refuses to mint tokens for
   administrator accounts, because such a token would be a full panel takeover.
+- WHMCS's server-level **Login to Control Panel** button (Configuration >
+  Servers) therefore does not sign you in automatically. It **opens this
+  panel's login page** in a new tab — the address built from the server row, or
+  the product's *Panel URL Override* where WHMCS passes one — so you sign in as
+  yourself. No administrator session is ever minted on your behalf. (Where
+  WHMCS presses that button with a service in scope, you get the real one-time
+  login for that service's client instead.)
 - The token is single-use and expires in under a minute. It is masked in the
   module log, and the redirect URL that carries it is never logged at all.
 - A suspended (locked) client cannot use SSO — the companion refuses, so a
@@ -345,9 +402,15 @@ Notes:
 
 ## 7. Uninstalling
 
-Remove the product/server assignments in WHMCS, then delete
-`modules/servers/ispconfigconnect/`. The module stores its state as WHMCS
-service properties (`ispconfig_client_id`, `ispconfig_domain_id`, …); it
+Remove the product/server assignments in WHMCS, remove the admin hook file if
+you installed it (§2):
+
+```sh
+modules/servers/ispconfigconnect/hooks/install-hook.sh --uninstall /path/to/whmcs
+```
+
+then delete `modules/servers/ispconfigconnect/`. The module stores its state as
+WHMCS service properties (`ispconfig_client_id`, `ispconfig_domain_id`, …); it
 creates no extra database tables.
 
 If you installed the panel-side SSO companion, remove it separately on the

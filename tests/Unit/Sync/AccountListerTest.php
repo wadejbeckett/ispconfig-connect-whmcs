@@ -77,6 +77,22 @@ final class AccountListerTest extends TestCase
         ]);
     }
 
+    /**
+     * client.inc.php client_update() merges the stored record into $params, so
+     * a one-field update is enough - and it applies no NOTEMPTY validation,
+     * which is exactly how a real panel ends up with an unusable username.
+     */
+    private function setUsername(int $clientId, string $username): void
+    {
+        $this->session->call('client_update', [
+            'client_id' => $clientId,
+            'reseller_id' => 0,
+            // _ispconfig_pw_crypted keeps the merge from re-crypting the
+            // already-hashed password (see FakeIspconfigServer).
+            'params' => ['username' => $username, '_ispconfig_pw_crypted' => 1],
+        ]);
+    }
+
     /** @return list<string> every remote method name the fake saw, in order */
     private function methods(): array
     {
@@ -133,18 +149,24 @@ final class AccountListerTest extends TestCase
         self::assertSame([], AccountLister::toWhmcsAccounts($this->lister()->listAccounts()));
     }
 
-    public function testClientWithoutWebsiteFallsBackToTheUsernameIdentifier(): void
+    public function testClientWithoutWebsiteGetsASyntheticIdentifierWhmcsCanMatchOn(): void
     {
         $basic = $this->fake->addClientTemplate('Basic');
-        $this->addClient('nosite', ['template_master' => $basic]);
+        $clientId = $this->addClient('nosite', ['template_master' => $basic]);
 
         $accounts = $this->lister()->listAccounts();
 
         self::assertCount(1, $accounts);
+        // The panel fact stays honest: this client owns no website.
         self::assertSame('', $accounts[0]->domain);
         self::assertNull($accounts[0]->domainId);
-        // uniqueIdentifier must stay unique across website-less clients.
-        self::assertSame('nosite', $accounts[0]->uniqueIdentifier);
+        // ... but the value WHMCS matches on must never be empty, because
+        // ListAccountsUniqueIdentifierField is 'domain' and an empty domain
+        // would match every WHMCS service that has no domain of its own.
+        self::assertSame(
+            'client-' . $clientId . '.no-domain.invalid',
+            $accounts[0]->uniqueIdentifier
+        );
         self::assertFalse($accounts[0]->suspended);
     }
 
@@ -237,6 +259,113 @@ final class AccountListerTest extends TestCase
         self::assertSame('2023-11-14 23:13:20', $lister->listAccounts()[0]->created);
     }
 
+    // ---- the 'domain' identifier contract ---------------------------------
+    //
+    // WHMCS matches sync rows through ListAccountsUniqueIdentifierField, which
+    // core only accepts as 'domain' (live-verified, WHMCS 9.0.6). Whichever of
+    // the two keys core reads - 'domain' or 'uniqueIdentifier' - it must get
+    // the same value, and that value must be present and unique on every row.
+
+    public function testEveryRowCarriesTheSameNonEmptyValueInBothIdentifierKeys(): void
+    {
+        $this->addSite($this->addClient('withsite'), 'withsite.example');
+        $this->addClient('nosite');
+        $this->addClient('alsonosite');
+
+        $rows = AccountLister::toWhmcsAccounts($this->lister()->listAccounts());
+
+        self::assertCount(3, $rows);
+        foreach ($rows as $row) {
+            self::assertNotSame('', $row['domain']);
+            self::assertSame($row['domain'], $row['uniqueIdentifier']);
+        }
+    }
+
+    public function testIdentifiersAreUniqueAcrossWebsitelessClients(): void
+    {
+        $first = $this->addClient('one');
+        $second = $this->addClient('two');
+
+        $rows = AccountLister::toWhmcsAccounts($this->lister()->listAccounts());
+
+        self::assertSame('client-' . $first . '.no-domain.invalid', $rows[0]['domain']);
+        self::assertSame('client-' . $second . '.no-domain.invalid', $rows[1]['domain']);
+        self::assertNotSame($rows[0]['domain'], $rows[1]['domain']);
+    }
+
+    public function testASecondClientOnTheSameDomainDoesNotCollideWithTheFirst(): void
+    {
+        // web_domain.domain uniqueness is an interface validator, not a
+        // database constraint, so the remote API can leave two clients holding
+        // the same name. Two identical identifiers would be an ambiguous match
+        // for core, which is worse than one unmatched row.
+        $this->addSite($this->addClient('first'), 'shared.example');
+        $second = $this->addClient('second');
+        $this->addSite($second, 'shared.example');
+
+        $accounts = $this->lister()->listAccounts();
+
+        self::assertSame('shared.example', $accounts[0]->uniqueIdentifier);
+        self::assertSame('shared.example', $accounts[1]->domain, 'the panel fact is still reported');
+        self::assertSame('client-' . $second . '.no-domain.invalid', $accounts[1]->uniqueIdentifier);
+    }
+
+    public function testDomainCollisionsAreDetectedRegardlessOfCase(): void
+    {
+        $this->addSite($this->addClient('upper'), 'Mixed.Example');
+        $second = $this->addClient('lower');
+        $this->addSite($second, 'mixed.example');
+
+        $accounts = $this->lister()->listAccounts();
+
+        self::assertSame('Mixed.Example', $accounts[0]->uniqueIdentifier);
+        self::assertSame('client-' . $second . '.no-domain.invalid', $accounts[1]->uniqueIdentifier);
+    }
+
+    public function testASyntheticIdentifierThatIsItselfTakenGetsDisambiguated(): void
+    {
+        // Pathological, but the identifier is a matching key: it has to stay
+        // unique even when an earlier client hosts a website named exactly
+        // like a later client's synthetic identifier.
+        $squatter = $this->addClient('squatter');
+        $websiteless = $this->addClient('websiteless');
+        $this->addSite($squatter, 'client-' . $websiteless . '.no-domain.invalid');
+
+        $accounts = $this->lister()->listAccounts();
+
+        self::assertSame('client-' . $websiteless . '.no-domain.invalid', $accounts[0]->uniqueIdentifier);
+        self::assertSame('client-' . $websiteless . '-2.no-domain.invalid', $accounts[1]->uniqueIdentifier);
+    }
+
+    public function testTheSyntheticIdentifierUsesAReservedTldSoItCannotMatchARealService(): void
+    {
+        $clientId = $this->addClient('nosite');
+
+        $identifier = $this->lister()->listAccounts()[0]->uniqueIdentifier;
+
+        // RFC 2606 s2 reserves .invalid: no WHMCS service can legitimately
+        // carry this domain, so a synthetic row can never be paired with the
+        // wrong service - it is reported as an unmatched account instead.
+        self::assertStringEndsWith('.invalid', $identifier);
+        self::assertStringContainsString((string) $clientId, $identifier);
+    }
+
+    public function testAClientWithNoUsernameAtAllStillGetsAMatchableIdentifier(): void
+    {
+        // No username means no sys_user to resolve site ownership with, so the
+        // domain lookup is skipped entirely - the row would otherwise reach
+        // WHMCS with nothing in either identifier key.
+        $blank = $this->addClient('tobeblanked');
+        $this->setUsername($blank, '');
+        $named = $this->addClient('named');
+
+        $accounts = $this->lister()->listAccounts();
+
+        self::assertSame('', $accounts[0]->username);
+        self::assertSame('client-' . $blank . '.no-domain.invalid', $accounts[0]->uniqueIdentifier);
+        self::assertSame('client-' . $named . '.no-domain.invalid', $accounts[1]->uniqueIdentifier);
+    }
+
     // ---- efficiency & call shape -----------------------------------------
 
     public function testTemplatesAndClientsAreFetchedOnceForTheWholePanel(): void
@@ -282,7 +411,7 @@ final class AccountListerTest extends TestCase
 
     public function testAClientWhoseSysUserIsMissingStillGetsListed(): void
     {
-        $this->addClient('ghostuser');
+        $ghost = $this->addClient('ghostuser');
         $this->addSite($this->addClient('healthy'), 'healthy.example');
 
         // remote.d/client.inc.php client_get_by_username() throws when the
@@ -294,7 +423,9 @@ final class AccountListerTest extends TestCase
         self::assertCount(2, $accounts);
         self::assertSame('ghostuser', $accounts[0]->username);
         self::assertSame('', $accounts[0]->domain);
-        self::assertSame('ghostuser', $accounts[0]->uniqueIdentifier);
+        // Unreadable is not the same as unlisted: the row still gets a
+        // matchable, unique identifier so the sync reports it.
+        self::assertSame('client-' . $ghost . '.no-domain.invalid', $accounts[0]->uniqueIdentifier);
         // The healthy client after it is unaffected.
         self::assertSame('healthy.example', $accounts[1]->domain);
     }
@@ -383,8 +514,29 @@ final class AccountListerTest extends TestCase
         $this->addClient('meta');
         $row = AccountLister::toWhmcsAccounts($this->lister()->listAccounts())[0];
 
-        // The named identifier field must exist in what the mapping returns.
-        self::assertArrayHasKey(AccountLister::WHMCS_METADATA['ListAccountsUniqueIdentifierField'], $row);
+        // The named identifier field must exist in what the mapping returns,
+        // and carry a value - even for this client, which owns no website.
+        $field = AccountLister::WHMCS_METADATA['ListAccountsUniqueIdentifierField'];
+        self::assertArrayHasKey($field, $row);
+        self::assertNotSame('', $row[$field]);
+    }
+
+    public function testTheMappingSendsTheIdentifierAsTheDomainForAWebsitelessClient(): void
+    {
+        $clientId = $this->addClient('nosite');
+
+        $row = AccountLister::toWhmcsAccounts($this->lister()->listAccounts())[0];
+
+        self::assertSame([
+            'email' => 'nosite@example.com',
+            'username' => 'nosite',
+            'domain' => 'client-' . $clientId . '.no-domain.invalid',
+            'uniqueIdentifier' => 'client-' . $clientId . '.no-domain.invalid',
+            'product' => '',
+            'primaryip' => '203.0.113.10',
+            'created' => '2023-11-14 22:13:20',
+            'status' => 'Active',
+        ], $row);
     }
 
     public function testDefaultStatusStringsAreTheWhmcsServiceStatuses(): void

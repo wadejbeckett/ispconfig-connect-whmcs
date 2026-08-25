@@ -30,9 +30,9 @@ final class AccountLister
      * (developers.whmcs.com/provisioning-modules/server-sync/). The entry
      * file's _MetaData() should spread these in.
      *
-     * - the identifier field is 'uniqueIdentifier', NOT 'domain': a client
-     *   without a website has no domain, and this module falls back to the
-     *   panel username there so every row stays distinct;
+     * - the identifier field is 'domain', which core matches against
+     *   tblhosting.domain, so EVERY row this class emits carries a non-empty,
+     *   panel-unique domain value - see identifier();
      * - 'configoption1' is the Client Template dropdown (frozen option order,
      *   spec 3.1). WHMCS stores a Loader dropdown's array KEY, so that option
      *   holds the ISPConfig template id - which is what RemoteAccount::product
@@ -52,6 +52,15 @@ final class AccountLister
         'ListAccountsUniqueIdentifierField' => 'domain',
         'ListAccountsProductField' => 'configoption1',
     ];
+
+    /**
+     * Shape of the identifier used when the client's own domain cannot serve as
+     * a match key: `client-<ispconfig client id>.no-domain.invalid`. The
+     * reasoning - and why the panel username no longer plays this role - is in
+     * identifier().
+     */
+    private const SYNTHETIC_PREFIX = 'client-';
+    private const SYNTHETIC_SUFFIX = '.no-domain.invalid';
 
     /**
      * remoting_lib.inc.php getDataRecord(): -1 returns every row of the form's
@@ -80,8 +89,10 @@ final class AccountLister
         $templateNames = $this->templateNames();
 
         $accounts = [];
+        /** @var array<string, true> $taken lowercased identifiers already issued in this batch */
+        $taken = [];
         foreach ($this->clientRecords() as $client) {
-            $accounts[] = $this->account($client, $templateNames);
+            $accounts[] = $this->account($client, $templateNames, $taken);
         }
 
         return $accounts;
@@ -166,8 +177,9 @@ final class AccountLister
     /**
      * @param array<string, mixed> $client
      * @param array<int, string> $templateNames
+     * @param array<string, true> $taken identifiers already issued, by ref
      */
-    private function account(array $client, array $templateNames): RemoteAccount
+    private function account(array $client, array $templateNames, array &$taken): RemoteAccount
     {
         $username = trim((string) ($client['username'] ?? ''));
         $site = $this->primarySite($username);
@@ -175,15 +187,14 @@ final class AccountLister
         $domain = $site === null ? '' : trim((string) ($site['domain'] ?? ''));
         $domainId = $site === null ? null : (int) ($site['domain_id'] ?? 0);
         $templateId = (int) ($client['template_master'] ?? 0);
+        $clientId = (int) ($client['client_id'] ?? 0);
 
         return new RemoteAccount(
-            clientId: (int) ($client['client_id'] ?? 0),
+            clientId: $clientId,
             username: $username,
             email: trim((string) ($client['email'] ?? '')),
             domain: $domain,
-            // WHMCS matches rows by this value, so a website-less client falls
-            // back to its panel username rather than colliding on ''.
-            uniqueIdentifier: $domain !== '' ? $domain : $username,
+            uniqueIdentifier: $this->identifier($domain, $clientId, $taken),
             product: $templateId > 0 ? (string) $templateId : '',
             templateName: $templateNames[$templateId] ?? '',
             primaryIp: $this->primaryIp,
@@ -195,6 +206,46 @@ final class AccountLister
                 || ($site !== null && (string) ($site['active'] ?? 'y') !== 'y'),
             domainId: $domainId !== null && $domainId > 0 ? $domainId : null,
         );
+    }
+
+    /**
+     * The value WHMCS matches this account on.
+     *
+     * ListAccountsUniqueIdentifierField is 'domain' - the only vocabulary core
+     * accepts - and core compares it against tblhosting.domain, so the value
+     * must be present and distinct on every row of the batch:
+     *
+     * - EMPTY is the dangerous case. Services created from products that have
+     *   no domain (and every service whose domain field was left blank) carry
+     *   `tblhosting.domain = ''`, so an empty identifier is not "no match", it
+     *   is a match against an arbitrary set of unrelated services.
+     * - DUPLICATE is the same hazard between two panel rows: web_domain.domain
+     *   is enforced by an interface validator, not by a database constraint,
+     *   so the remote API can leave two clients holding one name.
+     *
+     * Both fall back to a synthetic `client-<id>.no-domain.invalid`, which can
+     * never equal a real service domain (RFC 2606 s2) and therefore surfaces as
+     * an unmatched account instead of a wrong one. Comparison is
+     * case-insensitive because domains are.
+     *
+     * @param array<string, true> $taken identifiers already issued, by ref
+     */
+    private function identifier(string $domain, int $clientId, array &$taken): string
+    {
+        $synthetic = self::SYNTHETIC_PREFIX . $clientId . self::SYNTHETIC_SUFFIX;
+
+        $identifier = $domain !== '' && !isset($taken[strtolower($domain)]) ? $domain : $synthetic;
+
+        // Two clients can only reach this loop when the panel itself hosts a
+        // website named like a synthetic identifier; the counter keeps the
+        // client id visible either way.
+        for ($attempt = 2; isset($taken[strtolower($identifier)]); $attempt++) {
+            $identifier = self::SYNTHETIC_PREFIX . $clientId . '-' . $attempt . self::SYNTHETIC_SUFFIX;
+        }
+
+        $taken[strtolower($identifier)] = true;
+
+        return $identifier;
     }
 
     /**

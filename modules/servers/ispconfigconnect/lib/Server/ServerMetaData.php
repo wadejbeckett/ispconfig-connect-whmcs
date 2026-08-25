@@ -13,8 +13,11 @@ namespace WHMCS\Module\Server\Ispconfigconnect\Server;
  * A server WHMCS has never refreshed simply has no tblservers_remote row, so
  * every joined column can be null.
  *
- * Pure value object: no WHMCS calls, no I/O. hooks.php reads the rows (that is
+ * Pure value object: no WHMCS calls, no I/O. The caller reads the rows (that is
  * where Capsule lives) and hands them here.
+ *
+ * Like Server\MetaDataPanel, which is its only consumer, this is no longer on
+ * the live panel's path: see that class for why.
  */
 final readonly class ServerMetaData
 {
