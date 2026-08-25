@@ -17,10 +17,26 @@ In the ISPConfig panel: **System → Remote Users → Add new user**.
   *Gotcha:* ISPConfig compares the source address it sees — behind NAT or IPv6 privacy addressing,
   use whatever address the panel actually logs.
 
-## 2. Grant exactly these functions
+## 2. Tick these permission checkboxes
 
-The panel groups grants into checkboxes per area; the underlying grant names the module requires
-are (from `Permissions::requiredGrants()`):
+The panel's remote-user form grants functions in **groups** — one checkbox stores a fixed list of
+function names (defined in each module's `lib/remote.conf.php`, verified 3.3.1p1; the same groups
+exist on 3.2.x). The module needs these nine:
+
+| Checkbox | Why the module needs it |
+|---|---|
+| **Server functions** | `server_get` (Web Server dropdown), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
+| **Client functions** | client create/update/lock/password/terminate (incl. both `client_delete_everything` and `client_delete`, which termination re-checks mid-cascade) |
+| **Quota functions** | `quota_get_by_user`, `trafficquota_get_by_user` (usage sync, Phase 2) |
+| **Sites Domain functions** | website create/read/status (suspend) |
+| **Sites FTP-User functions** | FTP user create + password rotation |
+| **Sites database functions** | database + database-user create, DB password rotation |
+| **Mail domain functions** | mail domain provisioning |
+| **DNS zone functions** | `dns_templatezone_add` + `dns_zone_get_id` |
+| **Monitor functions** | `monitor_jobqueue_count` (pending-job indicator) |
+
+The precise function names the module actually calls (the minimal set, for auditing or for a
+hand-edited `remote_functions` value) are (from `Permissions::requiredGrants()`):
 
 ```
 client_add
