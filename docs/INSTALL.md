@@ -348,7 +348,7 @@ from three different sources. They are easy to mistake for each other, so:
 |---|---|---|
 | **WHMCS Usage Stats**, e.g. `1/200` | WHMCS itself | The number of **WHMCS services assigned to this server**, over the server's own **Maximum No. of Accounts** field (Servers > Edit). Pure WHMCS arithmetic — it says nothing about the panel, and no module can change it. A perfectly healthy panel reads `0/200` until WHMCS services point at it. |
 | **Accounts: N** | WHMCS's cache (`tblservers_remote.num_accounts`) | WHMCS's own cached count of accounts on the server. Nothing the module reports while the page renders reaches this figure — that was tested on WHMCS 9.0.6 — so it stays **blank on a freshly added server**. The run that hands WHMCS an account list is **Sync Accounts** (§6.3); run that once if you want a number here. |
-| **Services: N** | This module | The number of **websites** on the panel (ISPConfig vhosts, excluding alias domains and subdomains). Refreshed every time the page renders. |
+| **Services: N** | This module | The number of **ISPConfig clients** on the panel — the same figure as *Clients* below, because this module provisions exactly one ISPConfig client per WHMCS service. Refreshed every time the page renders. (It used to be a website count; counting vhosts meant a bulk read that dragged every site's TLS private key across the API, so that number was removed rather than approximated.) |
 | **ISPConfig Version / Pending Jobs / Clients / ISPConfig Nodes / Last Updated** | This module, via the admin hook (§2) | Panel version; the depth of ISPConfig's datalog job queue (mutations accepted but not yet applied — a number that keeps climbing means the panel's cron is not running); the number of **ISPConfig clients**, which is this module's own always-fresh answer to "how many accounts"; how many servers the panel fronts; and when WHMCS last refreshed the block. |
 | **Probe Errors** | This module | Shown instead of a missing value when a probe fails: the page shows *why*, rather than breaking or quietly reading zero. |
 
@@ -362,29 +362,32 @@ Two consequences worth knowing:
 Nothing on this page contacts the panel more than once per render, and a panel
 that is down costs the block, never the page.
 
-### 6.5 Single sign-on (optional companion)
+### 6.5 Single sign-on (optional, needs a separate panel-side project)
 
 ISPConfig core has **no one-time-login API**: `client_login_get()` only
 validates a password, and the remote API's `login()` mints an API session, not
 a panel session. Every older WHMCS/ISPConfig module solved this by storing and
 replaying the customer's panel password. This module does not, so out of the
 box there is **no login button** — customers get the panel URL and their
-username, and nothing more.
+username, and nothing more. That is the normal, supported state: **you can skip
+this whole section** and everything else in the module works.
 
-To offer a real login button, install the optional panel-side companion:
+To offer a real login button you need one extra piece of software **on the
+ISPConfig server**, and it is not part of this repository:
 
-```sh
-cd companion/ispconfig-sso
-./install.sh                    # or ./install.sh /path/to/ispconfig
-```
+> **`ispconfig-sso`** — a standalone ISPConfig 3.x add-on by the same author,
+> GPLv3, installed on the panel and maintained as its own project. It adds one
+> remote function that mints a single-use, short-lived panel-login token and one
+> page that redeems it, and it modifies no ISPConfig core file. It is
+> deliberately **not WHMCS-specific**: any billing system can drive the same
+> remote function.
 
-Read [`companion/ispconfig-sso/README.md`](../companion/ispconfig-sso/README.md)
-first — it explains what the module adds (one remote function that mints a
-single-use, short-lived token, and one page that redeems it), that it modifies
-no ISPConfig core file, and how to remove it again.
+Get that project, read its README, and run its installer **on the ISPConfig
+server** (it ships its own `install.sh` / `uninstall.sh`). This module never
+installs it, never bundles it, and does not require it — it only *detects* it.
 
 **The panel must be served over HTTPS.** An SSO token is a password substitute
-that travels in a URL, so the companion refuses to mint or redeem one on a
+that travels in a URL, so `ispconfig-sso` refuses to mint or redeem one on a
 plaintext request — minting answers *"Single sign-on requires an encrypted
 (https) connection to the panel."* and the redemption endpoint refuses without
 touching the token. ISPConfig's installer offers TLS by default and the stock
@@ -396,22 +399,24 @@ than the shipped `none`. No request header (`X-Forwarded-Proto` and friends) is
 ever trusted for this.
 
 Then, in ISPConfig: **System > Remote Users > (your API user) > Functions**,
-tick *ISPConfig Connect: panel single sign-on (SSO token)* and save. This grant
-is **not** in the standard grant list, because the function does not exist on a
-stock panel.
+tick *Panel single sign-on (one-time login token)* — the checkbox that project
+contributes — and save. This grant is **not** in the standard grant list,
+because the function does not exist on a stock panel. (The label is display-only
+and set by that project; the grant itself is the function name,
+`connect_sso_token_create`.)
 
 Understand what that grant is before you tick it: a remote user holding it can
 mint a panel login for **every non-administrator account on the panel**,
 **resellers included** — a reseller's panel session administers that reseller's
 own sub-clients. ISPConfig gives resellers no distinct user type, so only
 `typ = 'admin'` is refused. See
-[`docs/REMOTE-USER.md`](REMOTE-USER.md) §2a and the companion README's security
-model.
+[`docs/REMOTE-USER.md`](REMOTE-USER.md) §2a and the security model in the
+`ispconfig-sso` project's own README.
 
 Finally, in WHMCS, open **Configuration > System Settings > Servers** once. That
-page refresh is what lets the module notice the companion; from the next page
-load on, WHMCS renders a **Log in to ISPConfig** action for services on that
-panel. Until then the button stays hidden — the module never shows a login
+page refresh is what lets the module notice the project on the panel; from the
+next page load on, WHMCS renders a **Log in to ISPConfig** action for services on
+that panel. Until then the button stays hidden — the module never shows a login
 button it cannot honour.
 
 Notes:
@@ -419,13 +424,13 @@ Notes:
 - Detection is one `get_function_list` call, which needs the **Server
   functions** grant the module already requires (see
   [`docs/REMOTE-USER.md`](REMOTE-USER.md) §2). Without it the module cannot tell
-  the companion is there and keeps the button hidden.
+  the project is there and keeps the button hidden.
 - Detection cannot see the TLS gate. `get_function_list` is a core function and
   answers over plain HTTP, so on an HTTP-only panel WHMCS will advertise the
   button and the *click* will fail with the encrypted-connection message. Serve
   the panel over HTTPS (or declare the reverse proxy) before enabling SSO.
 - The password-free login is per **service**. There is deliberately no
-  "log in as admin" auto-login: the companion refuses to mint tokens for
+  "log in as admin" auto-login: `ispconfig-sso` refuses to mint tokens for
   administrator accounts, because such a token would be a full panel takeover.
 - WHMCS's server-level **Login to Control Panel** button (Configuration >
   Servers) therefore does not sign you in automatically. It **opens this
@@ -436,11 +441,11 @@ Notes:
   login for that service's client instead.)
 - The token is single-use and expires in under a minute. It is masked in the
   module log, and the redirect URL that carries it is never logged at all.
-- A suspended (locked) client cannot use SSO — the companion refuses, so a
-  suspension cannot be walked around by clicking the login button.
+- A suspended (locked) client cannot use SSO — the panel refuses to mint the
+  token, so a suspension cannot be walked around by clicking the login button.
 - With several ISPConfig servers, the label is advertised as soon as **any** of
-  them reports the companion. On a server that does not have it, clicking the
-  button returns an error naming the companion instead of a blank failure.
+  them reports the project. On a server that does not have it, clicking the
+  button returns an error naming `ispconfig-sso` instead of a blank failure.
 
 ## 7. Uninstalling
 
@@ -455,5 +460,6 @@ then delete `modules/servers/ispconfigconnect/`. The module stores its state as
 WHMCS service properties (`ispconfig_client_id`, `ispconfig_domain_id`, …); it
 creates no extra database tables.
 
-If you installed the panel-side SSO companion, remove it separately on the
-ISPConfig server with `companion/ispconfig-sso/uninstall.sh`.
+If you installed the `ispconfig-sso` project on the panel, remove it separately
+on the ISPConfig server with that project's own `uninstall.sh`. It is
+independent of this module: removing one does not affect the other.

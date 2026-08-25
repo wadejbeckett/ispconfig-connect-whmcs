@@ -14,34 +14,48 @@ use WHMCS\Module\Server\Ispconfigconnect\Sso\Exception\CompanionResponseExceptio
 use WHMCS\Module\Server\Ispconfigconnect\Sso\Exception\SsoException;
 
 /**
- * WHMCS-side client for the OPTIONAL ISPConfig SSO companion
- * (companion/ispconfig-sso in this repository).
+ * WHMCS-side client for the OPTIONAL panel-side SSO project.
+ *
+ * That project - repository `ispconfig-sso`, same author, GPLv3 - is a
+ * STANDALONE ISPConfig add-on: it is not shipped by this module, is not part of
+ * this repository, and is not specific to WHMCS (any billing system can drive
+ * the same remote function). This module is one consumer of it, and treats it
+ * strictly as an external, optional capability of the panel it is pointed at.
  *
  * ISPConfig core has no one-time-login API: `client_login_get` only validates
  * credentials and `login(..., true)` mints API sessions, not panel sessions
- * (verified across the 3.3.1p1 tree). The companion adds exactly one remote
+ * (verified across the 3.3.1p1 tree). The SSO project adds exactly one remote
  * function through the documented remote.d auto-load point
  * (interface/lib/classes/remoting_handler_base.inc.php:47 globs
  * interface/web/*&#47;lib/classes/remote.d/*.inc.php), which mints a short-TTL
- * single-use token; a consumer page in the same module burns the token and
- * establishes the panel session.
+ * single-use token; a consumer page in the same panel module burns the token
+ * and establishes the panel session.
  *
- * The companion is optional by design, so ABSENCE IS NOT AN ERROR: detection
- * is one cheap call (get_function_list, already granted), and every accessor
- * has a *OrNull sibling so an entry point can hide the SSO button instead of
- * showing a dead one. Infrastructure failures (unreachable panel, lockout,
- * disabled API) always propagate - "cannot reach the panel" must never be
- * reported to an operator as "SSO is not installed".
+ * ITS ABSENCE IS THE DEFAULT, NOT AN ERROR: a stock panel does not have it, so
+ * detection is one cheap call (get_function_list, already granted), and every
+ * accessor has a *OrNull sibling so an entry point can hide the SSO button
+ * instead of showing a dead one. Infrastructure failures (unreachable panel,
+ * lockout, disabled API) always propagate - "cannot reach the panel" must never
+ * be reported to an operator as "SSO is not installed".
  *
  * All API traffic goes through SessionManager, which owns login, session
  * reuse, the single expired-session retry and the lockout circuit.
  */
 final class CompanionClient
 {
-    /** The single remote function the companion registers. */
+    /** The single remote function the ispconfig-sso project registers. */
     public const REMOTE_FUNCTION = 'connect_sso_token_create';
 
-    /** Consumer page path used when the companion does not report its own. */
+    /** The ispconfig-sso project is present and its function is registered. */
+    public const STATUS_INSTALLED = 'installed';
+
+    /** The panel answered, and the project is not there. */
+    public const STATUS_ABSENT = 'absent';
+
+    /** The probe was refused, so presence cannot be determined either way. */
+    public const STATUS_UNKNOWN = 'unknown';
+
+    /** Consumer page path used when the panel does not report its own. */
     public const DEFAULT_ENDPOINT_PATH = '/connectsso/';
 
     /** Query-string parameter the consumer page reads the token from. */
@@ -50,9 +64,10 @@ final class CompanionClient
     /**
      * URL-safe charset only. The token goes into a query string verbatim, so
      * anything that could terminate or extend that query ('&', '#', '?', '/',
-     * whitespace, '%') is refused rather than escaped - a companion that wants
-     * to send those is a companion we do not understand. 32 chars is the floor
-     * for a credential of this kind; ours is 64 (random_bytes(32) hex).
+     * whitespace, '%') is refused rather than escaped - a panel that wants to
+     * send those is a panel we do not understand. 32 chars is the floor for a
+     * credential of this kind; the ispconfig-sso project's is 64 chars
+     * (random_bytes(32) hex).
      */
     private const TOKEN_PATTERN = '/^[A-Za-z0-9_-]{32,256}$/';
 
@@ -65,7 +80,7 @@ final class CompanionClient
      */
     private const PATH_PATTERN = '/^\/(?!\/)[A-Za-z0-9._~\/-]{0,120}$/';
 
-    /** Sanity ceiling on a reported TTL; the companion's own is <= 60 s. */
+    /** Sanity ceiling on a reported TTL; the SSO project's own is <= 60 s. */
     private const MAX_REPORTED_TTL = 300;
 
     /** Base URL of the panel UI, WITHOUT a trailing slash. */
@@ -91,7 +106,7 @@ final class CompanionClient
     }
 
     /**
-     * Is the companion deployed on this panel?
+     * Is the ispconfig-sso project deployed on this panel?
      *
      * One call to get_function_list, which returns the handler's FULL
      * registered method map - including every method the module remote.d
@@ -99,19 +114,39 @@ final class CompanionClient
      * handing array_keys() to the remoting instance). That makes it a true
      * presence probe and not a grant probe.
      *
-     * Returns false when the companion is absent AND when get_function_list is
-     * itself not granted: in both cases nothing can promise a working button.
+     * Returns false when the project is absent AND when the probe could not
+     * see the function list at all. Callers that report the reason to a human
+     * must use status() instead: telling an operator "not installed" when the
+     * truth is "we were not allowed to look" sends them to install software
+     * they may already have. The ispconfig-sso project's own integration guide
+     * asks consumers not to conflate the two, and this module is one of its
+     * consumers.
+     *
      * Transport, protocol and lockout failures propagate.
      */
     public function isInstalled(): bool
     {
+        return $this->status() === self::STATUS_INSTALLED;
+    }
+
+    /**
+     * The three honestly-distinguishable answers to "can this panel do SSO?".
+     *
+     * STATUS_UNKNOWN is not a failure: the panel may well have the project
+     * installed. It means the remote user lacks the get_function_list grant,
+     * so the probe cannot see the registered method map either way.
+     */
+    public function status(): string
+    {
         try {
             $functions = $this->session->call('get_function_list', []);
         } catch (PermissionDeniedException) {
-            return false;
+            return self::STATUS_UNKNOWN;
         }
 
-        return is_array($functions) && in_array(self::REMOTE_FUNCTION, $functions, true);
+        return is_array($functions) && in_array(self::REMOTE_FUNCTION, $functions, true)
+            ? self::STATUS_INSTALLED
+            : self::STATUS_ABSENT;
     }
 
     /**
@@ -121,13 +156,14 @@ final class CompanionClient
      * @param string|null $bindIp the END USER's address as WHMCS sees it, when
      *        the token should only be redeemable from there. This is NOT the
      *        WHMCS server's address: the browser redeems the token, WHMCS only
-     *        mints it. Null leaves the token unbound (see README: bind only
-     *        when the panel sees the same address WHMCS does - a CDN, proxy or
-     *        IPv4/IPv6 asymmetry in front of either side breaks binding).
+     *        mints it. Null leaves the token unbound (the ispconfig-sso project
+     *        documents the trade-off: bind only when the panel sees the same
+     *        address WHMCS does - a CDN, proxy or IPv4/IPv6 asymmetry in front
+     *        of either side breaks binding).
      *
      * @throws \InvalidArgumentException          on a non-positive client id or a non-IP bind value
-     * @throws CompanionNotInstalledException     panel has no companion
-     * @throws CompanionGrantMissingException     companion present, grant missing
+     * @throws CompanionNotInstalledException     panel does not have the SSO project
+     * @throws CompanionGrantMissingException     project present, grant missing
      * @throws CompanionResponseException         payload not safe to redirect with
      */
     public function ticket(int $ispconfigClientId, ?string $bindIp = null): SsoTicket
@@ -155,8 +191,8 @@ final class CompanionClient
             if ($protocol->apiCode === 'invalid_method') {
                 throw new CompanionNotInstalledException(
                     'This ISPConfig panel does not provide ' . self::REMOTE_FUNCTION
-                    . '. Install the optional SSO companion (companion/ispconfig-sso)'
-                    . ' to enable single sign-on.',
+                    . '. Install the separate ISPConfig SSO project (ispconfig-sso)'
+                    . ' on the panel to enable single sign-on.',
                     0,
                     $protocol
                 );
@@ -170,7 +206,7 @@ final class CompanionClient
 
     /**
      * ticket(), but null whenever SSO is simply not available on this panel
-     * (absent companion, missing grant, payload we refuse to redirect with).
+     * (absent SSO project, missing grant, payload we refuse to redirect with).
      * Everything else - transport failures, lockout, a panel that refuses this
      * particular client - still throws, because those need to be seen.
      */
@@ -256,7 +292,7 @@ final class CompanionClient
 
     /**
      * '' means "no IP binding". Anything else must be a literal IP address:
-     * the companion stores it and compares it to the redeeming request's
+     * the panel stores it and compares it to the redeeming request's
      * REMOTE_ADDR, so a hostname would either never match or (once resolved)
      * bind to the wrong address.
      */

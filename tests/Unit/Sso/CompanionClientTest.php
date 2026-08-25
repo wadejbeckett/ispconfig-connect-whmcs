@@ -24,8 +24,12 @@ use WHMCS\Module\Server\Ispconfigconnect\Support\Logging;
 /**
  * CompanionClient runs through the whole real stack - CompanionClient ->
  * SessionManager -> RestClient -> FakeIspconfigServer - so every assertion
- * here is a valid remote/json.php round trip against the behavioral double,
- * including the "companion is not installed" case (invalid_method envelope).
+ * here is a valid remote/json.php round trip against the behavioral double.
+ *
+ * The panel side it talks to is the SEPARATE ispconfig-sso project, which this
+ * module does not ship. Its absence is therefore the default state of every
+ * panel (the invalid_method envelope), and the fake starts in exactly that
+ * state; the tests that need it present opt in with installCompanion().
  */
 #[CoversClass(CompanionClient::class)]
 #[CoversClass(SsoTicket::class)]
@@ -67,6 +71,11 @@ final class CompanionClientTest extends TestCase
 
     // ---- detection --------------------------------------------------------
 
+    /**
+     * The default answer for a fresh install: no ispconfig-sso project on the
+     * panel, reported as a plain "no" rather than an exception, because there
+     * is nothing wrong with such a panel.
+     */
     public function testIsInstalledIsFalseOnAStockPanel(): void
     {
         self::assertFalse($this->client()->isInstalled());
@@ -96,6 +105,28 @@ final class CompanionClientTest extends TestCase
         // The probe cannot see the function list, so it cannot promise a
         // working SSO button - report "not available" rather than guess.
         self::assertFalse($this->client()->isInstalled());
+    }
+
+    /**
+     * A refused probe must NOT be reported as "the project is not installed":
+     * here it demonstrably IS installed, and saying otherwise would send an
+     * operator to install software they already have. The ispconfig-sso
+     * project's integration guide asks consumers to keep the two apart.
+     */
+    public function testARefusedProbeIsUnknownRatherThanAbsent(): void
+    {
+        $this->fake->installCompanion();
+        $this->fake->setGrants(['client_get']);
+
+        self::assertSame(CompanionClient::STATUS_UNKNOWN, $this->client()->status());
+    }
+
+    public function testStatusDistinguishesInstalledFromAbsent(): void
+    {
+        self::assertSame(CompanionClient::STATUS_ABSENT, $this->client()->status());
+
+        $this->fake->installCompanion();
+        self::assertSame(CompanionClient::STATUS_INSTALLED, $this->client()->status());
     }
 
     public function testIsInstalledPropagatesInfrastructureFailures(): void
@@ -228,12 +259,29 @@ final class CompanionClientTest extends TestCase
         $this->client('https:///connectsso');
     }
 
-    // ---- companion absent / not granted -----------------------------------
+    // ---- the default: SSO project absent, or present but not granted ------
 
     public function testTicketThrowsNotInstalledOnAStockPanel(): void
     {
         $this->expectException(CompanionNotInstalledException::class);
         $this->client()->ticket(7);
+    }
+
+    /**
+     * The message an operator reads when SSO is attempted on a panel that does
+     * not have it must name the SEPARATE project to install. It must NOT name a
+     * path inside this repository: the panel side is not shipped here, and an
+     * instruction to run something out of the WHMCS module tree would be dead.
+     */
+    public function testTheAbsenceMessageNamesTheSeparateSsoProject(): void
+    {
+        try {
+            $this->client()->ticket(7);
+            self::fail('expected a CompanionNotInstalledException');
+        } catch (CompanionNotInstalledException $absent) {
+            self::assertStringContainsString('ispconfig-sso', $absent->getMessage());
+            self::assertStringNotContainsString('companion/', $absent->getMessage());
+        }
     }
 
     public function testTicketThrowsGrantMissingAndNamesTheGrant(): void

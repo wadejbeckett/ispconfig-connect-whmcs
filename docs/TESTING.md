@@ -12,13 +12,14 @@ is layered — each layer proves something the layer below it cannot.
 | 1 | PHPUnit suite | Every branch of the module's own logic, against an executable model of the ISPConfig wire contract | Nothing but PHP | `php vendor/bin/phpunit` |
 | 2 | Fake ISPConfig server | That the model in (1) matches ISPConfig 3.3.1p1's actual source | Nothing but PHP | `php vendor/bin/phpunit --testsuite unit` |
 | 3 | PHPStan level 6 | Type correctness across the module and the suite | Nothing but PHP | `php vendor/bin/phpstan analyse -c phpstan.neon.dist` |
-| 4 | Companion harness | The panel-side SSO code against ISPConfig's remote.d and `$app`/db contracts | Nothing but PHP | `php companion/ispconfig-sso/tests/run.php` |
+| 4 | `ispconfig-sso` harness | The panel-side SSO code against ISPConfig's remote.d and `$app`/db contracts. **Not in this repository** — it belongs to that separate project | Nothing but PHP, in that project's checkout | `php tests/run.php` there |
 | 5 | Live lifecycle harness | Provision → suspend → change password → change package → terminate, end to end on a real panel | WHMCS + ISPConfig | see §5.1 |
 | 6 | Live sync harness | That `ListAccounts` output survives WHMCS's own `SyncItem` class | WHMCS + ISPConfig | see §5.2 |
-| 7 | Live SSO harness | Token lifecycle and its security properties on a real panel | WHMCS + ISPConfig + companion | see §5.3 |
+| 7 | Live SSO harness | Token lifecycle and its security properties on a real panel | WHMCS + ISPConfig + the `ispconfig-sso` project on the panel | see §5.3 |
 | 8 | Live metrics harness | That the usage-billing **numbers** are right, in WHMCS's units, for a real service | WHMCS + ISPConfig | see §5.4 |
 
-Levels 1–4 run offline and should be green before every commit. Levels 5–8 run against a real
+Levels 1–3 run offline in this repository and should be green before every commit; level 4 is the
+same kind of check but lives in the separate `ispconfig-sso` project. Levels 5–8 run against a real
 install and are the only way to close the gap between "the code does what the tests say" and "the
 integration does what the two products actually do".
 
@@ -33,14 +34,14 @@ php vendor/bin/phpunit --testsuite module  # the WHMCS entry points, end to end
 php vendor/bin/phpunit --filter UsageParser
 ```
 
-Last full run (2026-08-25): **600 tests, 2592 assertions, OK**.
+Last full run (2026-08-25): **755 tests, 3081 assertions, OK**.
 
 Two suites, deliberately separated:
 
 **`tests/Unit`** exercises the `lib/` classes on their own — the API stack (`CurlTransport`,
 `RestClient`, `SessionManager`, `Permissions`), the provisioning `Mapper`/`Recipe`, the usage
 arithmetic (`QuotaMath`, `UsageParser`, `Collector`, `Updater`), the metric definitions, the sync
-mapping, the SSO companion client, and the support layer. These classes never touch WHMCS, which is
+mapping, the SSO client, and the support layer. These classes never touch WHMCS, which is
 what makes them testable at all.
 
 **`tests/Module`** drives the **real** WHMCS entry points — `ispconfigconnect_CreateAccount()`,
@@ -119,22 +120,23 @@ Level 6 over `modules/servers/ispconfigconnect` and `tests`, with
 
 ---
 
-## 4. The companion's standalone harness
+## 4. The panel side is a separate project
 
-```sh
-php companion/ispconfig-sso/tests/run.php
-```
+Single sign-on needs `ispconfig-sso`, a standalone GPLv3 ISPConfig add-on by the same author. **It is
+not part of this repository and is not shipped by this module** — any billing system can use it, and
+this module merely detects it at runtime.
 
-Last run (2026-08-25): **70 checks, all OK**.
+So it is not tested here, and there is nothing to run from this checkout. That project carries its
+own standalone harness (`php tests/run.php` in its own checkout): panel-side code needs ISPConfig's
+runtime (`$app`, its `db` class, the `remoting` base class) and cannot run under this repository's
+PHPUnit suite at all.
 
-The optional SSO companion is *panel-side* code: it needs ISPConfig's runtime (`$app`, its `db`
-class, the `remoting` base class) and cannot run under this repository's PHPUnit suite. The harness
-instead checks it against faithful stand-ins for the two contracts it depends on — core's `remote.d`
-auto-loader and core's `$app`/db surface — plus the token mint path and ISPConfig's own SQL scanner.
-
-The **redeem** half (`interface/web/connectsso/index.php`) is a top-level script that redirects and
-exits, so it cannot be harnessed in-process. It is covered by a manual checklist printed at the end
-of the harness run, and by the live SSO harness in §5.3.
+What IS tested here is this module's behaviour **without** that project, because that is the default
+of every fresh install: `tests/Unit/Sso/CompanionClientTest` proves detection answers a plain "no" on
+a stock panel and that absence never turns into an exception, and `tests/Module/SingleSignOnTest`
+proves the probe caches that "no", that `MetaData()` then advertises no SSO label, and that pressing
+the button anyway explains which separate project to install. The presence path is exercised against
+the fake panel's model of that project's one remote function.
 
 ---
 
@@ -188,7 +190,7 @@ else.
 
 Two halves, because SSO has two sides.
 
-**Panel side** — exercises the companion's token lifecycle directly against the panel's remote API:
+**Panel side** — exercises the `ispconfig-sso` token lifecycle directly against the panel's remote API:
 mint, single-use (a redeemed token is burned), expiry, IP binding, refusal to mint for a client
 session, refusal to mint for an administrator (an admin token would be a full panel takeover), and
 the burn race (two parallel redemptions, exactly one wins). Read-only apart from the tokens it mints
@@ -197,7 +199,7 @@ for the test client. 20/20 security checks pass on the live panel.
 **WHMCS side** — bootstraps WHMCS from the CLI, calls `ispconfigconnect_GetRemoteMetaData()`,
 `_MetaData()`, `_ServiceSingleSignOn()` and `_ListAccounts()` for a real service, and prints the
 result with the token redacted. This is what proves the conditional `ServiceSingleSignOnLabel`
-appears only once the companion probe has been cached in `tblservers_remote`.
+appears only once the SSO presence probe has been cached in `tblservers_remote`.
 
 ### 5.4 Metrics harness — `metrics-live-check.php`
 

@@ -18,7 +18,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
  *   - the admin service tab, where it becomes a link an admin clicks;
  *   - single sign-on, where it is the redirect target WHMCS sends the browser
  *     to (AdminSingleSignOn directly, ServiceSingleSignOn as the base of the
- *     companion login URL).
+ *     single sign-on login URL).
  *
  * HTML escaping does NOT make those safe: `javascript:alert(1)` survives
  * htmlspecialchars() intact and still executes when the link is clicked, which
@@ -186,7 +186,7 @@ final class PanelUrlOverrideTest extends ModuleTestCase
     }
 
     /**
-     * The companion mints the token; the BASE the token path is appended to is
+     * The panel mints the token; the BASE the token path is appended to is
      * this option. A rejected value must degrade to the server-derived base -
      * the customer still gets a working login, just not the attacker's one.
      */

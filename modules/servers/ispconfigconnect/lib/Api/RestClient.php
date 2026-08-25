@@ -69,7 +69,8 @@ final class RestClient
         'remote_password',
         'database_password',
         'session_id',
-        // The SSO companion's one-time panel-login token (Sso\CompanionClient).
+        // The one-time panel-login token minted by the optional ispconfig-sso
+        // project (Sso\CompanionClient).
         // It arrives in the RESPONSE, is a bearer credential for the seconds
         // it lives, and tblmodulelog is readable by every WHMCS admin - so it
         // is masked exactly like a password.
@@ -122,7 +123,7 @@ final class RestClient
 
     /**
      * Last-resort needles for a password-ish column nobody enumerated (a
-     * future ISPConfig column, a companion function). A match here REDACTS -
+     * future ISPConfig column, an add-on function). A match here REDACTS -
      * it never adds a masking needle - because an unknown column's value could
      * be a flag ("1") or an enum ("y"), and blanking those out of the log by
      * str_replace does more damage than the column was worth.

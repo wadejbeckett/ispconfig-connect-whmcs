@@ -91,12 +91,17 @@ const ISPCONFIGCONNECT_METAPANEL_CLASS = 'ispconfigconnect-meta';
 /**
  * meta_data key => label, in display order.
  *
- * `service_count` AND `website_count` are both deliberately absent, and they are
- * the same number: core already renders it as "Services: N" in the same row's
- * Remote Usage Stats cell (live-verified), so putting it here too would show one
- * fact twice under two names and read as two different facts. `website_count`
- * stays in the stored JSON only so a reader of tblservers_remote needs no lookup
- * table.
+ * `service_count` is deliberately absent: WHMCS core already renders it itself
+ * as "Services: N" in the same row's Remote Usage Stats cell (live-verified),
+ * and it now carries the ISPConfig CLIENT count - the same number this block
+ * prints as "Clients" - so rendering it here too would show one fact twice
+ * under two names and read as two different facts.
+ *
+ * `website_count` is absent because it no longer exists AT ALL: counting vhosts
+ * cost a `sites_web_domain_get(-1)` bulk read that dragged every site's TLS
+ * private key across the wire, so the key was removed from the payload rather
+ * than approximated (Server\RemoteMetaData, "Why there is no website count").
+ * Nothing in tblservers_remote carries it any more.
  *
  * This list is the contract docs/INSTALL.md documents to operators, and the one
  * Server\MetaDataPanel renders; keep the three in step.
@@ -286,7 +291,7 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                 }
             }
 
-            // Absent, null, or any non-scalar means "the companion probe itself
+            // Absent, null, or any non-scalar means "the SSO probe itself
             // failed", which is not the same as "not installed" - say nothing
             // rather than the wrong thing. is_scalar() rather than `!== null` so
             // a malformed meta_data (an array where a flag belongs) is treated

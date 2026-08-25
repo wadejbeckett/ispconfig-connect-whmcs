@@ -50,29 +50,30 @@ final class FakeIspconfigServer implements HttpTransportInterface
     public array $nodeVersions = [];
 
     /**
-     * Whether the OPTIONAL SSO companion (companion/ispconfig-sso) is deployed
-     * on this panel.  Default false = a stock ISPConfig: its remote function is
-     * absent from get_function_list and calling it yields the JSON handler's
-     * invalid_method envelope, exactly as json_handler.inc.php does for any
-     * unregistered method name.
+     * Whether the OPTIONAL, SEPARATELY INSTALLED ISPConfig SSO project
+     * (repository ispconfig-sso) is deployed on this panel.  DEFAULT FALSE,
+     * because that is what a stock ISPConfig is and what this module must cope
+     * with: the project's remote function is absent from get_function_list and
+     * calling it yields the JSON handler's invalid_method envelope, exactly as
+     * json_handler.inc.php does for any unregistered method name.
      */
     public bool $companionInstalled = false;
 
-    /** Endpoint path the companion reports for the consumer page. */
+    /** Endpoint path the panel add-on reports for the consumer page. */
     public string $companionTokenPath = '/connectsso/';
 
-    /** Token TTL the companion reports, in seconds (real one: <= 60). */
+    /** Token TTL the panel add-on reports, in seconds (real one: <= 60). */
     public int $companionTokenTtl = 45;
 
     /**
      * When non-null, connect_sso_token_create returns this verbatim instead of
-     * a well-formed payload - the seam for "companion speaks a shape we do not
+     * a well-formed payload - the seam for "the panel speaks a shape we do not
      * trust" tests (version skew, hostile/compromised panel).
      */
     public mixed $companionResponseOverride = null;
 
     /**
-     * Methods that exist only when the companion is installed.
+     * Methods that exist only where the ispconfig-sso project is installed.
      *
      * @var list<string>
      */
@@ -233,8 +234,8 @@ final class FakeIspconfigServer implements HttpTransportInterface
     }
 
     /**
-     * Deploy the optional SSO companion on this panel: its remote.d class is
-     * auto-loaded by ISPConfigRemotingHandlerBase from
+     * Deploy the optional, separate ispconfig-sso project on this panel: its
+     * remote.d class is auto-loaded by ISPConfigRemotingHandlerBase from
      * interface/web/*&#47;lib/classes/remote.d/*.inc.php, so its public methods
      * join the handler's method map and therefore get_function_list.
      */
@@ -698,7 +699,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
 
         $this->requestLog[] = ['method' => $name, 'params' => $json];
 
-        // Companion methods only exist once companion/ispconfig-sso is
+        // These methods only exist once the separate ispconfig-sso project is
         // deployed; on a stock panel the handler's method map has no such key.
         $unregistered = in_array($name, self::COMPANION_METHODS, true) && !$this->companionInstalled;
         if ($unregistered || !method_exists($this, 'api_' . $name)) {
@@ -1950,12 +1951,12 @@ final class FakeIspconfigServer implements HttpTransportInterface
         throw new FakeSoapFault('There is no domain ID with informed domain name.');
     }
 
-    // ---- optional SSO companion (companion/ispconfig-sso) -----------------
+    // ---- the optional, separate ispconfig-sso project ---------------------
 
     /**
-     * Mints a one-time panel-login token.  Provided by the OPTIONAL companion
-     * module's remote.d class, not by ISPConfig core - guarded by
-     * $companionInstalled above.
+     * Mints a one-time panel-login token.  Provided by the OPTIONAL, separately
+     * installed ispconfig-sso project's remote.d class, not by ISPConfig core -
+     * guarded by $companionInstalled above.
      *
      * The double models the wire contract only: grant check, argument
      * validation, payload shape.  It deliberately does NOT model panel-user
@@ -1980,7 +1981,7 @@ final class FakeIspconfigServer implements HttpTransportInterface
         }
 
         return [
-            // random_bytes(32) -> 64 hex chars, per the companion's contract.
+            // random_bytes(32) -> 64 hex chars, per the ispconfig-sso contract.
             'token' => bin2hex(random_bytes(32)),
             'path' => $this->companionTokenPath,
             'expires_in' => $this->companionTokenTtl,

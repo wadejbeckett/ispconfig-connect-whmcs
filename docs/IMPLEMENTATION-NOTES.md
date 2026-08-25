@@ -1,6 +1,6 @@
 # Implementation Notes — ISPConfig Connect for WHMCS
 
-Working spec for the build, and the reference for anyone changing the module. Companion to the scope
+Working spec for the build, and the reference for anyone changing the module. A sibling to the scope
 & design document in this repository,
 [`docs/superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md`](superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md).
 
@@ -415,8 +415,8 @@ dedicated IP (Phase 3), client-area management views (Phase 4). Do NOT create pl
 or empty files for these.
 
 **Delivered in Phase 2** (see §5): ListAccounts / Server Sync, UsageUpdate, MetricProvider,
-GetRemoteMetaData + the servers-page hook, and single sign-on via the optional
-`companion/ispconfig-sso`.
+GetRemoteMetaData + the servers-page hook, and single sign-on against the optional `ispconfig-sso`
+project — a standalone ISPConfig add-on this repository does not ship, detected at runtime.
 
 ### 3.3 Open questions to settle against the live server (not in unit tests)
 
@@ -478,7 +478,7 @@ Module-side consequences: `ispconfigconnect_GetRemoteMetaData()` never throws (i
 always returns a flat scalar array, and on total failure still returns `checked_at`,
 `ispconfig_status` and `ispconfig_error` so the row shows a reason rather than an empty cell.
 
-It is also where the SSO companion probe result is cached (`sso_available`), because `MetaData()`
+It is also where the SSO presence probe result is cached (`sso_available`), because `MetaData()`
 receives no server parameters and must not make API calls — see §5.5.
 
 ### 5.2 `ListAccounts` / Server Sync
@@ -568,8 +568,10 @@ return `['success' => bool, 'redirectTo' => string, 'errorMsg' => string]`.
 
 ISPConfig core has **no one-time-login API** (verified across the 3.3.1p1 tree: `client_login_get()`
 only validates a credential pair, and `login(..., true)` mints an API session, not a panel session),
-so SSO exists only where the optional `companion/ispconfig-sso` is deployed. That makes the MetaData
-labels conditional, and creates one genuinely awkward constraint:
+so SSO exists only where the optional **`ispconfig-sso`** project is deployed on the panel. That
+project is separate from this repository — its own GPLv3 ISPConfig add-on, not WHMCS-specific and not
+shipped or required by this module — so its ABSENCE IS THE DEFAULT the module is written around. That
+makes the MetaData labels conditional, and creates one genuinely awkward constraint:
 
 > `MetaData()` receives **no `$params`** — no server, no credentials — and is called on many admin
 > pages. It therefore cannot probe the panel.
@@ -577,18 +579,18 @@ labels conditional, and creates one genuinely awkward constraint:
 Resolution: `GetRemoteMetaData` caches `sso_available` into `tblservers_remote.meta_data` (one
 `get_function_list` call, already granted), and `MetaData()` reads that cache with a single joined
 query, memoised per request and defaulting to *not advertised* on any failure. The operator-visible
-consequence is documented in INSTALL §6.5: after installing the companion, open Configuration >
-Servers once.
+consequence is documented in INSTALL §6.5: after installing `ispconfig-sso` on the panel, open
+Configuration > Servers once.
 
 **`AdminSingleSignOnLabel` is deliberately never advertised.** WHMCS documents that label as
-server-level ("Login to Panel as Admin"), and the companion refuses to mint tokens for administrator
+server-level ("Login to Panel as Admin"), and `ispconfig-sso` refuses to mint tokens for administrator
 accounts by design — an admin token bypasses password and IP checks, so it would be a full panel
 takeover. A server-level button could therefore only ever fail, and a dead button is worse than none.
 `ispconfigconnect_AdminSingleSignOn()` still exists and works wherever WHMCS calls it with a service
 in scope; called with only a server, it returns that explanation plus the panel URL.
 
 Logging rule: the redirect URL carries the one-time token in its query string, so the SSO entry points
-log the **outcome only**, never the URL. (`Api\RestClient` masks the `token` key of the companion's
+log the **outcome only**, never the URL. (`Api\RestClient` masks the `token` key of the mint
 response through WHMCS's replaceVars, so the wire log is safe on its own.)
 
 ### 5.6 Entry-file seams and the WHMCS class doubles

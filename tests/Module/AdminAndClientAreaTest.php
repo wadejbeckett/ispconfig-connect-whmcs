@@ -68,16 +68,24 @@ final class AdminAndClientAreaTest extends ModuleTestCase
         self::assertSame(0, $this->fake->activeSessionCount());
     }
 
+    /**
+     * The stock panel is checked FIRST because it is the default: single
+     * sign-on needs the separate ispconfig-sso project, which this module does
+     * not ship, so "not installed" is what a fresh install reports - and it
+     * must say which project to deploy rather than a bare "no".
+     */
     public function testAdminServicesTabFieldsReportsWhetherSingleSignOnIsAvailable(): void
     {
         self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
 
         $stock = ispconfigconnect_AdminServicesTabFields($this->params());
-        self::assertStringContainsString('companion/ispconfig-sso', $stock['ISPConfig Single Sign-On']);
+        self::assertStringContainsString('not installed', $stock['ISPConfig Single Sign-On']);
+        self::assertStringContainsString('ispconfig-sso', $stock['ISPConfig Single Sign-On']);
+        self::assertStringNotContainsString('companion/', $stock['ISPConfig Single Sign-On']);
 
         $this->fake->installCompanion();
-        $withCompanion = ispconfigconnect_AdminServicesTabFields($this->params());
-        self::assertSame('available', $withCompanion['ISPConfig Single Sign-On']);
+        $withSsoProject = ispconfigconnect_AdminServicesTabFields($this->params());
+        self::assertSame('available', $withSsoProject['ISPConfig Single Sign-On']);
     }
 
     public function testAdminServicesTabFieldsDegradesEveryLiveFigureWhenThePanelIsDown(): void

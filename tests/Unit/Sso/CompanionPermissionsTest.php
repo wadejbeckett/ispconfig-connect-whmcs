@@ -10,11 +10,11 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\Permissions;
 use WHMCS\Module\Server\Ispconfigconnect\Sso\CompanionClient;
 
 /**
- * The SSO companion adds ONE remote function, and it is optional: it exists
- * only on panels where companion/ispconfig-sso is installed. It must therefore
- * be resolvable through Permissions (the single source of truth for grant
- * names) WITHOUT appearing in requiredGrants(), which documents the grants a
- * stock panel must give the module.
+ * The separate ispconfig-sso project adds ONE remote function, and it is
+ * optional: it exists only on the panels whose operator chose to install that
+ * project. It must therefore be resolvable through Permissions (the single
+ * source of truth for grant names) WITHOUT appearing in requiredGrants(), which
+ * documents the grants a stock panel must give the module.
  */
 #[CoversClass(Permissions::class)]
 final class CompanionPermissionsTest extends TestCase
@@ -22,7 +22,7 @@ final class CompanionPermissionsTest extends TestCase
     public function testTheCompanionFunctionChecksItsOwnName(): void
     {
         // connect_sso_token_create calls checkPerm($session_id,
-        // 'connect_sso_token_create') - companion/ispconfig-sso remote.d class.
+        // 'connect_sso_token_create') - the ispconfig-sso remote.d class.
         self::assertSame(
             'connect_sso_token_create',
             Permissions::grantFor(CompanionClient::REMOTE_FUNCTION)

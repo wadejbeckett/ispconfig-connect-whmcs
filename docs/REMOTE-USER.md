@@ -39,7 +39,7 @@ exist on 3.2.x). The module needs these nine:
 
 | Checkbox | Why the module needs it |
 |---|---|
-| **Server functions** | `server_get` (Web Server dropdown, and the `server_get_app_version` panel-version probe — it checks `server_get`, verified), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics, and the probe that detects the optional SSO companion — §2a). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
+| **Server functions** | `server_get` (Web Server dropdown, and the `server_get_app_version` panel-version probe — it checks `server_get`, verified), `client_templates_get_all` (Client Template dropdown), `get_function_list` (diagnostics, and the probe that detects the optional panel-side SSO project — §2a). *Caveat: this group also carries config-write functions (`system_config_set`, `server_ip_*`, …) — checkbox granularity forces the over-grant; the IP allowlist and TLS bound the exposure.* |
 | **Client functions** | client create/update/lock/password/terminate (incl. both `client_delete_everything` and `client_delete`, which termination re-checks mid-cascade), plus `client_get_all` for the servers-page client counter |
 | **Quota functions** | the whole group — `quota_get_by_user`, `trafficquota_get_by_user`, `mailquota_get_by_user`, `databasequota_get_by_user` — for disk/bandwidth usage import and usage-billing metrics |
 | **Sites Domain functions** | website create/read/status (suspend) |
@@ -103,7 +103,7 @@ Why each (grouped):
 | `quota_get_by_user`, `trafficquota_get_by_user` | the nightly disk/bandwidth import into `tblhosting` (WHMCS's UsageUpdate cron), which also drives disk and bandwidth overage billing. When a service's quota answers come back empty, the sweep also spends one `client_get` (already granted above) to distinguish "client owns nothing" from "client was deleted in the panel" — a deleted client answers every quota call with zero rows rather than an error, and importing that as zero usage forever would be silent wrong billing; such services are skipped with a reason in the module log instead |
 | `mailquota_get_by_user`, `databasequota_get_by_user` | usage-billing metrics: mailbox and database storage, and the mailbox/database counts. Same **Quota functions** checkbox as the two above, so they cost no extra grant group |
 | `sites_ftp_user_get`, `dns_zone_get` | usage-billing metrics: the FTP-user and DNS-zone counts, read as `sys_groupid` filters. Both are already inside the **Sites FTP-User functions** and **DNS zone functions** checkboxes the module needs for provisioning |
-| `get_function_list` | connection diagnostics, and the probe that detects the optional SSO companion (§2a) |
+| `get_function_list` | connection diagnostics, and the probe that detects the optional panel-side SSO project (§2a) |
 
 `login` and `logout` are the only ungated remote functions. Everything else — `get_function_list`
 included — goes through `checkPerm()` and needs its grant
@@ -112,32 +112,35 @@ included — goes through `checkPerm()` and needs its grant
 ### 2a. Optional — the single sign-on grant
 
 One further grant exists, and it is **not part of the list above** because it does not exist on a
-stock ISPConfig. It is registered only when the optional companion module
-(`companion/ispconfig-sso/`) is installed on the panel, which is what gives the client area and the
-admin service tab a working *Log in to panel* button. Skip this whole section if you have not
-installed it.
+stock ISPConfig. It is registered only where the panel has the separate **`ispconfig-sso`** project
+installed — a standalone GPLv3 ISPConfig add-on by the same author, which this module does not ship
+and does not require (any billing system can use it). That project is what gives the client area and
+the admin service tab a working *Log in to panel* button. **Skip this whole section unless you have
+installed it on the panel** — a stock panel needs no grant here, and the module will simply keep the
+button hidden.
 
 | Checkbox | Function | Why |
 |---|---|---|
-| **ISPConfig Connect: panel single sign-on (SSO token)** | `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
+| **Panel single sign-on (one-time login token)** | `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
 
-This is its own checkbox — the companion ships its own `lib/remote.conf.php`, so it appears as a
+This is its own checkbox — the project ships its own `lib/remote.conf.php`, so it appears as a
 single entry granting exactly that one function. It is the list from
 `Permissions::optionalGrants()`; `Permissions::requiredGrants()` deliberately excludes it, and
 neither Test Connection nor Verify Permissions reports it as missing.
 
 Notes:
 
-- If the checkbox is not on the form, the companion's installer could not add `connectsso` to your
-  admin account's module list. Re-run its `install.sh`, then log out and back in — the Functions
-  list is built from the modules of the admin who is logged in.
-- Without this grant, the module still *detects* the companion and reports an actionable error
-  naming the grant when SSO is attempted. Detection is one `get_function_list` call, which returns
-  the panel's whole registered method list rather than the caller's own grants — so it distinguishes
-  "companion not installed" from "installed but not granted". It is **not** an ungated call: it
-  needs the **Server functions** grant the module already requires (see the note under the grant
-  list above). Without *that*, detection fails closed and the module treats SSO as unavailable.
-- **The panel must be served over HTTPS.** The companion refuses to mint or redeem a token on a
+- If the checkbox is not on the form, the project's installer could not add `connectsso` to your
+  admin account's module list. Re-run its `install.sh` on the ISPConfig server, then log out and
+  back in — the Functions list is built from the modules of the admin who is logged in.
+- Without this grant, the module still *detects* the project and reports an actionable error naming
+  the grant when SSO is attempted. Detection is one `get_function_list` call, which returns the
+  panel's whole registered method list rather than the caller's own grants — so it distinguishes
+  "the panel does not have the SSO project" from "installed but not granted". It is **not** an
+  ungated call: it needs the **Server functions** grant the module already requires (see the note
+  under the grant list above). Without *that*, detection fails closed and the module treats SSO as
+  unavailable.
+- **The panel must be served over HTTPS.** `ispconfig-sso` refuses to mint or redeem a token on a
   plaintext request — a token is a password substitute travelling in a URL. Behind a
   TLS-terminating reverse proxy, declare it: `reverse_proxy_panel_allowed` in the `[permissions]`
   section of `/usr/local/ispconfig/security/security_settings.ini`, set to anything other than the
@@ -148,8 +151,8 @@ Notes:
   no distinct user type: every client the API creates gets `sys_user.typ = 'user'`
   (`remoting_lib.inc.php:329`), and `limit_client > 0` only adds the `client` module
   (`:311-313`). Only `typ = 'admin'` is refused. Grant it solely to the API user WHMCS uses, and
-  keep that user's Remote Access IP list populated. The companion's own `README.md` carries the full
-  security model.
+  keep that user's Remote Access IP list populated. The `ispconfig-sso` project's own README carries
+  the full security model.
 
 ## 3. Enable the remote API itself
 

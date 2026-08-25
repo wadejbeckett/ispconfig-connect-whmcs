@@ -93,13 +93,13 @@ final class Permissions
     ];
 
     /**
-     * Functions provided by OPTIONAL panel-side companions, not by ISPConfig
-     * core - they exist only where that companion is installed, so they are
+     * Functions provided by OPTIONAL panel-side add-ons, not by ISPConfig
+     * core - they exist only where that add-on is installed, so they are
      * resolvable here but deliberately absent from requiredGrants().
      *
-     * connect_sso_token_create: companion/ispconfig-sso, checks its own name
-     * via the inherited remoting::checkPerm() (its remote.d class extends
-     * remoting exactly as every core remote.d class does).
+     * connect_sso_token_create: the separate ispconfig-sso project, which
+     * checks its own name via the inherited remoting::checkPerm() (its remote.d
+     * class extends remoting exactly as every core remote.d class does).
      */
     private const OPTIONAL_FUNCTIONS = [
         'connect_sso_token_create',
@@ -154,7 +154,7 @@ final class Permissions
     }
 
     /**
-     * Grants that only matter when an optional panel-side companion is
+     * Grants that only matter when an optional panel-side add-on is
      * installed. Kept OUT of requiredGrants() on purpose: a stock ISPConfig
      * has no such function, and telling an operator to tick a checkbox that
      * does not exist would turn a working setup into a support ticket.

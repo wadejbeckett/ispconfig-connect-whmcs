@@ -35,9 +35,17 @@ require_once __DIR__ . '/../../modules/servers/ispconfigconnect/hooks/ispconfigc
  */
 final class HooksTest extends TestCase
 {
-    /** A row as the servers page sees it once GetRemoteMetaData has run once. */
+    /**
+     * A row as the servers page sees it once GetRemoteMetaData has run once.
+     *
+     * `service_count` mirrors `client_count` because that is what the module
+     * actually stores: one WHMCS service is one ISPConfig client, and the
+     * website count that used to answer this key was removed outright
+     * (Server\RemoteMetaData, "Why there is no website count"), so no
+     * `website_count` key exists in the payload any more.
+     */
     private const META = '{"ispconfig_version":"3.3.1p1","pending_jobs":2,"client_count":9,'
-        . '"website_count":14,"service_count":14,"server_count":1,"sso_available":true,'
+        . '"service_count":9,"server_count":1,"sso_available":true,'
         . '"ispconfig_status":"ok","checked_at":"2026-08-24 09:00:00 UTC"}';
 
     private const UPDATED_AT = '2026-08-24 09:00:12';
@@ -70,14 +78,20 @@ final class HooksTest extends TestCase
 
     /**
      * Core already renders `service_count` as "Services: N" in the same row's
-     * Remote Usage Stats cell (live-verified), and `website_count` is the same
-     * number. Rendering either of them here would put one number on the page
-     * twice under two names, which reads as two different facts.
+     * Remote Usage Stats cell (live-verified), and that key now carries the
+     * ISPConfig client count - the number this block prints as "Clients".
+     * Rendering it here as well would put one number on the page twice under
+     * two names, which reads as two different facts.
+     *
+     * "Websites" is asserted absent too, and stays asserted: the payload no
+     * longer has a `website_count` key at all (the bulk read that produced it
+     * shipped every site's TLS private key), so a line under that label could
+     * only ever be an invented number.
      *
      * This is the field list docs/INSTALL.md documents and that
      * Server\MetaDataPanel renders; the two must not drift apart.
      */
-    public function testTheBlockDoesNotRepeatTheWebsiteCountCoreAlreadyShows(): void
+    public function testTheBlockDoesNotRepeatTheServiceCountCoreAlreadyShows(): void
     {
         $lines = $this->linesFor($this->row());
 
@@ -195,7 +209,7 @@ final class HooksTest extends TestCase
     }
 
     /**
-     * GetRemoteMetaData deliberately omits the key when the companion probe
+     * GetRemoteMetaData deliberately omits the key when the SSO probe
      * itself failed. "Unknown" must not be rendered as "Not installed".
      */
     public function testSingleSignOnIsOmittedWhenTheAnswerIsUnknown(): void

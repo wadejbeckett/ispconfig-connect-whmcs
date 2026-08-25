@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace WHMCS\Module\Server\Ispconfigconnect\Sso\Exception;
 
 /**
- * The companion answered, but not with a payload this module is willing to
+ * The panel answered, but not with a payload this module is willing to
  * turn into a redirect.
  *
  * This is a SECURITY boundary, not just a version-skew guard: the token and

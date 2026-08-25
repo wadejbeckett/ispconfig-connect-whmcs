@@ -27,7 +27,8 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         self::assertSame('Domain', $meta['ListAccountsUniqueIdentifierDisplayName']);
         self::assertSame('domain', $meta['ListAccountsUniqueIdentifierField']);
         self::assertSame('configoption1', $meta['ListAccountsProductField']);
-        // SSO labels are conditional on a detected companion (SingleSignOnTest);
+        // SSO labels are conditional on a detected ispconfig-sso project, which
+        // a fresh install does not have (SingleSignOnTest);
         // nothing has been probed here, so neither may be advertised.
         self::assertArrayNotHasKey('ServiceSingleSignOnLabel', $meta);
         self::assertArrayNotHasKey('AdminSingleSignOnLabel', $meta);

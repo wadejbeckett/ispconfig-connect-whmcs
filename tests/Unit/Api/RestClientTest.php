@@ -729,7 +729,7 @@ final class RestClientTest extends TestCase
 
     public function testAnUnenumeratedPasswordColumnIsRedactedRatherThanMasked(): void
     {
-        // A column no one listed - a future ISPConfig release, a companion
+        // A column no one listed - a future ISPConfig release, a panel add-on
         // function. It is removed from the log copy; its value is NOT promoted
         // to a masking needle, because an unknown column may hold a flag.
         $envelope = json_encode([
@@ -757,7 +757,7 @@ final class RestClientTest extends TestCase
     {
         // The original leak was a spelling mismatch, so matching is exact on a
         // NORMALIZED name: mysqli hands back the column as the schema spells
-        // it, but a companion or a future release may not.
+        // it, but a panel add-on or a future release may not.
         $envelope = json_encode([
             'code' => 'ok',
             'message' => '',

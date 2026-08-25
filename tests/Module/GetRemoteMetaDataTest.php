@@ -55,9 +55,20 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
         self::assertSame(0, $this->fake->activeSessionCount());
     }
 
-    public function testReportsTheOptionalSsoCompanionSoTheModuleCanHideADeadButton(): void
+    /**
+     * The probe that decides whether an SSO button is ever offered. FALSE IS
+     * THE DEFAULT and is asserted first: single sign-on needs the separate
+     * ispconfig-sso project on the panel, which this module does not ship, so a
+     * stock ISPConfig - the panel almost every install points at - must cache a
+     * definite "no" rather than nothing or an error.
+     */
+    public function testReportsWhetherThePanelHasTheOptionalSsoProject(): void
     {
-        self::assertFalse(ispconfigconnect_GetRemoteMetaData($this->params())['sso_available']);
+        $stock = ispconfigconnect_GetRemoteMetaData($this->params());
+
+        self::assertFalse($stock['sso_available']);
+        self::assertSame(RemoteMetaData::STATUS_OK, $stock['ispconfig_status'], 'absence is not a fault');
+        self::assertArrayNotHasKey('ispconfig_error', $stock);
 
         $this->fake->installCompanion();
 

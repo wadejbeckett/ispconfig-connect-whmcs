@@ -18,9 +18,9 @@ final class SsoTicket
         #[\SensitiveParameter]
         public readonly string $token,
         public readonly string $url,
-        /** Seconds until the token expires; 0 when the companion did not say. */
+        /** Seconds until the token expires; 0 when the panel did not say. */
         public readonly int $expiresInSeconds = 0,
-        /** The panel username the token logs in as, when the companion reports it. */
+        /** The panel username the token logs in as, when the panel reports it. */
         public readonly ?string $username = null,
     ) {
     }

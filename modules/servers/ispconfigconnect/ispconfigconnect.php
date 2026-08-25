@@ -63,15 +63,18 @@ if (!defined('WHMCS')) {
  * ("Sync Accounts") button; they live next to the mapping that satisfies them,
  * in Sync\AccountLister.
  *
- * The single sign-on label is CONDITIONAL. ISPConfig core has no one-time-login
- * API at all, so SSO exists only where the optional companion
- * (companion/ispconfig-sso) is deployed - advertising the label unconditionally
- * would render a button that can only fail. MetaData() gets no $params and must
- * not make API calls, so the answer comes from the companion probe that
- * GetRemoteMetaData already cached in tblservers_remote.
+ * The single sign-on label is CONDITIONAL, and its DEFAULT IS ABSENT.
+ * ISPConfig core has no one-time-login API at all, so SSO exists only on panels
+ * where the operator has separately installed the ISPConfig SSO project
+ * (repository ispconfig-sso - a standalone GPLv3 panel add-on this module does
+ * not ship and does not require). A fresh install of this module therefore
+ * advertises no label at all: advertising it unconditionally would render a
+ * button that can only fail. MetaData() gets no $params and must not make API
+ * calls, so the answer comes from the presence probe that GetRemoteMetaData
+ * already cached in tblservers_remote.
  *
  * AdminSingleSignOnLabel is deliberately never advertised: that button is
- * SERVER-level ("Login to Panel as Admin"), and the companion refuses to mint
+ * SERVER-level ("Login to Panel as Admin"), and the SSO project refuses to mint
  * tokens for administrator accounts by design (an admin token would be a full
  * panel takeover). ispconfigconnect_AdminSingleSignOn() still exists and works
  * wherever WHMCS calls it with a service in scope.
@@ -635,8 +638,8 @@ function ispconfigconnect_AdminServicesTabFields(array $params): array
         }
 
         // Deliberately a STATUS, not a login link: minting a token here would
-        // spend the client's single live token on a page render (the companion
-        // keeps exactly one, and a new one invalidates its predecessor). The
+        // spend the client's single live token on a page render (the SSO
+        // project keeps exactly one, and a new one invalidates its predecessor). The
         // working button is WHMCS's own SSO control, wired to
         // ispconfigconnect_ServiceSingleSignOn().
         $fields['ISPConfig Single Sign-On'] = $live['sso'];
@@ -1032,10 +1035,11 @@ function ispconfigconnect_GetRemoteMetaData(array $params): array
         try {
             $meta = (new RemoteMetaData($session))->gather();
 
-            // The SSO companion probe is cached HERE because MetaData(), which
+            // The SSO presence probe is cached HERE because MetaData(), which
             // decides whether the SSO button is offered at all, gets no server
             // parameters and must not make API calls. One get_function_list
-            // call, already granted.
+            // call, already granted. False - "the panel does not have the
+            // ispconfig-sso project" - is the normal answer, not a fault.
             try {
                 $meta['sso_available'] = ispconfigconnect_companionClient($params, $session)->isInstalled();
             } catch (\Throwable) {
@@ -1075,7 +1079,7 @@ function ispconfigconnect_ServiceSingleSignOn(array $params): array
  *
  * WHMCS documents this as the SERVER-level counterpart of
  * ServiceSingleSignOn. ISPConfig has no administrator SSO to offer - the
- * remote user is not a panel user, and the companion refuses to mint tokens
+ * remote user is not a panel user, and the SSO project refuses to mint tokens
  * for administrator accounts because such a token would be a full panel
  * takeover - so a server-only call is answered with that explanation rather
  * than a cryptic failure, which is also why AdminSingleSignOnLabel is never
@@ -1091,9 +1095,9 @@ function ispconfigconnect_AdminSingleSignOn(array $params): array
     // module that defines this function, so it must do something useful.
     //
     // With a service in scope, mint a real one-time login for THAT service's
-    // ISPConfig client (the companion path). Without one - the server-level
+    // ISPConfig client (the SSO-project path). Without one - the server-level
     // button - there is no client to log in as, and minting an ADMIN panel
-    // session is deliberately refused by the companion: such a token would be
+    // session is deliberately refused by the SSO project: such a token would be
     // a full panel takeover, and the API remote user is not a panel user at
     // all. Rather than fail, hand the admin the panel's own login page.
     if ((int) ($params['serviceid'] ?? 0) > 0) {
@@ -1323,7 +1327,7 @@ function ispconfigconnect_panelUrl(array $params): string
  * consumed in three places that all hand it to a browser: the "Open Control
  * Panel" button every customer of the product sees, the admin service tab's
  * panel link, and the single sign-on redirect target (directly for
- * AdminSingleSignOn, as the base of the companion login URL for
+ * AdminSingleSignOn, as the base of the SSO login URL for
  * ServiceSingleSignOn). HTML escaping does not make any of those safe -
  * `javascript:alert(1)` passes through htmlspecialchars() and Smarty's |escape
  * unchanged and still executes on click - so a mistyped or hostile value is
@@ -1455,7 +1459,7 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
                 . ' ISPConfig Connect.'
             : sprintf(
                 'ISPConfig has no administrator single sign-on. The remote API user is not a'
-                . ' panel user, and the SSO companion refuses to mint tokens for administrator'
+                . ' panel user, and the ISPConfig SSO project refuses to mint tokens for administrator'
                 . ' accounts because such a token would be a full panel takeover. Sign in at %s'
                 . ' instead, or use the per-service login button on a client\'s service.',
                 ispconfigconnect_panelUrl($params)
@@ -1473,7 +1477,7 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
             // IP binding is left OFF: the token would then only be redeemable
             // from the address WHMCS saw, and any CDN, proxy or IPv4/IPv6
             // asymmetry between WHMCS and the panel would break every login
-            // (companion/ispconfig-sso/README.md).
+            // (the ispconfig-sso project's README documents the trade-off).
             $result = [
                 'success' => true,
                 'redirectTo' => ispconfigconnect_companionClient($params, $session)->loginUrl($clientId),
@@ -1482,13 +1486,15 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
             $session->close();
         }
     } catch (CompanionNotInstalledException) {
-        $result['errorMsg'] = 'Single sign-on needs the optional ISPConfig companion, which this panel'
-            . ' does not have: ISPConfig core provides no one-time-login API. Install'
-            . ' companion/ispconfig-sso (see companion/ispconfig-sso/README.md) on the panel and'
-            . ' grant the remote user its connect_sso_token_create function.';
+        $result['errorMsg'] = 'Single sign-on needs the separate ISPConfig SSO project'
+            . ' (ispconfig-sso), an optional GPLv3 panel add-on this module does not ship, and this'
+            . ' panel does not have it: ISPConfig core provides no one-time-login API. Install the'
+            . ' project on the ISPConfig server and grant the remote user its'
+            . ' connect_sso_token_create function.';
     } catch (CompanionGrantMissingException $denied) {
         $result['errorMsg'] = $denied->getMessage()
-            . ' Installation and grant instructions: companion/ispconfig-sso/README.md.';
+            . ' That function is provided by the ispconfig-sso project installed on this panel, so it'
+            . ' appears as its own checkbox in that list.';
     } catch (\Throwable $failure) {
         $result['errorMsg'] = ispconfigconnect_connectionAdvice($failure);
     }
@@ -1523,7 +1529,7 @@ function ispconfigconnect_companionClient(array $params, SessionManager $session
 }
 
 /**
- * Has the SSO companion been seen on any ISPConfig server WHMCS knows about?
+ * Has the ispconfig-sso project been seen on any ISPConfig server WHMCS knows about?
  *
  * Reads the metadata GetRemoteMetaData already cached in tblservers_remote -
  * MetaData() has no server in scope and must not make API calls. The answer is
@@ -1882,10 +1888,17 @@ function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
             }
 
             try {
-                $fields['sso'] = ispconfigconnect_companionClient($params, $session)->isInstalled()
-                    ? 'available'
-                    : 'not installed - deploy the optional companion/ispconfig-sso on the panel'
-                        . ' to enable the "Log in to ISPConfig" button';
+                // Three distinct answers, because "not installed" and "we were
+                // not allowed to look" send an operator to different places.
+                $fields['sso'] = match (ispconfigconnect_companionClient($params, $session)->status()) {
+                    CompanionClient::STATUS_INSTALLED => 'available',
+                    CompanionClient::STATUS_ABSENT => 'not installed - deploy the separate'
+                        . ' ispconfig-sso project on the panel to enable the'
+                        . ' "Log in to ISPConfig" button',
+                    default => 'cannot tell - this server\'s remote user lacks the'
+                        . ' get_function_list grant, so the panel cannot be probed for the'
+                        . ' ispconfig-sso project. Grant it under System > Remote Users.',
+                };
             } catch (\Throwable) {
                 // Stays 'unknown'.
             }
