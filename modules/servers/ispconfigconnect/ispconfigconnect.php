@@ -244,7 +244,7 @@ function ispconfigconnect_TestConnection(array $params): array
 function ispconfigconnect_CreateAccount(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
 
         // Double-provision guard: WHMCS retries and admin re-runs must never
         // create a second ISPConfig client for the same service (spec 2.8).
@@ -357,7 +357,7 @@ function ispconfigconnect_CreateAccount(array $params): string
 function ispconfigconnect_SuspendAccount(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
             return 'Suspend failed: no stored ispconfig_client_id service property'
@@ -389,7 +389,7 @@ function ispconfigconnect_SuspendAccount(array $params): string
 function ispconfigconnect_UnsuspendAccount(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
             return 'Unsuspend failed: no stored ispconfig_client_id service property'
@@ -421,7 +421,7 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
 function ispconfigconnect_TerminateAccount(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
             return 'Terminate failed: no stored ispconfig_client_id service property'
@@ -452,7 +452,7 @@ function ispconfigconnect_TerminateAccount(array $params): string
 function ispconfigconnect_ChangePassword(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
             return 'Change Password failed: no stored ispconfig_client_id service property'
@@ -495,7 +495,7 @@ function ispconfigconnect_ChangePassword(array $params): string
 function ispconfigconnect_ChangePackage(array $params): string
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
             return 'Change Package failed: no stored ispconfig_client_id service property'
@@ -526,6 +526,11 @@ function ispconfigconnect_ChangePackage(array $params): string
             $session->close();
         }
 
+        // The old product's custom-field rows do not follow the service:
+        // re-save migrates every stored id onto the NEW product's fields so
+        // later operations read them without the fallback.
+        $properties->resaveAll();
+
         return 'success';
     } catch (\Throwable $failure) {
         return ispconfigconnect_errorString('Change Package', $failure);
@@ -542,7 +547,7 @@ function ispconfigconnect_ChangePackage(array $params): string
 function ispconfigconnect_AdminServicesTabFields(array $params): array
 {
     try {
-        $properties = Params::serviceProperties($params);
+        $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         $username = $properties->clientUsername() ?? (string) ($params['username'] ?? '');
         $domainId = $properties->domainId();
@@ -625,7 +630,7 @@ function ispconfigconnect_ClientArea(array $params): array
 {
     $username = (string) ($params['username'] ?? '');
     try {
-        $storedUsername = Params::serviceProperties($params)->clientUsername();
+        $storedUsername = ispconfigconnect_serviceProperties($params)->clientUsername();
         if ($storedUsername !== null) {
             $username = $storedUsername;
         }
@@ -646,6 +651,39 @@ function ispconfigconnect_ClientArea(array $params): array
 // Internal helpers (module-prefixed to keep WHMCS's global function space
 // collision-free; never invoked by WHMCS itself).
 // ---------------------------------------------------------------------------
+
+/**
+ * Service-properties accessor with a product-agnostic fallback: WHMCS scopes
+ * the backing custom fields to the service's CURRENT product, so after a
+ * package change $model->serviceProperties reads miss. The fallback queries
+ * by field name + service id directly (any product), keeping stored ids
+ * readable across product switches.
+ *
+ * @param array<string, mixed> $params
+ */
+function ispconfigconnect_serviceProperties(array $params): \WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties
+{
+    $properties = Params::serviceProperties($params);
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    if ($serviceId > 0 && class_exists('\\WHMCS\\Database\\Capsule')) {
+        $properties->withFallbackReader(static function (string $key) use ($serviceId): ?string {
+            try {
+                $value = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+                    ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
+                    ->where('tblcustomfields.type', 'product')
+                    ->where('tblcustomfields.fieldname', $key)
+                    ->where('tblcustomfieldsvalues.relid', $serviceId)
+                    ->value('tblcustomfieldsvalues.value');
+
+                return $value === null ? null : (string) $value;
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+    }
+
+    return $properties;
+}
 
 /**
  * The safe read-only probes TestConnection / VerifyPermissions run, keyed by

@@ -41,6 +41,16 @@ final class ServiceProperties
 
     private readonly object $properties;
 
+    /**
+     * WHMCS resolves $model->serviceProperties against custom fields scoped
+     * to the service's CURRENT product (live-verified: tblcustomfields rows
+     * carry relid = product id), so after a product switch every read
+     * misses. The fallback reader - wired by the entry file with a direct
+     * fieldname+serviceid lookup - keeps properties readable across product
+     * changes. @var (\Closure(string): ?string)|null
+     */
+    private ?\Closure $fallbackReader = null;
+
     public function __construct(object $properties)
     {
         if (!method_exists($properties, 'get') || !method_exists($properties, 'save')) {
@@ -147,9 +157,39 @@ final class ServiceProperties
         $this->properties->save([$key => $value]);
     }
 
+    public function withFallbackReader(callable $reader): self
+    {
+        $this->fallbackReader = $reader(...);
+
+        return $this;
+    }
+
+    /**
+     * Re-saves every stored property through the model, so the service's
+     * CURRENT product gains the custom-field definitions and values. Call
+     * after a package change - the old product's field rows do not follow
+     * the service.
+     */
+    public function resaveAll(): void
+    {
+        $values = [];
+        foreach (self::KEYS as $key) {
+            $value = $this->stringValue($key);
+            if ($value !== null) {
+                $values[$key] = $value;
+            }
+        }
+        if ($values !== []) {
+            $this->properties->save($values);
+        }
+    }
+
     private function stringValue(string $key): ?string
     {
         $value = $this->properties->get($key);
+        if (($value === null || $value === '') && $this->fallbackReader !== null) {
+            $value = ($this->fallbackReader)($key);
+        }
         if ($value === null || $value === '') {
             return null;
         }
@@ -159,11 +199,8 @@ final class ServiceProperties
 
     private function intValue(string $key): ?int
     {
-        $value = $this->properties->get($key);
-        if (is_int($value)) {
-            return $value;
-        }
-        if (is_string($value) && is_numeric($value)) {
+        $value = $this->stringValue($key);
+        if ($value !== null && is_numeric($value)) {
             return (int) $value;
         }
 

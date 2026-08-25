@@ -175,11 +175,12 @@ final class Recipe
             return;
         }
 
-        if ($this->clientLockedState($clientId) === 'y') {
+        $record = $this->clientRecord($clientId);
+        if ((string) ($record['locked'] ?? 'n') === 'y') {
             return; // already locked - re-locking poisons tmp_data
         }
 
-        $this->protectiveClientUpdate($clientId, ['locked' => 'y']);
+        $this->protectiveClientUpdate($clientId, ['locked' => 'y'], $record);
     }
 
     /**
@@ -202,11 +203,12 @@ final class Recipe
             return;
         }
 
-        if ($this->clientLockedState($clientId) !== 'y') {
+        $record = $this->clientRecord($clientId);
+        if ((string) ($record['locked'] ?? 'n') !== 'y') {
             return; // not locked - nothing to restore
         }
 
-        $this->protectiveClientUpdate($clientId, ['locked' => 'n']);
+        $this->protectiveClientUpdate($clientId, ['locked' => 'n'], $record);
     }
 
     public function terminate(int $clientId): void
@@ -333,12 +335,28 @@ final class Recipe
      *
      * @param array<string, int|string> $params the intended changes
      */
-    private function protectiveClientUpdate(int $clientId, array $params): void
+    /**
+     * @param array<string, mixed> $params
+     * @param array<string, mixed>|null $record client_get result, when the caller already fetched it
+     */
+    private function protectiveClientUpdate(int $clientId, array $params, ?array $record = null): void
     {
         if (!array_key_exists('template_additional', $params)) {
             $params['template_additional'] = implode('/', $this->assignedAddonTemplateIds($clientId));
         }
         $params['_ispconfig_pw_crypted'] = 1;
+
+        // Template application overwrites the client's web_php_options /
+        // ssh_chroot with the TEMPLATE's values on every add/update - and a
+        // template that leaves them empty (live-verified on 3.3.1p1) empties
+        // the client record, after which any partial client_update dies on
+        // the fields' NOTEMPTY validators. Re-send the current values, or
+        // permissive defaults when the template gap has already emptied them.
+        $record ??= $this->clientRecord($clientId);
+        $params['web_php_options'] = ($record['web_php_options'] ?? '') !== ''
+            ? $record['web_php_options'] : 'no,fast-cgi,cgi,mod,suphp,php-fpm,hhvm';
+        $params['ssh_chroot'] = ($record['ssh_chroot'] ?? '') !== ''
+            ? $record['ssh_chroot'] : 'no,jailkit';
 
         $this->session->call('client_update', [
             'client_id' => $clientId,
@@ -379,11 +397,12 @@ final class Recipe
      * cannot be read (client_get returns null for a missing id -
      * db_mysql.inc.php queryOneRecord).
      */
-    private function clientLockedState(int $clientId): ?string
+    /** @return array<string, mixed> */
+    private function clientRecord(int $clientId): array
     {
         $record = $this->session->call('client_get', ['client_id' => $clientId]);
 
-        return is_array($record) ? (string) ($record['locked'] ?? 'n') : null;
+        return is_array($record) ? $record : [];
     }
 
     private function setWebsiteStatus(int $domainId, string $status): void

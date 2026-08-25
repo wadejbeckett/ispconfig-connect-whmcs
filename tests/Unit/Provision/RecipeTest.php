@@ -606,8 +606,11 @@ final class RecipeTest extends TestCase
         // DESIRED bare ids and update_client_templates' old-style count-diff
         // applies the delta atomically (client_templates.inc.php) - no
         // client_template_additional_add/_delete calls.
+        // client_get precedes it: the protective update re-sends the
+        // template-governed web_php_options/ssh_chroot from the live record
+        // (or permissive defaults when a template gap emptied them).
         self::assertSame(
-            ['client_update'],
+            ['client_get', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         self::assertSame($proId, $fake->clients()[$result->clientId]['template_master']);
@@ -638,8 +641,11 @@ final class RecipeTest extends TestCase
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $basicId]), [$spaceId]);
 
+        // client_get precedes it: the protective update re-sends the
+        // template-governed web_php_options/ssh_chroot from the live record
+        // (or permissive defaults when a template gap emptied them).
         self::assertSame(
-            ['client_update'],
+            ['client_get', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         // Old-style count-diff no-op: the very same assignment rows survive
