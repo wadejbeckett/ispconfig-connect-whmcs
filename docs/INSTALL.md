@@ -111,6 +111,14 @@ Click **Test Connection** before saving. Its error messages are designed to be
 actionable: they name the missing grant, the IP to allowlist, the lockout
 back-off, or the disabled-API setting, depending on what failed.
 
+A **successful** test also reports single sign-on — `Connected. Single sign-on:
+…` followed by a sentence about the optional `ispconfig-sso` panel add-on. On a
+stock panel that sentence says the add-on is **not installed**, and **that is the
+expected answer, not a fault**: single sign-on is optional and nothing else in
+the module depends on it (§6.5). The same line is written to **Utilities > Logs >
+Module Log**, so you can still read it if your WHMCS theme shows only a bare
+success tick.
+
 ## 4. Create the product
 
 **System Settings > Products/Services**, create a product of type *Shared
@@ -205,7 +213,8 @@ things live from the panel, each degrading to a placeholder rather than
 failing the page: the job-queue depth, the client's current **disk usage** and
 **this month's bandwidth** (both against the panel's own limits, so they are
 current even between nightly imports), and whether **single sign-on** is
-available on this panel. All four share one login, and the probes stop
+available on this panel (that row has four possible answers — §6.6 decodes
+them). All four share one login, and the probes stop
 immediately if the panel cannot be reached — an admin page must never spend
 failed logins against the panel's lockout counter.
 
@@ -362,90 +371,174 @@ Two consequences worth knowing:
 Nothing on this page contacts the panel more than once per render, and a panel
 that is down costs the block, never the page.
 
-### 6.5 Single sign-on (optional, needs a separate panel-side project)
+### 6.5 Single sign-on (optional, needs the separate `ispconfig-sso` project)
 
-ISPConfig core has **no one-time-login API**: `client_login_get()` only
-validates a password, and the remote API's `login()` mints an API session, not
-a panel session. Every older WHMCS/ISPConfig module solved this by storing and
-replaying the customer's panel password. This module does not, so out of the
-box there is **no login button** — customers get the panel URL and their
-username, and nothing more. That is the normal, supported state: **you can skip
-this whole section** and everything else in the module works.
+Out of the box there is **no login button**. ISPConfig core has no
+one-time-login API, and this module will not store or replay a customer's panel
+password to fake one — so customers get the panel URL and their username, and
+nothing more. That is the normal, supported state: **skip this section** and
+everything else works.
 
-To offer a real login button you need one extra piece of software **on the
-ISPConfig server**, and it is not part of this repository:
+A password-free **Log in to ISPConfig** button needs one extra piece of software
+**on the ISPConfig server**, and it is not in this repository:
+[**`ispconfig-sso`**](https://github.com/wadejbeckett/ispconfig-sso) — a
+standalone GPLv3 ISPConfig add-on by the same author, deliberately not
+WHMCS-specific (any billing system can drive it). This module never installs it,
+never bundles it and does not require it. It only detects it.
 
-> **`ispconfig-sso`** — a standalone ISPConfig 3.x add-on by the same author,
-> GPLv3, installed on the panel and maintained as its own project. It adds one
-> remote function that mints a single-use, short-lived panel-login token and one
-> page that redeems it, and it modifies no ISPConfig core file. It is
-> deliberately **not WHMCS-specific**: any billing system can drive the same
-> remote function.
+**Set it up there, not here.** The whole procedure — a three-step path covering
+both the scripted and the by-hand route — is that project's own README:
 
-Get that project, read its README, and run its installer **on the ISPConfig
-server** (it ships its own `install.sh` / `uninstall.sh`). This module never
-installs it, never bundles it, and does not require it — it only *detects* it.
+> **[`ispconfig-sso` → *3. Install and remove*](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove)**
 
-**The panel must be served over HTTPS.** An SSO token is a password substitute
-that travels in a URL, so `ispconfig-sso` refuses to mint or redeem one on a
-plaintext request — minting answers *"Single sign-on requires an encrypted
-(https) connection to the panel."* and the redemption endpoint refuses without
-touching the token. ISPConfig's installer offers TLS by default and the stock
-panel is `https://…:8080`, so this is normally already true. If something in
-front of the panel terminates TLS, declare it on the ISPConfig server:
-`reverse_proxy_panel_allowed` in the `[permissions]` section of
-`/usr/local/ispconfig/security/security_settings.ini`, set to anything other
-than the shipped `none`. No request header (`X-Forwarded-Proto` and friends) is
-ever trusted for this.
+That page is the single source for panel-side setup, including the HTTPS
+requirement (a token is a password substitute travelling in a URL, so both
+halves refuse on a plaintext request) and what to declare when a reverse proxy
+terminates TLS for you.
 
-Then, in ISPConfig: **System > Remote Users > (your API user) > Functions**,
-tick *Panel single sign-on (one-time login token)* — the checkbox that project
-contributes — and save. This grant is **not** in the standard grant list,
-because the function does not exist on a stock panel. (The label is display-only
-and set by that project; the grant itself is the function name,
-`connect_sso_token_create`.)
+**What this module needs from you: one grant, ticked in ISPConfig.**
 
-Understand what that grant is before you tick it: a remote user holding it can
-mint a panel login for **every non-administrator account on the panel**,
-**resellers included** — a reseller's panel session administers that reseller's
-own sub-clients. ISPConfig gives resellers no distinct user type, so only
-`typ = 'admin'` is refused. See
-[`docs/REMOTE-USER.md`](REMOTE-USER.md) §2a and the security model in the
-`ispconfig-sso` project's own README.
+> **System > Remote Users > (your API user) > Functions** → tick
+> **Panel single sign-on (one-time login token)** → **Save**.
 
-Finally, in WHMCS, open **Configuration > System Settings > Servers** once. That
-page refresh is what lets the module notice the project on the panel; from the
-next page load on, WHMCS renders a **Log in to ISPConfig** action for services on
-that panel. Until then the button stays hidden — the module never shows a login
-button it cannot honour.
+That checkbox is contributed by the add-on, so it exists only on a panel that
+has it; the grant itself is the function name `connect_sso_token_create`. It is
+deliberately **not** in this module's required grant list — a stock panel has no
+such function — so a missing SSO grant is never treated as a broken connection
+by Test Connection or Verify Permissions.
+[`docs/REMOTE-USER.md`](REMOTE-USER.md) §2a records what a holder of that grant
+can do — every non-administrator account on the panel, **resellers included** —
+and is worth reading before you tick it.
 
-Notes:
+**What WHMCS then does: nothing you configure.** Detection is automatic and per
+server — one `get_function_list` call, cached in WHMCS's own server metadata.
+The cache is refreshed whenever WHMCS renders
+**Configuration > System Settings > Servers**, so **open that page once** after
+installing the add-on. From the next page load on, services on that panel carry
+the *Log in to ISPConfig* action.
+There is no SSO setting in the server form, the product options or
+anywhere else in WHMCS, by design: detection is the truth, and a manual toggle
+could only lie about what the panel actually has.
 
-- Detection is one `get_function_list` call, which needs the **Server
-  functions** grant the module already requires (see
-  [`docs/REMOTE-USER.md`](REMOTE-USER.md) §2). Without it the module cannot tell
-  the project is there and keeps the button hidden.
-- Detection cannot see the TLS gate. `get_function_list` is a core function and
-  answers over plain HTTP, so on an HTTP-only panel WHMCS will advertise the
-  button and the *click* will fail with the encrypted-connection message. Serve
-  the panel over HTTPS (or declare the reverse proxy) before enabling SSO.
-- The password-free login is per **service**. There is deliberately no
-  "log in as admin" auto-login: `ispconfig-sso` refuses to mint tokens for
-  administrator accounts, because such a token would be a full panel takeover.
-- WHMCS's server-level **Login to Control Panel** button (Configuration >
-  Servers) therefore does not sign you in automatically. It **opens this
-  panel's login page** in a new tab — the address built from the server row, or
-  the product's *Panel URL Override* where WHMCS passes one — so you sign in as
-  yourself. No administrator session is ever minted on your behalf. (Where
+Three consequences worth knowing before you go looking for them:
+
+- **Detection needs the Server functions grant** (`get_function_list`), which
+  this module already requires — see [`docs/REMOTE-USER.md`](REMOTE-USER.md) §2.
+  Without it the probe is refused and the module cannot tell either way.
+- **Detection cannot see the panel's TLS gate.** `get_function_list` is a core
+  function and answers over plain HTTP, so on an HTTP-only panel the button is
+  advertised and the *click* is what fails. Serve the panel over HTTPS (or
+  declare the reverse proxy) before enabling SSO.
+- **The login is per service.** There is deliberately no "log in as admin"
+  auto-login: `ispconfig-sso` refuses to mint tokens for administrator accounts,
+  because such a token would be a full panel takeover. WHMCS's server-level
+  **Login to Control Panel** button therefore just opens the panel's login page
+  in a new tab — the address built from the server row, or the product's *Panel
+  URL Override* where WHMCS passes one — so you sign in as yourself. (Where
   WHMCS presses that button with a service in scope, you get the real one-time
   login for that service's client instead.)
-- The token is single-use and expires in under a minute. It is masked in the
-  module log, and the redirect URL that carries it is never logged at all.
-- A suspended (locked) client cannot use SSO — the panel refuses to mint the
-  token, so a suspension cannot be walked around by clicking the login button.
-- With several ISPConfig servers, the label is advertised as soon as **any** of
-  them reports the project. On a server that does not have it, clicking the
-  button returns an error naming `ispconfig-sso` instead of a blank failure.
+
+### 6.6 Troubleshooting single sign-on
+
+Keyed to what you actually see. Each row below is identified by **the words the
+message names** rather than by its full sentence: the module's phrasing is
+version-specific, but the identifiers in it — `ispconfig-sso`,
+`connect_sso_token_create`, `get_function_list`, *Server functions* — are what
+tell the cases apart, and those do not move. Messages shown in `code` are the
+**panel's** own, and are fixed by the `ispconfig-sso` project.
+
+> **Whose screen are you reading?** A **customer** never sees any of the wording
+> below. Every single sign-on failure in the client area renders one fixed
+> sentence — *"Single sign-on is not available for this service right now…"* —
+> which names no host, no grant and no diagnosis, deliberately. The diagnostic
+> wording the tables below are keyed to is what an **admin** sees on an
+> admin-side login attempt, and what is always written to **Utilities > Logs >
+> Module Log** (filter on `ServiceSingleSignOn`). So when a
+> customer reports the generic sentence, **read the module log** — the row you
+> need is there, not on their screen.
+
+#### "The *Log in to ISPConfig* button is missing"
+
+Check the service's **Module** tab (Products/Services > the service) — its
+*ISPConfig Single Sign-On* row is the diagnostic, and it has four answers:
+
+| The row says | Cause | Fix |
+|---|---|---|
+| **available** | The add-on is installed and visible | Nothing — if the button is still absent, WHMCS has not re-read the module's metadata: open **Configuration > System Settings > Servers** once, then reload the service |
+| **not installed**, naming `ispconfig-sso` | The panel answered, and the add-on is not there. **This is the normal state of a stock panel, not a fault** | Install it (§6.5) — or leave it; nothing else is affected |
+| that it **cannot tell**, naming `get_function_list` and *Server functions* | The remote user may not run the presence probe, so presence is genuinely undeterminable — neither "yes" nor "no" | Tick **Server functions** for that remote user ([`docs/REMOTE-USER.md`](REMOTE-USER.md) §2) |
+| that the panel **could not be reached**, or nothing at all | The probes never ran: no connection, or no login | Fix the connection first — **Test Connection** on the server names the reason |
+
+The servers-page block (§6.4) has a *Single Sign-On* line too, but it is written
+from a boolean and so reads only **Available** or **Not installed**. When the
+probe was *refused*, that block shows **no *Single Sign-On* line at all**: the
+module declines to cache a "no" it was never allowed to establish, so the flag
+the block renders is simply absent. A missing line therefore means *could not
+look* — never *not installed*. **The service tab is the surface that names the
+difference in words**, so when you need it spelled out, read it there.
+
+#### "It says SSO cannot be determined"
+
+That is the *cannot tell* row above, and it has exactly one cause: the remote
+user may not call `get_function_list`, so the panel cannot be asked what
+functions it has. Detection then fails closed — the button stays hidden, and the
+servers-page block drops its *Single Sign-On* line entirely rather than publish a
+"no" it could not establish, even on a panel that does have the add-on. **Never
+read a hidden button or a missing line as "the add-on is not installed":** the
+module could not look.
+
+The grant lives in the **Server functions** checkbox (System > Remote Users >
+your API user > Functions), which this module requires anyway — so **Test
+Connection** on the server is the corroborating check. It reports that the
+remote user is missing `remote_functions` grants and names them; `server_get`
+(needed by `server_get_all`) and `get_function_list` both live in that one
+checkbox, so a report of either means the same tick fixes both. Tick it, save,
+and re-open **Configuration > System Settings > Servers**.
+
+#### "I installed the add-on but nothing changed"
+
+Expected, until WHMCS re-probes. The presence flag is cached per server and is
+only refreshed when the servers page renders:
+
+1. Open **Configuration > System Settings > Servers**. That page load is the
+   refresh.
+2. Reload the service. The button appears from the next page load on.
+
+If it still does not: on the ISPConfig side, confirm the grant checkbox is
+actually there and ticked. If the checkbox is missing from the Remote Users
+form, the add-on's module assignment was dropped — that is a known ISPConfig
+behaviour with its own fix in the
+[`ispconfig-sso` README → *Known caveat*](https://github.com/wadejbeckett/ispconfig-sso#known-caveat).
+
+#### "The button is there, but clicking it errors"
+
+The message names the cause:
+
+| The message says | Cause | Fix |
+|---|---|---|
+| the panel **does not have** `ispconfig-sso` | **A mixed fleet.** WHMCS asks the module whether it supports SSO with **no server in scope**, so the *label* is unavoidably module-global. The module's own client-area panel no longer acts on it blindly — it offers the button only for a service whose **own** server was probed as having the add-on — but any button WHMCS itself renders from that global label is outside the module's reach | Nothing is broken: such a click fails safely with the one customer sentence, and the reason lands in the module log. Install the add-on on that panel too if you want the button to work there |
+| the remote user **may not call** `connect_sso_token_create` | The add-on is installed but not granted to this server's remote user | Tick the grant — §6.5 |
+| `Single sign-on requires an encrypted (https) connection to the panel.` | The panel's own TLS gate. Detection cannot see it, so the button is advertised and the click is what fails | Serve the panel over HTTPS, or declare the reverse proxy (`reverse_proxy_panel_allowed`) — [`ispconfig-sso` README, top box](https://github.com/wadejbeckett/ispconfig-sso#-the-panel-must-be-served-over-https) |
+| `The client account is locked; single sign-on is refused.` | The service is suspended in WHMCS, so the ISPConfig client is locked | Working as intended: a suspension cannot be walked around by clicking the login button |
+| the service has **no stored `ispconfig_client_id`** | An imported or hand-made WHMCS service with no link to a panel client | Nothing to fix in SSO — the service needs provisioning (or its `ispconfig_client_id` property set) first |
+| ISPConfig has **no administrator single sign-on** | You pressed a server-level login button with no service in scope | By design; sign in at the panel URL the message quotes, or use the button on a customer's service |
+
+Everything else on that click is an ordinary connection failure and reports as
+one (lockout, IP allowlist, TLS trust, disabled remote API) — §5 and
+[`docs/REMOTE-USER.md`](REMOTE-USER.md) §5 cover those.
+
+#### "The panel refuses, but the message is not in the table above"
+
+Panel-side refusals are passed through verbatim **to an admin and to the module
+log** (a customer still gets only the one fixed sentence — see the box at the
+top of §6.6), so the wording will be one of the rows in
+[`ispconfig-sso` README §4.5, *Faults*](https://github.com/wadejbeckett/ispconfig-sso#45-faults)
+— that table is the authoritative list, with the cause of each.
+
+A note on the log while you are diagnosing: *Utilities > Logs > Module Log*
+records the SSO **outcome** only. The redirect URL carries a one-time token in
+its query string and is deliberately never logged at all, so an empty-looking
+entry is the privacy rule working, not a lost record.
 
 ## 7. Uninstalling
 

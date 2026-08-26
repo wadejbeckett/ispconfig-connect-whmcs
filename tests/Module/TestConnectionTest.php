@@ -16,17 +16,100 @@ final class TestConnectionTest extends ModuleTestCase
         $result = ispconfigconnect_TestConnection($this->params());
 
         self::assertTrue($result['success']);
-        self::assertSame('', $result['error']);
         self::assertSame(
             [
                 'login',
                 'server_get_all',
                 'client_templates_get_all',
                 'monitor_jobqueue_count',
+                // The SSO presence probe rides the SAME session as the grant
+                // probes: Test Connection is the moment an admin is looking at
+                // this server, so it is where single sign-on gets reported.
+                'get_function_list',
                 'logout',
             ],
             $this->calledMethods()
         );
+    }
+
+    /**
+     * SSO IS OPTIONAL. A stock ISPConfig has no ispconfig-sso add-on, which is
+     * what almost every panel is, and that must read as a fact about the panel -
+     * not as a failed connection test.
+     */
+    public function testAStockPanelReportsSingleSignOnWithoutFailingTheTest(): void
+    {
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertTrue($result['success'], 'an absent optional add-on is not a connection failure');
+        self::assertStringContainsString('Single sign-on', $result['error']);
+        self::assertStringContainsString('ispconfig-sso', $result['error']);
+        self::assertStringContainsString('not installed', strtolower($result['error']));
+    }
+
+    public function testAnInstalledAddOnIsReportedAsAvailable(): void
+    {
+        $this->fake->installCompanion();
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertTrue($result['success']);
+        self::assertStringContainsString('Available', $result['error']);
+        // Presence is not permission: the panel never reports grants, so the
+        // one thing detection cannot see has to be named here.
+        self::assertStringContainsString('connect_sso_token_create', $result['error']);
+    }
+
+    /**
+     * The probe itself is grant-checked. Being refused means "we were not
+     * allowed to look", which is a DIFFERENT fix from "the add-on is not there"
+     * - and get_function_list is a grant this module requires anyway, so the
+     * test must name it rather than shrug.
+     */
+    public function testARefusedProbeIsReportedAsUndeterminableAndNamesTheGrant(): void
+    {
+        $this->fake->setGrants(['server_get', 'client_templates_get_all', 'monitor_jobqueue_count']);
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertTrue($result['success'], 'a missing SSO probe grant is not a connection failure');
+        self::assertStringContainsString('get_function_list', $result['error']);
+        self::assertStringNotContainsString('is not installed', $result['error']);
+    }
+
+    /**
+     * When grants ARE missing the existing advice must survive intact - the SSO
+     * line is only allowed to add the one finding that is genuinely actionable
+     * (the probe grant), never to bury the grant list.
+     */
+    public function testTheSsoLineNeverDisplacesTheMissingGrantAdvice(): void
+    {
+        $this->fake->setGrants(['client_templates_get_all']);
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertFalse($result['success']);
+        self::assertStringContainsString('server_get', $result['error']);
+        self::assertStringContainsString('monitor_jobqueue_count', $result['error']);
+        self::assertStringContainsString('docs/REMOTE-USER.md', $result['error']);
+        // get_function_list is missing here too, and it is what the SSO probe
+        // needs - so it is named as its own finding.
+        self::assertStringContainsString('get_function_list', $result['error']);
+    }
+
+    /**
+     * A panel that never answered cannot be reported as "no SSO here": the
+     * failure advice is the whole answer.
+     */
+    public function testAnUnreachablePanelReportsNothingAboutSingleSignOn(): void
+    {
+        $this->fake->apiEnabled = false;
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertFalse($result['success']);
+        self::assertStringNotContainsString('ispconfig-sso', $result['error']);
+        self::assertStringNotContainsString('Single sign-on', $result['error']);
     }
 
     public function testBadPasswordExplainsWhichCredentialsToCheck(): void

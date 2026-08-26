@@ -40,7 +40,16 @@ use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
  *   ispconfig_status    -> machine-readable ok/degraded/unavailable summary for
  *                          anything that reads the cached row
  *   sso_available       -> added by the entry file, not here; MetaData() reads
- *                          it to decide whether to offer the SSO button
+ *                          it to decide whether to offer the SSO button, and the
+ *                          servers-page block renders it. Written ONLY when the
+ *                          presence probe established the answer - a refused
+ *                          probe leaves the key out rather than caching a false
+ *                          negative
+ *   sso_state           -> also the entry file: the same fact as three values
+ *                          (installed / absent / unknown) instead of a boolean,
+ *                          so a reader can tell "the panel says no" from "we
+ *                          were not allowed to ask". It is what the client area
+ *                          consults per server before offering a login button
  *
  * `website_count` USED TO BE HERE and was removed deliberately - see "Why
  * there is no website count" below. Nothing else reads it: the operator-facing

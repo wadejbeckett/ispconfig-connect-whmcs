@@ -53,6 +53,29 @@
     </div>
 </div>
 
+{* Single sign-on is OPTIONAL and PER SERVER: it needs the separate ispconfig-sso
+   project on the panel this service is hosted on. WHMCS decides the module-wide
+   SSO label with no server in scope, so on a fleet where only some panels carry
+   that project the label alone would offer a login button that can only fail.
+   This gate is the per-service half of the answer - ispconfigconnect_ClientArea()
+   sets $ssoAvailable from THIS service's own server - and where it is false the
+   customer simply sees the panel address and login name above, with no broken
+   button. The link is WHMCS's own documented single sign-on entry point
+   (developers.whmcs.com/provisioning-modules/single-sign-on/), so no panel URL
+   or token is ever assembled here.
+   $WEB_ROOT is the client area's own variable, not one this module passes: this
+   template is rendered inside the product details page and shares its scope,
+   which is the same reason $LANG, $product and $status resolve above. *}
+{if $ssoAvailable}
+    <div class="row">
+        <div class="col-sm-5">One-click login</div>
+        <div class="col-sm-7">
+            <a href="{$WEB_ROOT|escape}/clientarea.php?action=productdetails&amp;id={$ssoServiceId|escape:'url'}&amp;dosinglesignon=1"
+               class="btn btn-default btn-sm">{$ssoLabel|escape}</a>
+        </div>
+    </div>
+{/if}
+
 <p class="text-muted">
     Changes made here or in the control panel are applied by the hosting
     server within about a minute of being accepted.

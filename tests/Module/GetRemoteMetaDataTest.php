@@ -70,9 +70,33 @@ final class GetRemoteMetaDataTest extends ModuleTestCase
         self::assertSame(RemoteMetaData::STATUS_OK, $stock['ispconfig_status'], 'absence is not a fault');
         self::assertArrayNotHasKey('ispconfig_error', $stock);
 
+        self::assertSame('absent', $stock['sso_state']);
+
         $this->fake->installCompanion();
 
-        self::assertTrue(ispconfigconnect_GetRemoteMetaData($this->params())['sso_available']);
+        $withAddOn = ispconfigconnect_GetRemoteMetaData($this->params());
+        self::assertTrue($withAddOn['sso_available']);
+        self::assertSame('installed', $withAddOn['sso_state']);
+    }
+
+    /**
+     * The probe is itself grant-checked, and being refused means the answer is
+     * genuinely UNKNOWN. Caching that as `sso_available: false` would publish
+     * "this panel has no single sign-on" to every reader of the row - the
+     * servers page included - on the strength of a permission we were denied.
+     * So the boolean is withheld and the state says why.
+     */
+    public function testARefusedProbeCachesNoAnswerRatherThanAFalseOne(): void
+    {
+        // Everything the metadata probes need, and nothing else: only the SSO
+        // presence probe is refused.
+        $this->fake->setGrants(['server_get', 'client_get_all', 'monitor_jobqueue_count']);
+
+        $meta = ispconfigconnect_GetRemoteMetaData($this->params());
+
+        self::assertArrayNotHasKey('sso_available', $meta);
+        self::assertSame('unknown', $meta['sso_state']);
+        self::assertArrayNotHasKey('ispconfig_error', $meta, 'a refused SSO probe is not a probe failure');
     }
 
     public function testADegradedProbeStillReturnsTheKeysThatAnswered(): void

@@ -296,8 +296,24 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
             // rather than the wrong thing. is_scalar() rather than `!== null` so
             // a malformed meta_data (an array where a flag belongs) is treated
             // as the non-answer it is instead of being read as a definite "no".
+            // Three states, because "not installed" and "we were not allowed
+            // to look" need different actions from the admin. GetRemoteMetaData
+            // caches sso_state for exactly this; sso_available is the older
+            // boolean and is absent when the probe was refused, so it is only
+            // the fallback for a row cached before sso_state existed.
+            $ssoState = $values['sso_state'] ?? null;
             $sso = $values['sso_available'] ?? null;
-            if (is_scalar($sso)) {
+            if (is_scalar($ssoState) && (string) $ssoState !== '') {
+                $label = match ((string) $ssoState) {
+                    'installed' => 'Available',
+                    'absent' => 'Not installed',
+                    'unknown' => 'Cannot tell - grant get_function_list to this server\'s remote user',
+                    default => '',
+                };
+                if ($label !== '') {
+                    $lines[] = ['label' => 'Single Sign-On', 'value' => $label];
+                }
+            } elseif (is_scalar($sso)) {
                 $lines[] = [
                     'label' => 'Single Sign-On',
                     'value' => ispconfigconnect_metaPanelIsTruthy($sso) ? 'Available' : 'Not installed',

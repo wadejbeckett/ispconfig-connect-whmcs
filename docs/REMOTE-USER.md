@@ -112,39 +112,36 @@ included — goes through `checkPerm()` and needs its grant
 ### 2a. Optional — the single sign-on grant
 
 One further grant exists, and it is **not part of the list above** because it does not exist on a
-stock ISPConfig. It is registered only where the panel has the separate **`ispconfig-sso`** project
-installed — a standalone GPLv3 ISPConfig add-on by the same author, which this module does not ship
-and does not require (any billing system can use it). That project is what gives the client area and
-the admin service tab a working *Log in to panel* button. **Skip this whole section unless you have
-installed it on the panel** — a stock panel needs no grant here, and the module will simply keep the
-button hidden.
+stock ISPConfig. It is registered only where the panel has the separate
+[**`ispconfig-sso`**](https://github.com/wadejbeckett/ispconfig-sso) project installed — a standalone
+GPLv3 ISPConfig add-on by the same author, which this module does not ship and does not require (any
+billing system can use it). That project is what gives the client area and the admin service tab a
+working *Log in to ISPConfig* button. **Skip this whole section unless you have installed it on the
+panel** — a stock panel needs no grant here, and the module will simply keep the button hidden.
 
-| Checkbox | Function | Why |
-|---|---|---|
-| **Panel single sign-on (one-time login token)** | `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
+| Function | Why |
+|---|---|
+| `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
 
-This is its own checkbox — the project ships its own `lib/remote.conf.php`, so it appears as a
-single entry granting exactly that one function. It is the list from
-`Permissions::optionalGrants()`; `Permissions::requiredGrants()` deliberately excludes it, and
-neither Test Connection nor Verify Permissions reports it as missing.
+The project ships its own `lib/remote.conf.php`, so the grant appears as a checkbox of its own on the
+Remote Users form. [`INSTALL.md` §6.5](INSTALL.md) names that checkbox and where to tick it; the
+project's own README is the setup path and the source for everything panel-side (installation, the
+HTTPS requirement, and what to do when the checkbox is missing from the form):
+[**`ispconfig-sso` → *3. Install and remove***](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove).
+
+On this side, the grant is the list from `Permissions::optionalGrants()`;
+`Permissions::requiredGrants()` deliberately excludes it, so a missing SSO grant is never treated
+as a broken connection by Test Connection or Verify Permissions.
 
 Notes:
 
-- If the checkbox is not on the form, the project's installer could not add `connectsso` to your
-  admin account's module list. Re-run its `install.sh` on the ISPConfig server, then log out and
-  back in — the Functions list is built from the modules of the admin who is logged in.
-- Without this grant, the module still *detects* the project and reports an actionable error naming
-  the grant when SSO is attempted. Detection is one `get_function_list` call, which returns the
-  panel's whole registered method list rather than the caller's own grants — so it distinguishes
-  "the panel does not have the SSO project" from "installed but not granted". It is **not** an
-  ungated call: it needs the **Server functions** grant the module already requires (see the note
-  under the grant list above). Without *that*, detection fails closed and the module treats SSO as
-  unavailable.
-- **The panel must be served over HTTPS.** `ispconfig-sso` refuses to mint or redeem a token on a
-  plaintext request — a token is a password substitute travelling in a URL. Behind a
-  TLS-terminating reverse proxy, declare it: `reverse_proxy_panel_allowed` in the `[permissions]`
-  section of `/usr/local/ispconfig/security/security_settings.ini`, set to anything other than the
-  shipped `none`.
+- **Detection is separate from the grant.** Without it, the module still *detects* the project and
+  reports an actionable error naming the grant when SSO is attempted. Detection is one
+  `get_function_list` call, which returns the panel's whole registered method list rather than the
+  caller's own grants — so it distinguishes "the panel does not have the SSO project" from
+  "installed but not granted". It is **not** an ungated call: it needs the **Server functions**
+  grant the module already requires (see the note under the grant list above). Without *that*,
+  detection fails closed and the module treats SSO as unavailable.
 - **Know the blast radius before you tick this box.** A remote user holding this grant can mint a
   panel login for **every non-administrator account on the panel** — and that includes
   **resellers**, whose panel session administers their own sub-clients. ISPConfig gives a reseller

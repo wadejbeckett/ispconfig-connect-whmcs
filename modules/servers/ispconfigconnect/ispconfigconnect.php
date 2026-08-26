@@ -33,6 +33,7 @@ use WHMCS\Module\Server\Ispconfigconnect\Server\RemoteMetaData;
 use WHMCS\Module\Server\Ispconfigconnect\Sso\CompanionClient;
 use WHMCS\Module\Server\Ispconfigconnect\Sso\Exception\CompanionGrantMissingException;
 use WHMCS\Module\Server\Ispconfigconnect\Sso\Exception\CompanionNotInstalledException;
+use WHMCS\Module\Server\Ispconfigconnect\Sso\SsoAdvice;
 use WHMCS\Module\Server\Ispconfigconnect\Support\Factory;
 use WHMCS\Module\Server\Ispconfigconnect\Support\Params;
 use WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties;
@@ -72,6 +73,17 @@ if (!defined('WHMCS')) {
  * button that can only fail. MetaData() gets no $params and must not make API
  * calls, so the answer comes from the presence probe that GetRemoteMetaData
  * already cached in tblservers_remote.
+ *
+ * THIS LABEL IS FLEET-WIDE AND CANNOT BE MADE PER-SERVER: WHMCS asks whether the
+ * MODULE supports single sign-on, with no server in scope, so the answer here is
+ * "at least one ISPConfig server has the add-on". On a mixed fleet that is not a
+ * per-customer answer, and the per-customer answer is given where server context
+ * exists instead: ispconfigconnect_ClientArea() renders the login button only
+ * for services whose OWN panel reported the add-on, and
+ * ispconfigconnect_ServiceSingleSignOn() answers anyone who reaches the SSO path
+ * anyway with a customer-safe sentence. Both halves are needed - remove this
+ * label and WHMCS no longer advertises the capability at all; remove the gate
+ * and customers on a panel without the add-on get a button that can only fail.
  *
  * AdminSingleSignOnLabel is deliberately never advertised: that button is
  * SERVER-level ("Login to Panel as Admin"), and the SSO project refuses to mint
@@ -272,6 +284,24 @@ function ispconfigconnect_WebServerLoader(array $params): array
 }
 
 /**
+ * Test Connection: login, the read-grant probes, and the single sign-on state.
+ *
+ * WHY SSO IS REPORTED HERE. Pressing this button is the one moment an admin is
+ * looking at ONE server and asking what it can do, which makes it the right
+ * place to answer the question the module is otherwise silent about. The answer
+ * costs one already-granted call on the session the grant probes just opened.
+ *
+ * SSO IS OPTIONAL, so its absence never fails the test and never reads as an
+ * error: on success it is an informational line, and on failure the existing
+ * actionable advice is left intact - only the one genuinely actionable SSO
+ * finding (the probe grant is missing, which is a grant this module requires
+ * anyway) is appended to it.
+ *
+ * The same line also goes to the module log, because how WHMCS renders the
+ * message of a SUCCESSFUL test is core's business and not verifiable from here;
+ * an admin who sees nothing in the UI can still read it in Configuration >
+ * System Logs > Module Log.
+ *
  * @param array<string, mixed> $params
  * @return array{success: bool, error: string}
  */
@@ -281,22 +311,38 @@ function ispconfigconnect_TestConnection(array $params): array
         $session = Factory::sessionManager($params);
         try {
             $missingGrants = ispconfigconnect_missingGrants($session);
+            $ssoState = ispconfigconnect_ssoState($params, $session);
         } finally {
             $session->close();
         }
 
         if ($missingGrants !== []) {
-            return [
-                'success' => false,
-                'error' => 'Connected and logged in, but the remote user is missing remote_functions grants: '
-                    . implode(', ', $missingGrants)
-                    . '. Enable them on the remote user under System > Remote Users in ISPConfig'
-                    . ' (docs/REMOTE-USER.md documents the full grant list).',
-            ];
+            $error = 'Connected and logged in, but the remote user is missing remote_functions grants: '
+                . implode(', ', $missingGrants)
+                . '. Enable them on the remote user under System > Remote Users in ISPConfig'
+                . ' (docs/REMOTE-USER.md documents the full grant list).';
+
+            // Only the state that IS a missing grant is added here; "the panel
+            // has no SSO add-on" is not a permission problem and would only
+            // bury the list above.
+            if ($ssoState === SsoAdvice::STATE_PROBE_DENIED) {
+                $error .= ' Single sign-on: ' . SsoAdvice::admin($ssoState);
+            }
+
+            ispconfigconnect_logTestConnection($params, false, $ssoState);
+
+            return ['success' => false, 'error' => $error];
         }
 
-        return ['success' => true, 'error' => ''];
+        ispconfigconnect_logTestConnection($params, true, $ssoState);
+
+        return [
+            'success' => true,
+            'error' => 'Connected. Single sign-on: ' . SsoAdvice::admin($ssoState),
+        ];
     } catch (\Throwable $failure) {
+        // The panel never answered: nothing is known about single sign-on, and
+        // saying anything about it would only compete with the real reason.
         return ['success' => false, 'error' => ispconfigconnect_connectionAdvice($failure)];
     }
 }
@@ -664,7 +710,21 @@ function ispconfigconnect_AdminCustomButtonArray(): array
 
 /**
  * Admin custom button: run the read probes and report which remote_functions
- * grants the remote user is missing (spec 2.8).
+ * grants the remote user is missing (spec 2.8), single sign-on included.
+ *
+ * WHAT MAY BE RETURNED HERE, AND WHY IT IS NOT EVERYTHING. WHMCS renders any
+ * return other than the literal 'success' as a Module Command Error to staff
+ * (developers.whmcs.com/provisioning-modules/custom-functions/: "the return
+ * should be a user understandable error message, as it will display to staff
+ * users"). There is no neutral channel. So this button reports FINDINGS - the
+ * things an operator must act on - and an optional add-on that is simply not
+ * installed is not one: dressing it as a Module Command Error would make a
+ * correct setup look broken. A REFUSED SSO PROBE is a finding, because
+ * get_function_list is a grant this module requires and without it the panel
+ * cannot be asked at all.
+ *
+ * The full SSO state, findings or not, still reaches the module log, and the
+ * admin service tab renders it on every service.
  *
  * @param array<string, mixed> $params
  * @return string 'success' or error string
@@ -675,48 +735,102 @@ function ispconfigconnect_VerifyPermissions(array $params): string
         $session = Factory::sessionManager($params);
         try {
             $missingGrants = ispconfigconnect_missingGrants($session);
+            $ssoState = ispconfigconnect_ssoState($params, $session);
         } finally {
             $session->close();
         }
 
+        $findings = [];
         if ($missingGrants !== []) {
-            return 'The remote user is missing remote_functions grants: '
+            $findings[] = 'The remote user is missing remote_functions grants: '
                 . implode(', ', $missingGrants)
                 . '. Enable them under System > Remote Users in ISPConfig;'
                 . ' docs/REMOTE-USER.md documents the full grant list.';
         }
+        if ($ssoState === SsoAdvice::STATE_PROBE_DENIED) {
+            $findings[] = 'Single sign-on: ' . SsoAdvice::admin($ssoState);
+        }
 
-        return 'success';
+        ispconfigconnect_logModuleCall(
+            'VerifyPermissions',
+            ['serverid' => $params['serverid'] ?? null],
+            [
+                'missing_grants' => $missingGrants,
+                'sso_state' => $ssoState,
+                'sso' => SsoAdvice::admin($ssoState),
+            ]
+        );
+
+        return $findings === [] ? 'success' : implode(' ', $findings);
     } catch (\Throwable $failure) {
         return ispconfigconnect_errorString('Verify Permissions', $failure);
     }
 }
 
 /**
- * Client-area overview: panel link + ISPConfig username. Read-only - no API
- * calls, and NEVER a password or any other credential in the template
- * variables (design §3.6.3).
+ * Client-area overview: panel link + ISPConfig username, and the single sign-on
+ * button for the services that can actually use one. Read-only - no API calls,
+ * and NEVER a password or any other credential in the template variables
+ * (design §3.6.3).
+ *
+ * ## Why the SSO button is decided HERE and not in MetaData()
+ *
+ * WHMCS asks MetaData() whether the MODULE supports single sign-on with no
+ * server in scope at all, so ServiceSingleSignOnLabel is one answer for the
+ * whole fleet. On a mixed fleet - some panels carrying the optional ispconfig-sso
+ * project, some not - that answer is wrong for somebody no matter which way it
+ * goes, and a customer whose panel lacks the add-on would be shown a login
+ * button that can only fail.
+ *
+ * This function is the opposite: it runs per SERVICE, and a service has exactly
+ * one server. So the button lives in the module's own client area output - one
+ * of the two placements WHMCS documents for it
+ * (developers.whmcs.com/provisioning-modules/single-sign-on/) - and is offered
+ * only when this service's OWN panel reported the add-on and the service is
+ * actually linked to an ISPConfig client. Everyone else sees exactly what they
+ * saw before: the panel address and their login name, with no broken
+ * affordance.
+ *
+ * The answer comes from the per-server metadata GetRemoteMetaData already
+ * cached; nothing here touches the panel while a customer's page renders.
  *
  * @param array<string, mixed> $params
+ * @param null|callable(int): ?array<string, mixed> $ssoStateReader test seam for
+ *        the per-server tblservers_remote lookup; WHMCS passes $params alone
  * @return array<string, mixed>
  */
-function ispconfigconnect_ClientArea(array $params): array
+function ispconfigconnect_ClientArea(array $params, ?callable $ssoStateReader = null): array
 {
     $username = (string) ($params['username'] ?? '');
+    $clientId = null;
     try {
-        $storedUsername = ispconfigconnect_serviceProperties($params)->clientUsername();
+        $properties = ispconfigconnect_serviceProperties($params);
+        $storedUsername = $properties->clientUsername();
         if ($storedUsername !== null) {
             $username = $storedUsername;
         }
+        $clientId = $properties->clientId();
     } catch (\Throwable) {
-        // No service model in scope: fall back to the WHMCS service username.
+        // No service model in scope: fall back to the WHMCS service username,
+        // and offer no login button (there is no client id to log in as).
     }
+
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    $ssoAvailable = $clientId !== null
+        && $serviceId > 0
+        && ispconfigconnect_serverSsoState($params, $ssoStateReader) === CompanionClient::STATUS_INSTALLED;
 
     return [
         'tabOverviewReplacementTemplate' => 'templates/overview.tpl',
         'templateVariables' => [
             'panelUrl' => ispconfigconnect_panelUrl($params),
             'ispconfigUsername' => $username,
+            // The template builds WHMCS's own SSO URL from this
+            // (clientarea.php?action=productdetails&id=N&dosinglesignon=1), so
+            // no panel address is ever assembled for the button.
+            'ssoAvailable' => $ssoAvailable,
+            'ssoServiceId' => $serviceId,
+            'ssoLabel' => 'Log in to ISPConfig',
         ],
     ];
 }
@@ -1035,15 +1149,28 @@ function ispconfigconnect_GetRemoteMetaData(array $params): array
         try {
             $meta = (new RemoteMetaData($session))->gather();
 
-            // The SSO presence probe is cached HERE because MetaData(), which
-            // decides whether the SSO button is offered at all, gets no server
-            // parameters and must not make API calls. One get_function_list
-            // call, already granted. False - "the panel does not have the
-            // ispconfig-sso project" - is the normal answer, not a fault.
+            // The SSO presence probe is cached HERE because the surfaces that
+            // decide whether a login button is offered - MetaData(), which gets
+            // no server parameters at all, and the client area, which renders
+            // while a customer waits - must not make API calls. One
+            // get_function_list call, already granted. "The panel does not have
+            // the ispconfig-sso project" is the normal answer, not a fault.
+            //
+            // TWO KEYS, on purpose. `sso_available` is the boolean every
+            // existing reader knows, and it is written ONLY when the probe
+            // actually established the answer: a refused probe means "we were
+            // not allowed to look", and caching that as false would publish
+            // "this panel has no single sign-on" to every reader of this row on
+            // the strength of a permission we were denied. `sso_state` carries
+            // the three-way truth for readers that can use it.
             try {
-                $meta['sso_available'] = ispconfigconnect_companionClient($params, $session)->isInstalled();
+                $state = ispconfigconnect_companionClient($params, $session)->status();
+                $meta['sso_state'] = $state;
+                if ($state !== CompanionClient::STATUS_UNKNOWN) {
+                    $meta['sso_available'] = $state === CompanionClient::STATUS_INSTALLED;
+                }
             } catch (\Throwable) {
-                // Unknown beats a false negative: leave the key out so the
+                // Unknown beats a false negative: leave both keys out so the
                 // previous answer is not contradicted by a transient failure.
             }
 
@@ -1066,12 +1193,19 @@ function ispconfigconnect_GetRemoteMetaData(array $params): array
  * Single sign-on for one service - the customer's "Log in to ISPConfig"
  * button (developers.whmcs.com/provisioning-modules/single-sign-on/).
  *
+ * EVERYTHING THIS RETURNS IS READ BY A CUSTOMER, so its errorMsg is the one
+ * customer sentence and nothing else: no hostname, no grant name, no service
+ * property, no panel diagnosis. The operator-grade reason is written to the
+ * module log by ispconfigconnect_singleSignOn().
+ *
  * @param array<string, mixed> $params
+ * @param null|callable(int): ?array<string, mixed> $ssoStateReader test seam for
+ *        the per-server tblservers_remote lookup; WHMCS passes $params alone
  * @return array{success: bool, redirectTo?: string, errorMsg?: string}
  */
-function ispconfigconnect_ServiceSingleSignOn(array $params): array
+function ispconfigconnect_ServiceSingleSignOn(array $params, ?callable $ssoStateReader = null): array
 {
-    return ispconfigconnect_singleSignOn($params, 'ServiceSingleSignOn');
+    return ispconfigconnect_singleSignOn($params, 'ServiceSingleSignOn', $ssoStateReader);
 }
 
 /**
@@ -1437,13 +1571,32 @@ function ispconfigconnect_generateUsername(array $params): string
 /**
  * Shared body of both single sign-on entry points.
  *
+ * ## Two audiences, one code path
+ *
+ * ServiceSingleSignOn is a CUSTOMER surface: whatever it returns is rendered in
+ * the client area. AdminSingleSignOn is not. The failure text is therefore
+ * chosen by audience - customers get the single sentence from Sso\SsoAdvice,
+ * operators get the diagnosis - and the diagnosis is ALWAYS written to the
+ * module log regardless, so nothing is lost by protecting the customer from it.
+ * The states are kept apart in that log too: "the add-on is not on this panel"
+ * and "the add-on is there but its grant was withheld" send an operator to
+ * completely different places, and only a real mint attempt can tell them apart
+ * (the panel cannot be asked about grants - see Sso\SsoAdvice).
+ *
  * @param array<string, mixed> $params
+ * @param null|callable(int): ?array<string, mixed> $ssoStateReader test seam for
+ *        the per-server tblservers_remote lookup
  * @return array{success: bool, redirectTo?: string, errorMsg?: string}
  */
-function ispconfigconnect_singleSignOn(array $params, string $context): array
-{
+function ispconfigconnect_singleSignOn(
+    array $params,
+    string $context,
+    ?callable $ssoStateReader = null
+): array {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $serviceInScope = $serviceId > 0 || isset($params['model']);
+    // Only the service-level entry point renders into the client area.
+    $customerFacing = $context === 'ServiceSingleSignOn';
 
     $clientId = null;
     try {
@@ -1453,7 +1606,7 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
     }
 
     if ($clientId === null) {
-        $result = ['success' => false, 'errorMsg' => $serviceInScope
+        $detail = $serviceInScope
             ? 'Single sign-on is not available for this service: it has no stored'
                 . ' ispconfig_client_id service property, so it was not provisioned by'
                 . ' ISPConfig Connect.'
@@ -1463,14 +1616,32 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
                 . ' accounts because such a token would be a full panel takeover. Sign in at %s'
                 . ' instead, or use the per-service login button on a client\'s service.',
                 ispconfigconnect_panelUrl($params)
-            )];
+            );
 
-        ispconfigconnect_logModuleCall($context, ['serviceid' => $serviceId], $result);
-
-        return $result;
+        return ispconfigconnect_ssoFailure($context, $serviceId, null, null, $detail, $customerFacing);
     }
 
-    $result = ['success' => false];
+    // MIXED FLEET, the customer path. The button is only rendered for services
+    // whose own panel reported the add-on, so a click from a service on a panel
+    // cached as ABSENT can only come from a stale link or a hand-typed URL -
+    // and the panel cannot answer any differently. Refuse from the cache rather
+    // than open a session to be told the same thing. Only a DEFINITE "absent"
+    // short-circuits: a server nobody has probed yet is still asked, so a cold
+    // cache can never withhold a login the panel would grant.
+    if (
+        $customerFacing
+        && ispconfigconnect_serverSsoState($params, $ssoStateReader) === CompanionClient::STATUS_ABSENT
+    ) {
+        return ispconfigconnect_ssoFailure(
+            $context,
+            $serviceId,
+            $clientId,
+            SsoAdvice::STATE_ABSENT,
+            SsoAdvice::admin(SsoAdvice::STATE_ABSENT),
+            true
+        );
+    }
+
     try {
         $session = Factory::sessionManager($params);
         try {
@@ -1486,17 +1657,34 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
             $session->close();
         }
     } catch (CompanionNotInstalledException) {
-        $result['errorMsg'] = 'Single sign-on needs the separate ISPConfig SSO project'
-            . ' (ispconfig-sso), an optional GPLv3 panel add-on this module does not ship, and this'
-            . ' panel does not have it: ISPConfig core provides no one-time-login API. Install the'
-            . ' project on the ISPConfig server and grant the remote user its'
-            . ' connect_sso_token_create function.';
-    } catch (CompanionGrantMissingException $denied) {
-        $result['errorMsg'] = $denied->getMessage()
-            . ' That function is provided by the ispconfig-sso project installed on this panel, so it'
-            . ' appears as its own checkbox in that list.';
+        return ispconfigconnect_ssoFailure(
+            $context,
+            $serviceId,
+            $clientId,
+            SsoAdvice::STATE_ABSENT,
+            SsoAdvice::admin(SsoAdvice::STATE_ABSENT),
+            $customerFacing
+        );
+    } catch (CompanionGrantMissingException) {
+        // The add-on IS on this panel; only the checkbox is missing. Its own
+        // state, never folded into "not installed".
+        return ispconfigconnect_ssoFailure(
+            $context,
+            $serviceId,
+            $clientId,
+            SsoAdvice::STATE_NOT_GRANTED,
+            SsoAdvice::admin(SsoAdvice::STATE_NOT_GRANTED),
+            $customerFacing
+        );
     } catch (\Throwable $failure) {
-        $result['errorMsg'] = ispconfigconnect_connectionAdvice($failure);
+        return ispconfigconnect_ssoFailure(
+            $context,
+            $serviceId,
+            $clientId,
+            null,
+            ispconfigconnect_connectionAdvice($failure),
+            $customerFacing
+        );
     }
 
     // The redirect URL carries the one-time token in its query string, so only
@@ -1504,11 +1692,36 @@ function ispconfigconnect_singleSignOn(array $params, string $context): array
     ispconfigconnect_logModuleCall(
         $context,
         ['serviceid' => $serviceId, 'ispconfig_client_id' => $clientId],
-        ['success' => $result['success']]
-            + (isset($result['errorMsg']) ? ['errorMsg' => $result['errorMsg']] : [])
+        ['success' => true]
     );
 
     return $result;
+}
+
+/**
+ * One refused single sign-on: log the operator's version, return the audience's.
+ *
+ * @param string|null $state an Sso\SsoAdvice::STATE_* value where one applies
+ * @param string $detail the operator-grade reason, always logged
+ * @return array{success: false, errorMsg: string}
+ */
+function ispconfigconnect_ssoFailure(
+    string $context,
+    int $serviceId,
+    ?int $clientId,
+    ?string $state,
+    string $detail,
+    bool $customerFacing
+): array {
+    $errorMsg = $customerFacing ? SsoAdvice::customer() : $detail;
+
+    ispconfigconnect_logModuleCall(
+        $context,
+        ['serviceid' => $serviceId, 'ispconfig_client_id' => $clientId],
+        ['success' => false, 'sso_state' => $state ?? 'error', 'detail' => $detail, 'errorMsg' => $errorMsg]
+    );
+
+    return ['success' => false, 'errorMsg' => $errorMsg];
 }
 
 /**
@@ -1549,11 +1762,7 @@ function ispconfigconnect_ssoAvailable(?callable $reader = null): bool
     try {
         $rows = $reader === null ? ispconfigconnect_cachedServerMetaData() : $reader();
         foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $flag = $row['sso_available'] ?? null;
-            if ($flag === true || $flag === 1 || $flag === '1') {
+            if (is_array($row) && ispconfigconnect_ssoStateOfRow($row) === CompanionClient::STATUS_INSTALLED) {
                 $available = true;
                 break;
             }
@@ -1568,6 +1777,150 @@ function ispconfigconnect_ssoAvailable(?callable $reader = null): bool
     }
 
     return $available;
+}
+
+/**
+ * What ONE server's cached metadata says about single sign-on.
+ *
+ * This is the per-service answer MetaData() cannot give: the client area and
+ * the customer-facing SSO path both know which server the service sits on, and
+ * this is what turns that into "offer the button" or "do not". It reads the row
+ * GetRemoteMetaData already filled and makes NO API call - it runs while a
+ * customer's page is being rendered.
+ *
+ * Returns a CompanionClient::STATUS_* value; STATUS_UNKNOWN means the cache
+ * cannot say (never probed, no row, unreadable, or the probe was refused), and
+ * unknown must neither render a button nor withhold a login.
+ *
+ * @param array<string, mixed> $params
+ * @param null|callable(int): ?array<string, mixed> $reader test seam
+ */
+function ispconfigconnect_serverSsoState(array $params, ?callable $reader = null): string
+{
+    $serverId = (int) ($params['serverid'] ?? 0);
+
+    try {
+        $values = $reader === null
+            ? ispconfigconnect_cachedServerMetaDataFor($serverId)
+            : $reader($serverId);
+    } catch (\Throwable) {
+        return CompanionClient::STATUS_UNKNOWN;
+    }
+
+    return is_array($values)
+        ? ispconfigconnect_ssoStateOfRow($values)
+        : CompanionClient::STATUS_UNKNOWN;
+}
+
+/**
+ * One decoded meta_data row read as an SSO state.
+ *
+ * `sso_state` is preferred because it distinguishes "the panel says no" from
+ * "we were not allowed to ask"; `sso_available` is the older boolean and is
+ * still understood, because rows written before this key existed are live in
+ * tblservers_remote right now. JSON and the database each have their own idea
+ * of true and false, hence the string forms.
+ *
+ * @param array<string, mixed> $values
+ */
+function ispconfigconnect_ssoStateOfRow(array $values): string
+{
+    $state = $values['sso_state'] ?? null;
+    if (
+        is_string($state)
+        && in_array($state, [
+            CompanionClient::STATUS_INSTALLED,
+            CompanionClient::STATUS_ABSENT,
+            CompanionClient::STATUS_UNKNOWN,
+        ], true)
+    ) {
+        return $state;
+    }
+
+    $flag = $values['sso_available'] ?? null;
+    if ($flag === true || $flag === 1 || $flag === '1') {
+        return CompanionClient::STATUS_INSTALLED;
+    }
+    if ($flag === false || $flag === 0 || $flag === '0') {
+        return CompanionClient::STATUS_ABSENT;
+    }
+
+    return CompanionClient::STATUS_UNKNOWN;
+}
+
+/**
+ * The decoded tblservers_remote.meta_data of ONE server, or null when there is
+ * nothing readable there (no row yet, a schema difference, corrupt JSON).
+ *
+ * @return array<string, mixed>|null
+ */
+function ispconfigconnect_cachedServerMetaDataFor(int $serverId): ?array
+{
+    if ($serverId <= 0 || !class_exists('\\WHMCS\\Database\\Capsule')) {
+        return null;
+    }
+
+    try {
+        $json = \WHMCS\Database\Capsule::table('tblservers_remote')
+            ->where('server_id', $serverId)
+            ->value('meta_data');
+
+        if (!is_string($json) || $json === '') {
+            return null;
+        }
+
+        $values = json_decode($json, true);
+        if (!is_array($values) || array_is_list($values)) {
+            return null;
+        }
+
+        /** @var array<string, mixed> $values */
+        return $values;
+    } catch (\Throwable) {
+        // A WHMCS schema difference costs the button, not the page.
+        return null;
+    }
+}
+
+/**
+ * The live single sign-on state of the panel this session is logged in to, as
+ * an Sso\SsoAdvice::STATE_* value.
+ *
+ * One already-granted call (get_function_list). It can only ever report what a
+ * PRESENCE probe can see - "installed but the grant was withheld" is invisible
+ * here and is discovered by an actual login attempt (see Sso\SsoAdvice).
+ *
+ * @param array<string, mixed> $params
+ */
+function ispconfigconnect_ssoState(array $params, SessionManager $session): string
+{
+    try {
+        return match (ispconfigconnect_companionClient($params, $session)->status()) {
+            CompanionClient::STATUS_INSTALLED => SsoAdvice::STATE_INSTALLED,
+            CompanionClient::STATUS_ABSENT => SsoAdvice::STATE_ABSENT,
+            default => SsoAdvice::STATE_PROBE_DENIED,
+        };
+    } catch (\Throwable) {
+        // The panel stopped answering mid-probe: that is a connection fact, not
+        // an answer about single sign-on.
+        return SsoAdvice::STATE_UNREACHABLE;
+    }
+}
+
+/**
+ * Test Connection's own module-log line. WHMCS's rendering of a SUCCESSFUL test
+ * is core's and cannot be verified from here, so the SSO report is written
+ * where an admin can always find it.
+ *
+ * @param array<string, mixed> $params
+ */
+function ispconfigconnect_logTestConnection(array $params, bool $success, string $ssoState): void
+{
+    ispconfigconnect_logModuleCall(
+        'TestConnection',
+        ['serverid' => $params['serverid'] ?? null],
+        ['success' => $success, 'sso_state' => $ssoState, 'sso' => SsoAdvice::admin($ssoState)]
+    );
 }
 
 /**
@@ -1851,7 +2204,14 @@ function ispconfigconnect_metricObjects(array $values = []): array
  */
 function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
 {
-    $fields = ['jobqueue' => 'n/a', 'disk' => 'n/a', 'bandwidth' => 'n/a', 'sso' => 'unknown'];
+    $fields = [
+        'jobqueue' => 'n/a',
+        'disk' => 'n/a',
+        'bandwidth' => 'n/a',
+        // Until a probe answers, the honest value is "the panel was not asked",
+        // which every early return below leaves in place.
+        'sso' => SsoAdvice::admin(SsoAdvice::STATE_UNREACHABLE),
+    ];
 
     try {
         $session = Factory::sessionManager($params);
@@ -1887,21 +2247,11 @@ function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
                 }
             }
 
-            try {
-                // Three distinct answers, because "not installed" and "we were
-                // not allowed to look" send an operator to different places.
-                $fields['sso'] = match (ispconfigconnect_companionClient($params, $session)->status()) {
-                    CompanionClient::STATUS_INSTALLED => 'available',
-                    CompanionClient::STATUS_ABSENT => 'not installed - deploy the separate'
-                        . ' ispconfig-sso project on the panel to enable the'
-                        . ' "Log in to ISPConfig" button',
-                    default => 'cannot tell - this server\'s remote user lacks the'
-                        . ' get_function_list grant, so the panel cannot be probed for the'
-                        . ' ispconfig-sso project. Grant it under System > Remote Users.',
-                };
-            } catch (\Throwable) {
-                // Stays 'unknown'.
-            }
+            // Distinct answers with distinct instructions: "not installed",
+            // "we were not allowed to look" and "the panel never answered"
+            // send an operator to three different places, and none of them is
+            // a status word an admin has to interpret (Sso\SsoAdvice).
+            $fields['sso'] = SsoAdvice::admin(ispconfigconnect_ssoState($params, $session));
         } finally {
             $session->close();
         }

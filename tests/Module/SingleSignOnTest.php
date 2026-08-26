@@ -19,10 +19,20 @@ use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
  * sign-on at all.
  *
  * That makes "not installed" the DEFAULT this class asserts first: the label is
- * advertised only where the project was actually detected, and both entry
- * points must explain its absence rather than fail cryptically. The fake panel
- * models the same default - FakeIspconfigServer::$companionInstalled is false
- * until a test calls installCompanion().
+ * advertised only where the project was actually detected, and neither entry
+ * point may fail cryptically. The fake panel models the same default -
+ * FakeIspconfigServer::$companionInstalled is false until a test calls
+ * installCompanion().
+ *
+ * TWO AUDIENCES. ServiceSingleSignOn renders into the client area, so its
+ * errorMsg is one customer sentence carrying no hostname, grant name, service
+ * property or panel diagnosis; the operator-grade reason - including WHICH of
+ * the SSO states caused it - goes to the module log, and that is what these
+ * tests assert on for the detail. The admin path keeps the detail in hand.
+ *
+ * MIXED FLEET. MetaData()'s label is fleet-wide (WHMCS asks with no server in
+ * scope), so the per-service answer is given where server context exists: the
+ * client-area gate and this file's cached per-server short-circuit.
  */
 final class SingleSignOnTest extends ModuleTestCase
 {
@@ -43,6 +53,53 @@ final class SingleSignOnTest extends ModuleTestCase
         self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
 
         return $this->params();
+    }
+
+    /**
+     * A per-server cached-metadata reader double: the tblservers_remote row
+     * GetRemoteMetaData filled for ONE server, which is the only place a
+     * per-service answer can come from.
+     *
+     * @param array<int, array<string, mixed>> $byServerId
+     * @return \Closure(int): ?array<string, mixed>
+     */
+    private function fleet(array $byServerId): \Closure
+    {
+        return static fn (int $serverId): ?array => $byServerId[$serverId] ?? null;
+    }
+
+    /** @return list<array<string, mixed>> the module-log entries for one action */
+    private function logEntriesFor(string $action): array
+    {
+        return array_values(array_filter(
+            ModuleCallLog::entries(),
+            static fn (array $entry): bool => $entry['action'] === $action
+        ));
+    }
+
+    /** Everything an operator may read but a customer may not. */
+    private function assertCustomerSafe(string $message): void
+    {
+        self::assertNotSame('', trim($message));
+        foreach (
+            [
+                'ispconfig-sso',
+                'connect_sso_token_create',
+                'get_function_list',
+                'ispconfig_client_id',
+                'remote user',
+                'grant',
+                'System >',
+                'panel.example.net',
+                'http',
+            ] as $forbidden
+        ) {
+            self::assertStringNotContainsStringIgnoringCase(
+                $forbidden,
+                $message,
+                sprintf('a customer must never be shown "%s"', $forbidden)
+            );
+        }
     }
 
     // ---- the default: no SSO project on the panel -------------------------
@@ -158,27 +215,37 @@ final class SingleSignOnTest extends ModuleTestCase
     }
 
     /**
-     * A stock panel is the default, so pressing the button anyway (an admin
-     * following a stale link, several servers where only some have the project)
-     * must name the thing to install - and name it as the SEPARATE project it
-     * is. It must never point at a path inside this repository: this module
-     * does not ship the panel side and cannot install it.
+     * A stock panel is the default, so pressing the button anyway (a stale
+     * link, a mixed fleet where only some panels have the project) must fail
+     * SAFELY. The customer gets one sentence they can act on; the reason - the
+     * separate project to install, named as the separate project it is - goes
+     * to the module log, which is where an operator looks.
      */
-    public function testAStockPanelExplainsHowToEnableSsoInsteadOfFailingCryptically(): void
+    public function testAStockPanelFailsWithACustomerSentenceAndAnOperatorLogLine(): void
     {
         $params = $this->provisionedParams();
 
         $result = ispconfigconnect_ServiceSingleSignOn($params);
 
         self::assertFalse($result['success']);
-        self::assertStringContainsString('ispconfig-sso', $result['errorMsg']);
-        self::assertStringContainsString('connect_sso_token_create', $result['errorMsg']);
-        self::assertStringNotContainsString('companion/', $result['errorMsg']);
         self::assertArrayNotHasKey('redirectTo', $result);
+        $this->assertCustomerSafe($result['errorMsg']);
         self::assertSame(0, $this->fake->activeSessionCount());
+
+        $logged = print_r($this->logEntriesFor('ServiceSingleSignOn'), true);
+        self::assertStringContainsString('ispconfig-sso', $logged);
+        self::assertStringContainsString('connect_sso_token_create', $logged);
+        // Never a path inside this repository: the panel side is not shipped
+        // here and cannot be installed from here.
+        self::assertStringNotContainsString('companion/', $logged);
     }
 
-    public function testAMissingCompanionGrantNamesTheGrantToTick(): void
+    /**
+     * THE COMMON MISCONFIGURATION: the operator installed the panel add-on and
+     * forgot to tick its checkbox. It is a DIFFERENT fix from "not installed",
+     * so it must be recorded as its own case rather than folded into that one.
+     */
+    public function testAnInstalledAddOnWithoutItsGrantIsLoggedAsItsOwnCase(): void
     {
         $this->fake->installCompanion();
         $params = $this->provisionedParams();
@@ -187,7 +254,12 @@ final class SingleSignOnTest extends ModuleTestCase
         $result = ispconfigconnect_ServiceSingleSignOn($params);
 
         self::assertFalse($result['success']);
-        self::assertStringContainsString('connect_sso_token_create', $result['errorMsg']);
+        $this->assertCustomerSafe($result['errorMsg']);
+
+        $logged = print_r($this->logEntriesFor('ServiceSingleSignOn'), true);
+        self::assertStringContainsString('connect_sso_token_create', $logged);
+        self::assertStringContainsString('not_granted', $logged);
+        self::assertStringNotContainsString('install the separate', $logged);
     }
 
     public function testAnUnprovisionedServiceSaysSoRatherThanCallingThePanel(): void
@@ -197,11 +269,16 @@ final class SingleSignOnTest extends ModuleTestCase
         $result = ispconfigconnect_ServiceSingleSignOn($this->params());
 
         self::assertFalse($result['success']);
-        self::assertStringContainsString('ispconfig_client_id', $result['errorMsg']);
+        $this->assertCustomerSafe($result['errorMsg']);
         self::assertSame([], $this->calledMethods());
+        // The operator still gets the real reason.
+        self::assertStringContainsString(
+            'ispconfig_client_id',
+            print_r($this->logEntriesFor('ServiceSingleSignOn'), true)
+        );
     }
 
-    public function testASuspendedClientsRefusalIsPassedThroughVerbatim(): void
+    public function testASuspendedClientsRefusalReachesTheLogButNotTheCustomer(): void
     {
         $this->fake->installCompanion();
         $params = $this->provisionedParams();
@@ -214,7 +291,83 @@ final class SingleSignOnTest extends ModuleTestCase
         $result = ispconfigconnect_ServiceSingleSignOn($params);
 
         self::assertFalse($result['success']);
-        self::assertStringContainsString('locked', $result['errorMsg']);
+        $this->assertCustomerSafe($result['errorMsg']);
+        self::assertStringContainsString(
+            'locked',
+            print_r($this->logEntriesFor('ServiceSingleSignOn'), true)
+        );
+    }
+
+    /**
+     * MIXED FLEET, the SSO path. The button is not rendered for a service whose
+     * own panel has no add-on, so a click can only come from a stale link or a
+     * hand-typed URL - and the cached per-server answer already settles it. No
+     * login, no mint attempt, no panel traffic at all: the customer gets the
+     * same sentence either way.
+     */
+    public function testAServiceOnAPanelWithoutTheAddOnIsRefusedWithoutTouchingThePanel(): void
+    {
+        $params = $this->provisionedParams();
+        $mark = $this->wireMark();
+
+        $result = ispconfigconnect_ServiceSingleSignOn(
+            $params + ['serverid' => 9],
+            $this->fleet([9 => ['sso_state' => 'absent']])
+        );
+
+        self::assertFalse($result['success']);
+        $this->assertCustomerSafe($result['errorMsg']);
+        self::assertSame([], $this->methodsSince($mark), 'a cached "absent" needs no login');
+    }
+
+    /**
+     * The same fleet, the other panel: a cached "installed" must still go to
+     * the panel and mint a real token.
+     */
+    public function testAServiceOnAPanelWithTheAddOnStillMints(): void
+    {
+        $this->fake->installCompanion();
+        $params = $this->provisionedParams();
+
+        $result = ispconfigconnect_ServiceSingleSignOn(
+            $params + ['serverid' => 7],
+            $this->fleet([7 => ['sso_state' => 'installed'], 9 => ['sso_state' => 'absent']])
+        );
+
+        self::assertTrue($result['success']);
+        self::assertStringContainsString('/connectsso/?token=', $result['redirectTo']);
+    }
+
+    /**
+     * A stale cache must never be able to withhold a login the panel would
+     * actually grant: only a DEFINITE cached "absent" short-circuits, and a
+     * server nobody has probed yet is asked.
+     */
+    public function testAnUnprobedServerIsAskedRatherThanAssumedToHaveNoSso(): void
+    {
+        $this->fake->installCompanion();
+        $params = $this->provisionedParams();
+
+        $result = ispconfigconnect_ServiceSingleSignOn($params, $this->fleet([]));
+
+        self::assertTrue($result['success']);
+    }
+
+    /**
+     * The admin path keeps every diagnostic: an admin pressing the panel button
+     * on a service whose panel has no add-on lands on the panel's own login
+     * page, and the module log carries the operator-grade reason.
+     */
+    public function testTheAdminPathKeepsTheOperatorDetail(): void
+    {
+        $params = $this->provisionedParams();
+
+        $result = ispconfigconnect_AdminSingleSignOn($params);
+
+        self::assertTrue($result['success']);
+        self::assertSame('https://panel.example.net:8080/', $result['redirectTo']);
+        $logged = print_r($this->logEntriesFor('AdminSingleSignOn'), true);
+        self::assertStringContainsString('ispconfig-sso', $logged);
     }
 
     public function testTheOutcomeIsRecordedInTheModuleLog(): void

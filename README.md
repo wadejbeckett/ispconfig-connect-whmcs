@@ -45,6 +45,23 @@ billing module above is very likely the better home for you.
 
 ---
 
+## The two pieces, in thirty seconds
+
+| Piece | Installed on | Required? |
+|---|---|---|
+| **This module** — a WHMCS provisioning module that creates, suspends, bills and terminates hosting accounts by talking to ISPConfig over its remote JSON API | your **WHMCS** server, in `modules/servers/ispconfigconnect/` | **Yes.** It is the product |
+| **[`ispconfig-sso`](https://github.com/wadejbeckett/ispconfig-sso)** — a small standalone panel add-on (same author, GPLv3, **not shipped here**) that adds one remote function minting a one-time panel-login token, plus the page that redeems it | your **ISPConfig** server | **No.** It exists only because ISPConfig core has no login-token API. Install it if you want a password-free *Log in to ISPConfig* button for customers; skip it and everything else works unchanged |
+
+Those are the only two moving parts — there is no WHMCS addon module, no admin dashboard, and
+nothing of ours running as a daemon on either machine. (Within WHMCS this module also copies one
+hook file into `includes/hooks/`, for the servers-page health block; that file is part of this
+module, not a third component. See [Installation](#installation).)
+
+Setting up the optional half is documented once, in that project's own README:
+**[`ispconfig-sso` → Install and remove](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove)**.
+The WHMCS side needs no configuration for it — this module detects the add-on per server and shows
+the button only where it is present.
+
 ## What it does
 
 One WHMCS service maps to one ISPConfig client (mirroring how the cPanel module maps one service to
@@ -95,19 +112,15 @@ panel at all. [`docs/INSTALL.md`](docs/INSTALL.md) §6.4 breaks down every numbe
 ISPConfig core has no one-time-login API — `client_login_get()` only validates a password, and the
 remote API's `login()` mints an API session rather than a panel session. Every abandoned
 WHMCS/ISPConfig module solved this the only way core allowed: by storing the customer's panel password
-and replaying it. **This module never stores or replays a password.**
+and replaying it. **This module never stores or replays a password.** That is the whole reason the
+optional [`ispconfig-sso`](https://github.com/wadejbeckett/ispconfig-sso) half exists, and the
+reason it is deliberately not a WHMCS component: any billing system can drive the same function.
 
-The password-free button instead needs one small piece of code on the ISPConfig side, and that piece
-is **its own project — `ispconfig-sso` (same author, GPLv3), which this repository does not ship.**
-It is a standalone ISPConfig add-on, deliberately not tied to WHMCS: it
-adds one remote function that mints a single-use, short-lived token and one page that redeems it,
-modifying no ISPConfig core file, and *any* billing system — WHMCS, Blesta, FOSSBilling, something
-in-house — can drive it.
-
-Single sign-on here is therefore **optional and off by default**. This module detects the project at
-runtime (one `get_function_list` probe) and shows the button only on panels that have it; on every
-other panel customers simply get the panel URL and their username, and nothing is broken by its
-absence.
+Single sign-on is therefore **optional and self-configuring**. This module probes each server once
+per servers-page render (`get_function_list`) and offers the button only where the add-on answers;
+on every other panel customers simply get the panel URL and their username, and nothing is broken
+by its absence. Setup lives in that project's README — see
+[`docs/INSTALL.md` §6.5](docs/INSTALL.md) for the one WHMCS-side detail and the link.
 
 ## Security posture
 
@@ -147,14 +160,15 @@ Re-run it after a module upgrade; `--uninstall` removes the file again.
 
 See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through and
 [`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user.
-If you want the single sign-on button, install the separate `ispconfig-sso` project on the ISPConfig
-server as well and follow its own README — [`docs/INSTALL.md`](docs/INSTALL.md) §6.5 covers the WHMCS
-side of that.
+For the optional single sign-on button, the setup path is
+[`ispconfig-sso` → *Install and remove*](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove),
+run on the ISPConfig server. [`docs/INSTALL.md`](docs/INSTALL.md) §6.5 carries the one WHMCS-side
+detail (which grant checkbox to tick) and the troubleshooting for it.
 
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (755 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (787 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. (The `ispconfig-sso` project carries
 its own separate harness in its own repository.) The suite and the static analysis are currently run
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5
@@ -171,3 +185,9 @@ GPLv3 — see [`LICENSE`](LICENSE). Any fork or derivative stays open.
 
 Built on, and in support of, the [ISPConfig](https://www.ispconfig.org/) project by Till Brehm and
 the ISPConfig community.
+
+---
+
+Part of the **ISPConfig Toolkit**, a family of independent ISPConfig tools by the same author:
+[ispconfig-sso](https://github.com/wadejbeckett/ispconfig-sso) ·
+[ISPConfig Theme Customizer](https://github.com/wadejbeckett/ispconfig-theme-customizer).
