@@ -141,7 +141,10 @@ final class AdminAndClientAreaTest extends ModuleTestCase
     {
         $fields = ispconfigconnect_AdminServicesTabFields($this->params());
 
-        self::assertSame('not provisioned', $fields['ISPConfig Client ID']);
+        // "not linked", not "not provisioned": a service can now be managed by
+        // this module without this module having created it, so the question
+        // the row answers is whether a link exists - not who made the account.
+        self::assertSame('not linked', $fields['ISPConfig Client ID']);
         self::assertArrayNotHasKey('ISPConfig Disk Usage', $fields);
         // No client id means nothing to ask the panel about beyond the queue.
         self::assertSame(
@@ -152,8 +155,16 @@ final class AdminAndClientAreaTest extends ModuleTestCase
 
     public function testAdminCustomButtonArrayExposesVerifyPermissions(): void
     {
+        // Verify Permissions stays FIRST - it is the diagnostic button, and
+        // the three that follow it are the manual link override (see
+        // AdoptionTest for their behaviour).
         self::assertSame(
-            ['Verify Permissions' => 'VerifyPermissions'],
+            [
+                'Verify Permissions' => 'VerifyPermissions',
+                'Link to ISPConfig Account' => 'LinkAccount',
+                'Replace ISPConfig Link' => 'RelinkAccount',
+                'Unlink from ISPConfig' => 'UnlinkAccount',
+            ],
             ispconfigconnect_AdminCustomButtonArray()
         );
     }

@@ -40,7 +40,7 @@ one directory — WHMCS autoloads the module's `lib/` classes automatically.
 ### The admin hook file (optional, one extra step)
 
 One feature needs a second file: the **ISPConfig block on the servers page**
-(panel version, pending jobs, client count — see §6.4). It is a WHMCS *hook*,
+(panel version, pending jobs, client count — see §7.4). It is a WHMCS *hook*,
 and WHMCS **does not load hook files from inside a provisioning module** — that
 was verified on a live WHMCS 9.0.6 install, where a marker at the top of
 `modules/servers/ispconfigconnect/hooks.php` never once fired, including on the
@@ -74,7 +74,7 @@ Notes:
   `--status` reports when the installed file differs from the shipped one.
 - Skipping this step costs only that block. Nothing else in the module depends
   on it.
-- Remove it with `--uninstall` when you uninstall the module (§7).
+- Remove it with `--uninstall` when you uninstall the module (§8).
 
 ## 3. Add the server in WHMCS
 
@@ -115,7 +115,7 @@ A **successful** test also reports single sign-on — `Connected. Single sign-on
 …` followed by a sentence about the optional `ispconfig-sso` panel add-on. On a
 stock panel that sentence says the add-on is **not installed**, and **that is the
 expected answer, not a fault**: single sign-on is optional and nothing else in
-the module depends on it (§6.5). The same line is written to **Utilities > Logs >
+the module depends on it (§7.5). The same line is written to **Utilities > Logs >
 Module Log**, so you can still read it if your WHMCS theme shows only a bare
 success tick.
 
@@ -174,7 +174,94 @@ template is assigned at creation and reconciled on package changes. An enabled
 option with no matching addon template fails the operation rather than
 silently under-provisioning.
 
-## 5. Operational notes
+## 5. Migrating customers who already have an ISPConfig account
+
+Everything above assumes the module *creates* the hosting account. This section
+is the other case: the WHMCS service already exists, the ISPConfig account
+already exists, and something other than this module made them — a migration
+off another control panel, an import, or accounts built by hand before the
+module was installed.
+
+**The whole job is: point the service at the ISPConfig server and give it an
+ISPConfig product. The module links it to the right panel account by itself.**
+
+### The migration sequence
+
+1. **Move the hosting data** onto ISPConfig however you normally would, and
+   create (or keep) the customer's ISPConfig client account. The module does
+   not move data and does not care how it got there.
+2. In WHMCS, open the service and set its **Server** to the ISPConfig server
+   and its **Product** to an ISPConfig Connect product.
+3. **Do nothing else.** The next time the module talks to the panel about that
+   service, it finds the matching ISPConfig account and stores the link itself.
+
+There is deliberately **no step where you type an ISPConfig client id
+anywhere**. An internal id is opaque, cannot be checked by eye, and one wrong
+digit points the module at a different customer's account — after which a
+suspend or a terminate acts on the wrong hosting.
+
+### Where the linking happens
+
+| Moment | What it does |
+|---|---|
+| **The nightly usage sweep** (§7.1) | Resolves every unlinked service on the server in one batch, links the confident matches, and imports their usage in the same run. This is the one that needs nothing from you. |
+| **Opening the service's *Module* tab** | Resolves that one service on the spot, so a service you have just pointed at the server is usually already linked by the time you look at it. |
+
+Both are read-only against the panel — nothing is created, changed or deleted
+there. Both record what they did in **Utilities > Logs > Module Log** under the
+action `Adopt`, together with the evidence that justified the link.
+
+### What it will not do
+
+These are safety rules, not limitations to work around:
+
+- **It links only on an exact, unambiguous match.** If no panel client owns the
+  service's domain, or more than one does, the service is left unmanaged and
+  the reason is recorded. It never picks the most likely candidate.
+- **It never links inside a destructive operation.** Terminate, Suspend,
+  Unsuspend, Change Password and Change Package all *refuse* an unlinked
+  service and tell you how to link it. A resolver mistake inside a terminate
+  would delete a live customer's hosting, and no amount of confidence in a
+  match makes that recoverable.
+- **It never overwrites a link that already exists.** A service with a stored
+  id is not even offered to the matcher.
+- **A stale link is reported, never repaired.** If the stored client id no
+  longer exists on the panel, the *Module* tab says **STALE** and destructive
+  operations refuse — the module will not go looking for a replacement account,
+  because the one it found could belong to somebody else.
+
+### The manual override
+
+Three buttons sit on the service's *Module* tab next to *Verify Permissions*.
+**None of them touches the panel** — they only change what WHMCS has stored, so
+none of them can damage a customer's hosting.
+
+| Button | What it does |
+|---|---|
+| **Link to ISPConfig Account** | Links this service to the ISPConfig account named in the service's **Username** field, after checking with the panel that the account exists. Refuses if the service already carries a *different* id. |
+| **Replace ISPConfig Link** | The same check, but it deliberately overwrites an existing link. Both the old and the new id go to the module log. |
+| **Unlink from ISPConfig** | Clears the stored ids so a wrong link is reversible without hand-editing custom fields. The panel account is untouched. |
+
+> **The Username field is the stale one on a migrated service.** This is worth
+> knowing before you use *Link to ISPConfig Account*: a service that came from
+> another control panel still carries **that panel's** username in WHMCS, and
+> ISPConfig has never heard of it, so linking by name will simply not find it.
+> **The domain is the reliable key** — and the domain is what automatic adoption
+> matches on, which is why the automatic path usually works on exactly the
+> services where the manual button does not. If the button reports no such
+> account, either correct the Username field to the ISPConfig account name and
+> press it again, or leave it alone and let the nightly sweep do it.
+
+### Checking that it worked
+
+The service's *Module* tab has an **ISPConfig Link** row that answers in plain
+English: the account it is linked to, or why it is not linked (no match, or
+ambiguous with the candidate accounts named), or that the link is stale. The
+morning after a sweep, the `UsageUpdate` entry in the module log carries an
+`adopted` list (what was linked, and on what evidence) and an `unlinked` list
+(what was left alone, and why).
+
+## 6. Operational notes
 
 ### What suspension touches (the lock cascade)
 
@@ -208,12 +295,15 @@ rolled out.
 
 ### What the admin service tab shows
 
+The first row is **ISPConfig Link**, which answers in plain English whether
+this service is linked to a panel account, and if it is not, why not — see §5.
+
 Alongside the stored ISPConfig ids, the service's *Module* tab reads four
 things live from the panel, each degrading to a placeholder rather than
 failing the page: the job-queue depth, the client's current **disk usage** and
 **this month's bandwidth** (both against the panel's own limits, so they are
 current even between nightly imports), and whether **single sign-on** is
-available on this panel (that row has four possible answers — §6.6 decodes
+available on this panel (that row has four possible answers — §7.6 decodes
 them). All four share one login, and the probes stop
 immediately if the panel cannot be reached — an admin page must never spend
 failed logins against the panel's lockout counter.
@@ -252,13 +342,13 @@ stored, because the module log is readable by every WHMCS admin:
   entry to WHMCS. Dropped columns are counted in the log entry, not silently
   removed.
 
-## 6. Usage, metrics, sync and single sign-on
+## 7. Usage, metrics, sync and single sign-on
 
 Everything in this section works with no extra configuration beyond the grants
 in [`docs/REMOTE-USER.md`](REMOTE-USER.md). Nothing here is required for
 provisioning — skip any part you do not want.
 
-### 6.1 Nightly disk and bandwidth import
+### 7.1 Nightly disk and bandwidth import
 
 WHMCS's daily cron run calls the module once **per server** and the module
 writes the four usage columns of `tblhosting` for every service on it:
@@ -277,9 +367,11 @@ Requirements and behaviour worth knowing:
 - The server must be **enabled** in WHMCS (a disabled server is never visited)
   and only services in the **Active** or **Suspended** status are read —
   terminated services have no panel client left to ask about.
-- Only services this module provisioned are readable: the import needs the
-  `ispconfig_client_id` service property. Imported or hand-made services are
-  **skipped and named** in the log rather than silently ignored.
+- A service is readable once it is **linked** to a panel account. The sweep
+  begins by trying to link the ones that are not, in a single batch, and then
+  imports usage for everything including whatever it just linked (§5). A
+  service it could not link confidently is **left alone and named** in the log,
+  with the reason, rather than silently ignored.
 - The whole sweep uses **one login**. It begins with a single reachability
   probe, so an unreachable or mis-credentialed panel costs one failed login
   for the entire run instead of one per service — which matters because ten
@@ -290,7 +382,7 @@ Requirements and behaviour worth knowing:
 `UsageUpdate`. Each run records `updated` (how many services were written),
 `skipped` (service id → reason) and, if the sweep aborted, `error`.
 
-### 6.2 Usage-billing metrics
+### 7.2 Usage-billing metrics
 
 The module also publishes nine metrics to WHMCS's usage-billing feature. The
 system names are stable — renaming one would orphan its stored history — and
@@ -316,7 +408,7 @@ Collecting all nine costs up to six API calls per client (against two for the
 disk/bandwidth import above), so a panel with many services will spend
 noticeably longer on a metrics collection than on the nightly usage import.
 
-### 6.3 Server Sync ("Sync Accounts")
+### 7.3 Server Sync ("Sync Accounts")
 
 **Configuration > System Settings > Servers**, then **Sync Accounts** on an
 ISPConfig server, lists every client the panel holds and compares it against
@@ -348,7 +440,7 @@ once for the panel, then two lookups per client to find its primary website.
 On a panel with hundreds of clients the sync therefore takes a while; it is an
 on-demand admin action, not something that runs on a schedule.
 
-### 6.4 Reading the servers page
+### 7.4 Reading the servers page
 
 **Configuration > System Settings > Servers** shows several numbers per server,
 from three different sources. They are easy to mistake for each other, so:
@@ -356,7 +448,7 @@ from three different sources. They are easy to mistake for each other, so:
 | What you see | Where it comes from | What it means |
 |---|---|---|
 | **WHMCS Usage Stats**, e.g. `1/200` | WHMCS itself | The number of **WHMCS services assigned to this server**, over the server's own **Maximum No. of Accounts** field (Servers > Edit). Pure WHMCS arithmetic — it says nothing about the panel, and no module can change it. A perfectly healthy panel reads `0/200` until WHMCS services point at it. |
-| **Accounts: N** | WHMCS's cache (`tblservers_remote.num_accounts`) | WHMCS's own cached count of accounts on the server. Nothing the module reports while the page renders reaches this figure — that was tested on WHMCS 9.0.6 — so it stays **blank on a freshly added server**. The run that hands WHMCS an account list is **Sync Accounts** (§6.3); run that once if you want a number here. |
+| **Accounts: N** | WHMCS's cache (`tblservers_remote.num_accounts`) | WHMCS's own cached count of accounts on the server. Nothing the module reports while the page renders reaches this figure — that was tested on WHMCS 9.0.6 — so it stays **blank on a freshly added server**. The run that hands WHMCS an account list is **Sync Accounts** (§7.3); run that once if you want a number here. |
 | **Services: N** | This module | The number of **ISPConfig clients** on the panel — the same figure as *Clients* below, because this module provisions exactly one ISPConfig client per WHMCS service. Refreshed every time the page renders. (It used to be a website count; counting vhosts meant a bulk read that dragged every site's TLS private key across the API, so that number was removed rather than approximated.) |
 | **ISPConfig Version / Pending Jobs / Clients / ISPConfig Nodes / Last Updated** | This module, via the admin hook (§2) | Panel version; the depth of ISPConfig's datalog job queue (mutations accepted but not yet applied — a number that keeps climbing means the panel's cron is not running); the number of **ISPConfig clients**, which is this module's own always-fresh answer to "how many accounts"; how many servers the panel fronts; and when WHMCS last refreshed the block. |
 | **Probe Errors** | This module | Shown instead of a missing value when a probe fails: the page shows *why*, rather than breaking or quietly reading zero. |
@@ -371,7 +463,7 @@ Two consequences worth knowing:
 Nothing on this page contacts the panel more than once per render, and a panel
 that is down costs the block, never the page.
 
-### 6.5 Single sign-on (optional, needs the separate `ispconfig-sso` project)
+### 7.5 Single sign-on (optional, needs the separate `ispconfig-sso` project)
 
 Out of the box there is **no login button**. ISPConfig core has no
 one-time-login API, and this module will not store or replay a customer's panel
@@ -438,7 +530,7 @@ Three consequences worth knowing before you go looking for them:
   WHMCS presses that button with a service in scope, you get the real one-time
   login for that service's client instead.)
 
-### 6.6 Troubleshooting single sign-on
+### 7.6 Troubleshooting single sign-on
 
 Keyed to what you actually see. Each row below is identified by **the words the
 message names** rather than by its full sentence: the module's phrasing is
@@ -465,11 +557,11 @@ Check the service's **Module** tab (Products/Services > the service) — its
 | The row says | Cause | Fix |
 |---|---|---|
 | **available** | The add-on is installed and visible | Nothing — if the button is still absent, WHMCS has not re-read the module's metadata: open **Configuration > System Settings > Servers** once, then reload the service |
-| **not installed**, naming `ispconfig-sso` | The panel answered, and the add-on is not there. **This is the normal state of a stock panel, not a fault** | Install it (§6.5) — or leave it; nothing else is affected |
+| **not installed**, naming `ispconfig-sso` | The panel answered, and the add-on is not there. **This is the normal state of a stock panel, not a fault** | Install it (§7.5) — or leave it; nothing else is affected |
 | that it **cannot tell**, naming `get_function_list` and *Server functions* | The remote user may not run the presence probe, so presence is genuinely undeterminable — neither "yes" nor "no" | Tick **Server functions** for that remote user ([`docs/REMOTE-USER.md`](REMOTE-USER.md) §2) |
 | that the panel **could not be reached**, or nothing at all | The probes never ran: no connection, or no login | Fix the connection first — **Test Connection** on the server names the reason |
 
-The servers-page block (§6.4) has a *Single Sign-On* line too, but it is written
+The servers-page block (§7.4) has a *Single Sign-On* line too, but it is written
 from a boolean and so reads only **Available** or **Not installed**. When the
 probe was *refused*, that block shows **no *Single Sign-On* line at all**: the
 module declines to cache a "no" it was never allowed to establish, so the flag
@@ -517,21 +609,21 @@ The message names the cause:
 | The message says | Cause | Fix |
 |---|---|---|
 | the panel **does not have** `ispconfig-sso` | **A mixed fleet.** WHMCS asks the module whether it supports SSO with **no server in scope**, so the *label* is unavoidably module-global. The module's own client-area panel no longer acts on it blindly — it offers the button only for a service whose **own** server was probed as having the add-on — but any button WHMCS itself renders from that global label is outside the module's reach | Nothing is broken: such a click fails safely with the one customer sentence, and the reason lands in the module log. Install the add-on on that panel too if you want the button to work there |
-| the remote user **may not call** `connect_sso_token_create` | The add-on is installed but not granted to this server's remote user | Tick the grant — §6.5 |
+| the remote user **may not call** `connect_sso_token_create` | The add-on is installed but not granted to this server's remote user | Tick the grant — §7.5 |
 | `Single sign-on requires an encrypted (https) connection to the panel.` | The panel's own TLS gate. Detection cannot see it, so the button is advertised and the click is what fails | Serve the panel over HTTPS, or declare the reverse proxy (`reverse_proxy_panel_allowed`) — [`ispconfig-sso` README, top box](https://github.com/wadejbeckett/ispconfig-sso#-the-panel-must-be-served-over-https) |
 | `The client account is locked; single sign-on is refused.` | The service is suspended in WHMCS, so the ISPConfig client is locked | Working as intended: a suspension cannot be walked around by clicking the login button |
 | the service has **no stored `ispconfig_client_id`** | An imported or hand-made WHMCS service with no link to a panel client | Nothing to fix in SSO — the service needs provisioning (or its `ispconfig_client_id` property set) first |
 | ISPConfig has **no administrator single sign-on** | You pressed a server-level login button with no service in scope | By design; sign in at the panel URL the message quotes, or use the button on a customer's service |
 
 Everything else on that click is an ordinary connection failure and reports as
-one (lockout, IP allowlist, TLS trust, disabled remote API) — §5 and
+one (lockout, IP allowlist, TLS trust, disabled remote API) — §6 and
 [`docs/REMOTE-USER.md`](REMOTE-USER.md) §5 cover those.
 
 #### "The panel refuses, but the message is not in the table above"
 
 Panel-side refusals are passed through verbatim **to an admin and to the module
 log** (a customer still gets only the one fixed sentence — see the box at the
-top of §6.6), so the wording will be one of the rows in
+top of §7.6), so the wording will be one of the rows in
 [`ispconfig-sso` README §4.5, *Faults*](https://github.com/wadejbeckett/ispconfig-sso#45-faults)
 — that table is the authoritative list, with the cause of each.
 
@@ -540,7 +632,7 @@ records the SSO **outcome** only. The redirect URL carries a one-time token in
 its query string and is deliberately never logged at all, so an empty-looking
 entry is the privacy rule working, not a lost record.
 
-## 7. Uninstalling
+## 8. Uninstalling
 
 Remove the product/server assignments in WHMCS, remove the admin hook file if
 you installed it (§2):

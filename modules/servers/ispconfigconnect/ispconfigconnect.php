@@ -470,8 +470,9 @@ function ispconfigconnect_SuspendAccount(array $params): string
         $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
-            return 'Suspend failed: no stored ispconfig_client_id service property'
-                . ' - this service was not provisioned by ISPConfig Connect.';
+            // Rule 2: suspension WRITES panel state (it locks the client, or
+            // sets the website inactive), so it refuses rather than resolving.
+            return ispconfigconnect_unlinkedRefusal('Suspend', $params);
         }
 
         $product = Params::productConfig($params);
@@ -502,8 +503,9 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
-            return 'Unsuspend failed: no stored ispconfig_client_id service property'
-                . ' - this service was not provisioned by ISPConfig Connect.';
+            // Rule 2: unsuspension writes panel state exactly as suspension
+            // does, and restoring the WRONG client is its own outage.
+            return ispconfigconnect_unlinkedRefusal('Unsuspend', $params);
         }
 
         $product = Params::productConfig($params);
@@ -534,12 +536,27 @@ function ispconfigconnect_TerminateAccount(array $params): string
         $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
-            return 'Terminate failed: no stored ispconfig_client_id service property'
-                . ' - this service was not provisioned by ISPConfig Connect.';
+            // RULE 2, AT ITS SHARPEST. This is the one operation whose mistake
+            // cannot be undone: client_delete_everything cascades over every
+            // website, mailbox, database and DNS zone the client owns. So
+            // termination NEVER resolves an account - not even when exactly one
+            // candidate exists and every other surface would happily link it.
+            // An admin who sees this refusal links the service deliberately and
+            // retries; that extra step is the whole point.
+            return ispconfigconnect_unlinkedRefusal('Terminate', $params);
         }
 
         $session = Factory::sessionManager($params);
         try {
+            // RULE 5 in the destructive path. A stored id that no longer
+            // resolves must not be deleted "through" - the module says stale
+            // and stops. It also never looks for a replacement: re-pointing a
+            // stale link inside a delete is how one customer's termination
+            // removes another customer's hosting.
+            if (!ispconfigconnect_clientExists($session, $clientId)) {
+                return ispconfigconnect_staleRefusal('Terminate', $clientId);
+            }
+
             (new Recipe($session))->terminate($clientId);
         } finally {
             $session->close();
@@ -565,8 +582,10 @@ function ispconfigconnect_ChangePassword(array $params): string
         $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
-            return 'Change Password failed: no stored ispconfig_client_id service property'
-                . ' - this service was not provisioned by ISPConfig Connect.';
+            // Rule 2: this OVERWRITES panel credentials - the client's own
+            // login plus the FTP and database users. Rotating the wrong
+            // client's password locks a customer out of their hosting.
+            return ispconfigconnect_unlinkedRefusal('Change Password', $params);
         }
 
         // Empty-credential guard, before any API call: an empty rotation
@@ -608,8 +627,10 @@ function ispconfigconnect_ChangePackage(array $params): string
         $properties = ispconfigconnect_serviceProperties($params);
         $clientId = $properties->clientId();
         if ($clientId === null) {
-            return 'Change Package failed: no stored ispconfig_client_id service property'
-                . ' - this service was not provisioned by ISPConfig Connect.';
+            // Rule 2: this rewrites the client's limits and template
+            // assignments - applying one customer's package to another's
+            // account silently changes what they are allowed to use.
+            return ispconfigconnect_unlinkedRefusal('Change Package', $params);
         }
 
         $product = Params::productConfig($params);
@@ -655,22 +676,37 @@ function ispconfigconnect_ChangePackage(array $params): string
  * a connection-level failure - repeating a failed login per row would feed
  * ISPConfig's 10-failures-per-5-minutes IP lockout while rendering a page.
  *
+ * ## It is also an adoption moment
+ *
+ * Opening a service's tab is READ-ONLY as far as the panel is concerned, and it
+ * already opens a session to fill the live figures. So an unlinked service is
+ * resolved here too: an admin who points a migrated service at the ISPConfig
+ * server and opens it finds it already linked, with the evidence on the row and
+ * in the module log. A STORED id is never re-resolved (rule 4) - it is only
+ * checked for staleness (rule 5).
+ *
  * @param array<string, mixed> $params
+ * @param null|callable $adoptionResolver test seam - see ispconfigconnect_adoptionResolver()
  * @return array<string, string>
  */
-function ispconfigconnect_AdminServicesTabFields(array $params): array
+function ispconfigconnect_AdminServicesTabFields(array $params, ?callable $adoptionResolver = null): array
 {
     try {
         $properties = ispconfigconnect_serviceProperties($params);
+
+        $live = ispconfigconnect_adminLiveFields($params, $properties, $adoptionResolver);
+
+        // Read AFTER the live pass, which may have adopted this service.
         $clientId = $properties->clientId();
         $username = $properties->clientUsername() ?? (string) ($params['username'] ?? '');
         $domainId = $properties->domainId();
-
-        $live = ispconfigconnect_adminLiveFields($params, $clientId);
         $panelUrl = ispconfigconnect_panelUrl($params);
 
         $fields = [
-            'ISPConfig Client ID' => $clientId === null ? 'not provisioned' : (string) $clientId,
+            // The plain-English state comes FIRST: it is the row that answers
+            // "is this service managed, and if not why not".
+            'ISPConfig Link' => $live['link'],
+            'ISPConfig Client ID' => $clientId === null ? 'not linked' : (string) $clientId,
             'ISPConfig Username' => htmlspecialchars($username, ENT_QUOTES),
             'ISPConfig Domain ID' => $domainId === null ? 'n/a' : (string) $domainId,
             'ISPConfig Job Queue' => $live['jobqueue'],
@@ -705,7 +741,105 @@ function ispconfigconnect_AdminServicesTabFields(array $params): array
  */
 function ispconfigconnect_AdminCustomButtonArray(): array
 {
-    return ['Verify Permissions' => 'VerifyPermissions'];
+    return [
+        'Verify Permissions' => 'VerifyPermissions',
+        // The manual override, for the cases automation must not guess.
+        // All three change only what WHMCS has STORED - none of them touches
+        // the panel, so none of them can damage a customer's hosting.
+        'Link to ISPConfig Account' => 'LinkAccount',
+        'Replace ISPConfig Link' => 'RelinkAccount',
+        'Unlink from ISPConfig' => 'UnlinkAccount',
+    ];
+}
+
+/**
+ * Admin custom button: link THIS service to a named ISPConfig account.
+ *
+ * ## Why the name comes from the service's Username field
+ *
+ * A WHMCS custom button posts nothing - it calls this function with the
+ * service's own $params and no form of its own. The account name therefore has
+ * to be a field the admin already edits on the service, and the Username field
+ * is exactly that: it is on the same screen as the button, and it is the field
+ * that would hold the panel login anyway.
+ *
+ * That is also what makes this safe enough to be a manual override at all. The
+ * rejected workaround was pasting ISPConfig's INTERNAL CLIENT ID into a custom
+ * field: an id is opaque, unverifiable by eye, and one wrong digit silently
+ * addresses a different customer's account. A username is checked against the
+ * panel before anything is written, and a typo almost always resolves to
+ * nothing rather than to somebody else.
+ *
+ * Rule 4: an id that is already stored is never overwritten here. Naming the
+ * account already stored is a no-op success; naming a DIFFERENT one is refused
+ * and points at Replace ISPConfig Link, which is the explicit, deliberate way
+ * to change a link.
+ *
+ * @param array<string, mixed> $params
+ * @return string 'success' or error string
+ */
+function ispconfigconnect_LinkAccount(array $params): string
+{
+    return ispconfigconnect_link($params, 'LinkAccount', false);
+}
+
+/**
+ * Admin custom button: point this service at a DIFFERENT ISPConfig account.
+ *
+ * The same verification as Link, minus the already-linked guard - this is the
+ * button whose whole purpose is to change a stored id, so it says so in its
+ * name rather than hiding behind a flag. Both the old and the new id are
+ * logged, because the log is the only record that the service ever pointed
+ * anywhere else.
+ *
+ * @param array<string, mixed> $params
+ * @return string 'success' or error string
+ */
+function ispconfigconnect_RelinkAccount(array $params): string
+{
+    return ispconfigconnect_link($params, 'RelinkAccount', true);
+}
+
+/**
+ * Admin custom button: forget the stored ISPConfig ids for this service.
+ *
+ * NOTHING ON THE PANEL IS TOUCHED - not a session, not a call. This exists so
+ * that a wrong link is reversible without hand-editing custom fields, which is
+ * the manoeuvre this whole feature was built to abolish. After an unlink the
+ * service is simply unmanaged again, and automatic adoption may re-link it on
+ * the evidence of its domain.
+ *
+ * @param array<string, mixed> $params
+ * @return string 'success' or error string
+ */
+function ispconfigconnect_UnlinkAccount(array $params): string
+{
+    try {
+        $properties = ispconfigconnect_serviceProperties($params);
+        $clientId = $properties->clientId();
+        $username = $properties->clientUsername();
+
+        if ($clientId === null && $username === null) {
+            return 'Unlink: this service is not linked to an ISPConfig account, so there was'
+                . ' nothing to clear. Nothing on the panel has been changed.';
+        }
+
+        $properties->clear();
+
+        ispconfigconnect_logModuleCall(
+            'UnlinkAccount',
+            ['serviceid' => $params['serviceid'] ?? null],
+            [
+                'cleared_ispconfig_client_id' => $clientId,
+                'cleared_ispconfig_client_username' => $username,
+                'panel_touched' => false,
+            ]
+        );
+
+        return 'success';
+    } catch (\Throwable $failure) {
+        return ispconfigconnect_errorString('Unlink', $failure);
+    }
 }
 
 /**
@@ -883,25 +1017,54 @@ function ispconfigconnect_ListAccounts(array $params): array
  * can see what was skipped and why.
  *
  * @param array<string, mixed> $params
+ * ## It is also where pre-existing accounts get adopted
+ *
+ * This is the right moment for it, and the reasoning is worth keeping: the
+ * sweep already runs per server, already holds ONE open session, already
+ * enumerates every service on that server, and the worst a wrong link can do
+ * here is import a wrong usage row that the next sweep corrects. Nothing is
+ * created, changed or deleted on the panel. Adoption happens BEFORE the usage
+ * collection so that a service linked tonight is also billed tonight.
+ *
+ * @param array<string, mixed> $params
  * @param null|callable(int): list<array<string, mixed>> $rowProvider test seam
  *        for the tblhosting lookup; WHMCS passes $params alone
  * @param null|callable(int, array<string, int>): void $writer test seam for the
  *        tblhosting write
+ * @param null|callable $adoptionResolver test seam - see ispconfigconnect_adoptionResolver()
+ * @param null|callable(int, array<string, string>): void $propertyWriter test
+ *        seam for the service-property write an adoption performs
  */
-function ispconfigconnect_UsageUpdate(array $params, ?callable $rowProvider = null, ?callable $writer = null): void
-{
+function ispconfigconnect_UsageUpdate(
+    array $params,
+    ?callable $rowProvider = null,
+    ?callable $writer = null,
+    ?callable $adoptionResolver = null,
+    ?callable $propertyWriter = null
+): void {
     $serverId = (int) ($params['serverid'] ?? 0);
-    $services = ispconfigconnect_serviceRefs($serverId, $rowProvider);
+
+    // One read of the server's services, three views of it.
+    $rows = ispconfigconnect_serviceRowsOnce($serverId, $rowProvider);
+    $rowsOnce = static fn (int $id): array => $rows;
+
+    $services = ispconfigconnect_serviceRefs($serverId, $rowsOnce);
     $write = $writer ?? ispconfigconnect_usageWriter();
 
     // What WHMCS already holds for each service's month-to-date bandwidth, so
     // a later, lower reading (a suspended site stops accruing traffic on the
     // panel) cannot erase it - see Usage\ServiceUsage::toHostingColumnsGiven().
-    $storedBandwidth = ispconfigconnect_storedBandwidth($serverId, $rowProvider);
+    $storedBandwidth = ispconfigconnect_storedBandwidth($serverId, $rowsOnce);
+    $domains = ispconfigconnect_serviceDomains($rows);
 
     $updated = 0;
     /** @var array<int, string> $skipped WHMCS service id => reason */
     $skipped = [];
+    /** @var array<int, string> $adopted WHMCS service id => the evidence that justified the link */
+    $adopted = [];
+    /** @var array<int, string> $unlinked WHMCS service id => why it is still unmanaged */
+    $unlinked = [];
+    $adoptionNote = '';
     $error = '';
 
     if ($services !== []) {
@@ -913,6 +1076,18 @@ function ispconfigconnect_UsageUpdate(array $params, ?callable $rowProvider = nu
                 // and ten failed logins lock this IP out for five minutes
                 // (remoting.inc.php, spec 1.4) - punishing every later run.
                 $session->call('monitor_jobqueue_count', ['server_id' => 0]);
+
+                $adoption = ispconfigconnect_adoptUnlinked(
+                    $session,
+                    $services,
+                    $domains,
+                    $adoptionResolver,
+                    $propertyWriter
+                );
+                $services = $adoption['services'];
+                $adopted = $adoption['adopted'];
+                $unlinked = $adoption['unlinked'];
+                $adoptionNote = $adoption['note'];
 
                 $report = (new Updater($session))->collect($services);
             } finally {
@@ -942,6 +1117,19 @@ function ispconfigconnect_UsageUpdate(array $params, ?callable $rowProvider = nu
     $summary = ['updated' => $updated];
     if ($skipped !== []) {
         $summary['skipped'] = $skipped;
+    }
+    // Rule 3, in the sweep's own summary: what was linked and on what
+    // evidence, and what was left unmanaged and why. Each link ALSO has its
+    // own 'Adopt' entry (ispconfigconnect_logAdoption); this is the roll-up an
+    // operator reads the morning after.
+    if ($adopted !== []) {
+        $summary['adopted'] = $adopted;
+    }
+    if ($unlinked !== []) {
+        $summary['unlinked'] = $unlinked;
+    }
+    if ($adoptionNote !== '') {
+        $summary['adoption'] = $adoptionNote;
     }
     if ($error !== '') {
         $summary['error'] = $error;
@@ -2082,8 +2270,9 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
             ])
             // bwusage comes along so the sweep can refuse to overwrite an
             // accumulated month's traffic with a lower reading (see
-            // Usage\ServiceUsage::toHostingColumnsGiven()).
-            ->get(['id', 'username', 'bwusage']);
+            // Usage\ServiceUsage::toHostingColumnsGiven()); domain is the key
+            // automatic adoption matches an unlinked service on.
+            ->get(['id', 'username', 'domain', 'bwusage']);
 
         $rows = [];
         foreach (is_iterable($services) ? $services : [] as $service) {
@@ -2093,6 +2282,7 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
                 $rows[$id] = [
                     'id' => $id,
                     'username' => (string) ($columns['username'] ?? ''),
+                    'domain' => (string) ($columns['domain'] ?? ''),
                     'bwusage' => isset($columns['bwusage']) && is_numeric($columns['bwusage'])
                         ? (int) $columns['bwusage']
                         : null,
@@ -2196,14 +2386,22 @@ function ispconfigconnect_metricObjects(array $values = []): array
 }
 
 /**
- * The live panel figures on the admin service tab, all from ONE session and
- * all degrading to a placeholder instead of throwing.
+ * The live panel figures on the admin service tab - and the link state, which
+ * is the one row that can also CHANGE something (it may adopt an unlinked
+ * service). All from ONE session, and all degrading to a placeholder instead
+ * of throwing: a service whose panel is down must still render.
  *
  * @param array<string, mixed> $params
- * @return array{jobqueue: string, disk: string, bandwidth: string, sso: string}
+ * @param null|callable $adoptionResolver see ispconfigconnect_adoptionResolver()
+ * @return array{jobqueue: string, disk: string, bandwidth: string, sso: string, link: string}
  */
-function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
-{
+function ispconfigconnect_adminLiveFields(
+    array $params,
+    ServiceProperties $properties,
+    ?callable $adoptionResolver = null
+): array {
+    $clientId = $properties->clientId();
+
     $fields = [
         'jobqueue' => 'n/a',
         'disk' => 'n/a',
@@ -2211,6 +2409,9 @@ function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
         // Until a probe answers, the honest value is "the panel was not asked",
         // which every early return below leaves in place.
         'sso' => SsoAdvice::admin(SsoAdvice::STATE_UNREACHABLE),
+        'link' => $clientId === null
+            ? 'Not linked to an ISPConfig account, and the panel could not be asked about it.'
+            : sprintf('Linked to ISPConfig client #%d (not verified - the panel could not be asked).', $clientId),
     ];
 
     try {
@@ -2226,6 +2427,16 @@ function ispconfigconnect_adminLiveFields(array $params, ?int $clientId): array
                     return $fields;
                 }
             }
+
+            $fields['link'] = ispconfigconnect_serviceLinkState(
+                $session,
+                $params,
+                $properties,
+                $adoptionResolver
+            );
+            // The usage rows below belong to whatever this service is linked to
+            // NOW, which may be an account adopted a moment ago.
+            $clientId = $properties->clientId();
 
             if ($clientId !== null) {
                 try {
@@ -2297,6 +2508,844 @@ function ispconfigconnect_failureText(\Throwable $failure): string
     $message = trim($failure->getMessage());
 
     return $message !== '' ? $message : get_class($failure);
+}
+
+// ---------------------------------------------------------------------------
+// ADOPTION OF PRE-EXISTING ACCOUNTS
+//
+// Until this existed, the module recognised a service as its own only when
+// that service carried a stored ispconfig_client_id - and that property was
+// written in exactly ONE place, CreateAccount. A customer migrated onto
+// ISPConfig from another panel therefore had a live WHMCS service and a live
+// ISPConfig account with nothing joining them, and suspend, terminate, usage
+// and single sign-on all refused with "no stored ispconfig_client_id".
+//
+// The module now links such a service ITSELF. Five rules keep that safe,
+// because this code acts on real customers' hosting:
+//
+//   1. Link ONLY on an exact, unambiguous match. Zero candidates or several
+//      means DO NOT LINK - record why and leave the service unmanaged.
+//   2. NEVER auto-link inside a destructive action. Anything that deletes or
+//      overwrites panel state refuses an unlinked service and says what to do;
+//      it does not resolve-then-act.
+//   3. Every link written is logged with the evidence that justified it.
+//   4. Adoption is idempotent and never overwrites an id that is already
+//      stored - a linked service is not even offered to the resolver.
+//   5. A stored id that no longer resolves is reported STALE and is never
+//      silently re-pointed at another client.
+//
+// WHERE THE MATCHING LIVES. Deciding WHICH panel client a service belongs to
+// is Adopt\Resolver's job, in its own lane. This file consumes it through a
+// plain-data seam (the same shape as the $rowProvider / $writer /
+// $ssoStateReader seams elsewhere in this file) so that the module tests can
+// drive every outcome without that class, and so an install that does not have
+// it degrades to "automatic adoption unavailable" instead of failing.
+// ---------------------------------------------------------------------------
+
+/** The resolver said this service maps to exactly one panel client. */
+const ISPCONFIGCONNECT_ADOPT_MATCHED = 'matched';
+/** No panel client could be attributed to this service. */
+const ISPCONFIGCONNECT_ADOPT_NO_MATCH = 'no_match';
+/** More than one candidate - the one outcome that most needs a human. */
+const ISPCONFIGCONNECT_ADOPT_AMBIGUOUS = 'ambiguous';
+/** The panel could not be read, so nothing at all was established. */
+const ISPCONFIGCONNECT_ADOPT_UNREADABLE = 'unreadable';
+
+/**
+ * The adoption resolver, or null when this install has none.
+ *
+ * THE SEAM. A callable
+ *   fn (SessionManager $session, list<array{serviceid:int, domain:string, username:string}>)
+ *       : array<int, mixed>   // keyed by WHMCS service id
+ * whose values are read by ispconfigconnect_adoptionOutcome() below. It is
+ * handed an ALREADY-OPEN session on purpose: the nightly sweep has one, and
+ * adoption must not cost a second login (ISPConfig locks an IP out after ten
+ * failed attempts in five minutes - remoting.inc.php, spec 1.4).
+ *
+ * The batch form is the only form. Resolving per service would read the panel
+ * once per service; one call per sweep is what the resolver's bulk path is
+ * for.
+ *
+ * NOTE FOR THE Adopt\Resolver LANE: the default binding below expects
+ * `WHMCS\Module\Server\Ispconfigconnect\Adopt\Resolver::__construct(SessionManager)`
+ * and `->resolveMany(array $services): array`. If the real class differs, this
+ * one function is the only thing that has to change - nothing else in this
+ * file knows the class exists.
+ *
+ * @param null|callable(SessionManager, list<array{serviceid: int, domain: string, username: string}>): array<int, mixed> $override test seam
+ * @return null|\Closure(SessionManager, list<array{serviceid: int, domain: string, username: string}>): array<int, mixed>
+ */
+function ispconfigconnect_adoptionResolver(?callable $override = null): ?\Closure
+{
+    if ($override !== null) {
+        return $override(...);
+    }
+
+    $class = 'WHMCS\\Module\\Server\\Ispconfigconnect\\Adopt\\Resolver';
+    if (!class_exists($class)) {
+        return null;
+    }
+
+    return static function (SessionManager $session, array $services) use ($class): array {
+        $resolver = new $class($session);
+        $resolveMany = [$resolver, 'resolveMany'];
+        if (!is_callable($resolveMany)) {
+            return [];
+        }
+
+        $answers = $resolveMany($services);
+
+        return is_array($answers) ? $answers : [];
+    };
+}
+
+/**
+ * One resolver answer, reduced to the only shape this file acts on.
+ *
+ * THIS IS RULE 1's ENFORCEMENT POINT, and it is deliberately here rather than
+ * in the resolver: a link is written against a real customer's hosting, so the
+ * decision to write one is re-made locally from the answer's own contents. A
+ * malformed answer, an unknown reason word, or a "match" carrying no usable
+ * client id all collapse to UNREADABLE - never to a link.
+ *
+ * The positive-id check is not defensive dressing. ISPConfig does not reject a
+ * falsy client id; trafficquota_get_by_user answers it with EVERY domain on
+ * the server (quota_lib.inc.php:80, and see Usage\Collector), so a stored 0
+ * would bill one service for the whole panel.
+ *
+ * @return array{reason: string, clientid: int|null, clientusername: string, domainid: int|null, dnszoneid: int|null, evidence: string, candidates: list<string>}
+ */
+function ispconfigconnect_adoptionOutcome(mixed $answer): array
+{
+    $outcome = [
+        'reason' => ISPCONFIGCONNECT_ADOPT_UNREADABLE,
+        'clientid' => null,
+        'clientusername' => '',
+        // Optional extras: the resolver supplies these only where it could
+        // establish them, and the module stores what it is given. The website
+        // id in particular is what website-only suspension needs, so a service
+        // adopted without one falls back to whole-client suspension.
+        'domainid' => null,
+        'dnszoneid' => null,
+        'evidence' => '',
+        'candidates' => [],
+    ];
+
+    if (!is_array($answer)) {
+        $outcome['evidence'] = 'the resolver returned no usable answer for this service';
+
+        return $outcome;
+    }
+
+    $reason = $answer['reason'] ?? null;
+    if (
+        is_string($reason)
+        && in_array($reason, [
+            ISPCONFIGCONNECT_ADOPT_MATCHED,
+            ISPCONFIGCONNECT_ADOPT_NO_MATCH,
+            ISPCONFIGCONNECT_ADOPT_AMBIGUOUS,
+            ISPCONFIGCONNECT_ADOPT_UNREADABLE,
+        ], true)
+    ) {
+        $outcome['reason'] = $reason;
+    } else {
+        $outcome['evidence'] = sprintf(
+            'the resolver returned an unrecognised outcome (%s) and was not acted on',
+            is_scalar($reason) ? (string) $reason : get_debug_type($reason)
+        );
+    }
+
+    $clientId = $answer['clientid'] ?? null;
+    if (is_numeric($clientId) && (int) $clientId > 0) {
+        $outcome['clientid'] = (int) $clientId;
+    }
+
+    $username = $answer['clientusername'] ?? '';
+    if (is_scalar($username)) {
+        $outcome['clientusername'] = trim((string) $username);
+    }
+
+    foreach (['domainid', 'dnszoneid'] as $extra) {
+        $value = $answer[$extra] ?? null;
+        if (is_numeric($value) && (int) $value > 0) {
+            $outcome[$extra] = (int) $value;
+        }
+    }
+
+    $evidence = $answer['evidence'] ?? '';
+    if (is_scalar($evidence) && trim((string) $evidence) !== '') {
+        $outcome['evidence'] = trim((string) $evidence);
+    }
+
+    $candidates = $answer['candidates'] ?? [];
+    if (is_array($candidates)) {
+        foreach ($candidates as $candidate) {
+            if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                $outcome['candidates'][] = trim((string) $candidate);
+            }
+        }
+    }
+
+    // A "match" the module cannot act on safely is not a match.
+    if ($outcome['reason'] === ISPCONFIGCONNECT_ADOPT_MATCHED && $outcome['clientid'] === null) {
+        $outcome['reason'] = ISPCONFIGCONNECT_ADOPT_UNREADABLE;
+        $outcome['evidence'] = 'the resolver reported a match but gave no usable ISPConfig client id,'
+            . ' so nothing was linked';
+    }
+
+    return $outcome;
+}
+
+/**
+ * One unlinked service's outcome as a sentence an operator can act on. The
+ * candidates are NAMED for an ambiguous answer - "ambiguous" on its own leaves
+ * an admin with nothing to do next.
+ *
+ * @param array{reason: string, clientid: int|null, clientusername: string, evidence: string, candidates: list<string>} $outcome
+ */
+function ispconfigconnect_adoptionReason(array $outcome): string
+{
+    $reason = $outcome['evidence'] !== ''
+        ? $outcome['evidence']
+        : match ($outcome['reason']) {
+            ISPCONFIGCONNECT_ADOPT_NO_MATCH => 'no ISPConfig account could be attributed to this service',
+            ISPCONFIGCONNECT_ADOPT_AMBIGUOUS => 'more than one ISPConfig account could be this service',
+            default => 'the panel could not be read, so nothing was established',
+        };
+
+    if ($outcome['candidates'] !== []) {
+        $reason .= ' Candidates: ' . implode(', ', $outcome['candidates']) . '.';
+    }
+
+    return $reason;
+}
+
+/**
+ * The shared body of the Link and Replace buttons.
+ *
+ * ORDER MATTERS HERE. The panel is asked to resolve the name BEFORE the
+ * already-linked guard runs, so that a refusal can name BOTH ids - the one
+ * stored and the one the admin meant. "This service is already linked" without
+ * saying what to leaves an admin unable to tell a mistake from a duplicate.
+ *
+ * The only panel call is a READ (client_get_by_username). Nothing here creates,
+ * updates or deletes anything on the panel: these buttons change what WHMCS has
+ * stored, and that is all they can do.
+ *
+ * @param array<string, mixed> $params
+ * @param bool $replace true for Replace ISPConfig Link - the deliberate
+ *        overwrite; false for Link, which refuses to overwrite (rule 4)
+ * @return string 'success' or error string
+ */
+function ispconfigconnect_link(array $params, string $context, bool $replace): string
+{
+    $label = $replace ? 'Replace ISPConfig Link' : 'Link';
+
+    try {
+        $properties = ispconfigconnect_serviceProperties($params);
+        $storedId = $properties->clientId();
+
+        $name = trim((string) ($params['username'] ?? ''));
+        if ($name === '') {
+            // Refused before a session is opened: an empty name has nothing to
+            // verify, and a wasted login is a wasted login.
+            return $label . ' refused: this service\'s Username field is empty, and the module will'
+                . ' not guess which ISPConfig account it means. Put the ISPConfig account name in the'
+                . ' service\'s Username field and press the button again - or leave it alone and let'
+                . ' automatic adoption match on the service domain during the nightly usage sweep.';
+        }
+
+        $session = Factory::sessionManager($params);
+        try {
+            // remote.d/client.inc.php:478 - a bare SELECT on sys_user, which
+            // throws no_client_found when the name is unknown. A miss is the
+            // NORMAL answer here, so it is turned into advice rather than an
+            // error; a connection or permission failure is not a miss and is
+            // re-thrown to the caller's usual advice path.
+            try {
+                $record = $session->call('client_get_by_username', ['username' => $name]);
+            } catch (\Throwable $failure) {
+                if (ispconfigconnect_isConnectionLevel($failure) || $failure instanceof PermissionDeniedException) {
+                    throw $failure;
+                }
+                $record = null;
+            }
+        } finally {
+            $session->close();
+        }
+
+        if (!is_array($record)) {
+            return ispconfigconnect_noSuchAccount($label, $name, $params);
+        }
+
+        // sys_user rows exist for panel ADMINISTRATORS too, and those carry no
+        // client id. Linking a service to one would point every later operation
+        // at something that is not a hosting account.
+        $resolvedId = isset($record['client_id']) && is_numeric($record['client_id'])
+            ? (int) $record['client_id']
+            : 0;
+        if ($resolvedId <= 0) {
+            return sprintf(
+                '%s refused: "%s" is a panel login but not an ISPConfig CLIENT account (it carries no'
+                . ' client id), so there is nothing for this service to be linked to. Name the client'
+                . ' account that owns this customer\'s hosting instead.',
+                $label,
+                $name
+            );
+        }
+
+        if ($storedId !== null && $storedId === $resolvedId) {
+            // Rule 4, the idempotent case: already exactly this. Nothing is
+            // written and nothing is an error.
+            return 'success';
+        }
+
+        if ($storedId !== null && !$replace) {
+            return sprintf(
+                'Link refused: this service is already linked to ISPConfig client #%d, and "%s" is'
+                . ' client #%d. A stored link is never silently re-pointed - the id on file may be the'
+                . ' correct one, and overwriting it would move every later suspend, terminate and usage'
+                . ' read onto a different account. If #%d really is correct, press "Replace ISPConfig'
+                . ' Link" instead, which runs the same check and then overwrites deliberately. Nothing'
+                . ' has been changed.',
+                $storedId,
+                $name,
+                $resolvedId,
+                $resolvedId
+            );
+        }
+
+        if ($storedId !== null) {
+            // Replacing: the website, FTP, mail, DNS and database ids on file
+            // belong to the OLD client and would be actively wrong against the
+            // new one, so they go with it.
+            $properties->clear();
+        }
+
+        $properties->setClientId($resolvedId);
+        $properties->setClientUsername($name);
+
+        $evidence = sprintf(
+            'an administrator named ISPConfig account "%s" on WHMCS service #%d;'
+            . ' the panel resolved that name to client #%d (client_get_by_username)',
+            $name,
+            (int) ($params['serviceid'] ?? 0),
+            $resolvedId
+        );
+
+        ispconfigconnect_logModuleCall(
+            $context,
+            ['serviceid' => $params['serviceid'] ?? null, 'username' => $name],
+            [
+                'linked' => true,
+                'ispconfig_client_id' => $resolvedId,
+                'ispconfig_client_username' => $name,
+                'replaced' => $storedId,
+                'evidence' => $evidence,
+                'panel_touched' => false,
+            ]
+        );
+
+        return 'success';
+    } catch (\Throwable $failure) {
+        return ispconfigconnect_errorString($label, $failure);
+    }
+}
+
+/**
+ * The "no such account" advice.
+ *
+ * THIS IS THE MESSAGE THE MIGRATION CASE ACTUALLY HITS, so it is written for
+ * it. A service moved from another control panel still carries THAT panel's
+ * username in WHMCS - the owner's live data has a service whose WHMCS username
+ * is a random string while the ISPConfig account owning the same domain is
+ * named after the customer. Searching ISPConfig for the old name finds nothing,
+ * and a bare "not found" reads as "the module cannot see my panel" when the
+ * truth is "you searched by the wrong key".
+ *
+ * So it names the key that failed, names the DOMAIN that automatic adoption
+ * uses instead, and gives both ways forward.
+ *
+ * @param array<string, mixed> $params
+ */
+function ispconfigconnect_noSuchAccount(string $label, string $name, array $params): string
+{
+    $domain = trim((string) ($params['domain'] ?? ''));
+
+    return sprintf(
+        '%s refused: this ISPConfig panel has no account named "%s", so nothing was linked and'
+        . ' nothing was changed. That is the usual result for a service migrated from another'
+        . ' control panel: the WHMCS Username field still holds the OLD panel\'s login name, which'
+        . ' ISPConfig has never seen. Automatic adoption does not use that field at all - it matches'
+        . ' on the service DOMAIN (%s). Two ways forward: either set this service\'s Username field'
+        . ' to the ISPConfig account name (System > Clients in the panel lists them) and press the'
+        . ' button again, or change nothing and let automatic adoption link it on the next nightly'
+        . ' usage sweep, which reports in the module log what it matched and why.',
+        $label,
+        $name,
+        $domain !== '' ? $domain : 'not set on this service - set it, or the automatic path cannot work either'
+    );
+}
+
+/**
+ * Adopt every unlinked service in one batch, and hand back the service list
+ * with the newly linked ones filled in so the SAME sweep bills them.
+ *
+ * WHY HERE. The nightly sweep is the ideal adoption moment: it already runs
+ * per server, it already holds an open session, it already enumerates every
+ * service on that server, and a mistake costs a wrong usage row - which the
+ * next sweep corrects - rather than a deleted account. Contrast
+ * TerminateAccount, which must never do this at all.
+ *
+ * Rule 4 is enforced by construction: only services with no stored id are put
+ * in the batch, so a linked service is never re-decided.
+ *
+ * @param list<ServiceRef> $services
+ * @param array<int, string> $domains WHMCS service id => service domain
+ * @param null|callable $adoptionResolver test seam - see ispconfigconnect_adoptionResolver()
+ * @param null|callable(int, array<string, string>): void $propertyWriter test seam
+ * @return array{services: list<ServiceRef>, adopted: array<int, string>, unlinked: array<int, string>, note: string}
+ */
+function ispconfigconnect_adoptUnlinked(
+    SessionManager $session,
+    array $services,
+    array $domains,
+    ?callable $adoptionResolver = null,
+    ?callable $propertyWriter = null
+): array {
+    $batch = [];
+    foreach ($services as $service) {
+        if ($service->clientId <= 0) {
+            $batch[] = [
+                'serviceid' => $service->serviceId,
+                // The DOMAIN is the key that matches. A migrated service's
+                // username belongs to the panel it came from.
+                'domain' => $domains[$service->serviceId] ?? '',
+                'username' => $service->username,
+            ];
+        }
+    }
+
+    if ($batch === []) {
+        return ['services' => $services, 'adopted' => [], 'unlinked' => [], 'note' => ''];
+    }
+
+    $resolve = ispconfigconnect_adoptionResolver($adoptionResolver);
+    if ($resolve === null) {
+        return [
+            'services' => $services,
+            'adopted' => [],
+            'unlinked' => [],
+            'note' => sprintf(
+                'unavailable: %d service(s) on this server carry no ISPConfig client id, and this'
+                . ' install has no adoption resolver, so they were left unmanaged. Link them with the'
+                . ' "Link to ISPConfig Account" button on each service.',
+                count($batch)
+            ),
+        ];
+    }
+
+    try {
+        // ONE call for the whole server. Resolving per service would read the
+        // panel once per service, which on a few hundred services is a sweep
+        // that never finishes.
+        $answers = $resolve($session, $batch);
+    } catch (\Throwable $failure) {
+        return [
+            'services' => $services,
+            'adopted' => [],
+            'unlinked' => [],
+            'note' => 'failed: ' . ispconfigconnect_failureText($failure)
+                . ' - no service was linked, and none was changed.',
+        ];
+    }
+
+    $write = $propertyWriter ?? ispconfigconnect_servicePropertyWriter();
+    $adopted = [];
+    $unlinked = [];
+    $linkedIds = [];
+
+    foreach ($batch as $candidate) {
+        $serviceId = $candidate['serviceid'];
+        $outcome = ispconfigconnect_adoptionOutcome($answers[$serviceId] ?? null);
+
+        if ($outcome['reason'] !== ISPCONFIGCONNECT_ADOPT_MATCHED || $outcome['clientid'] === null) {
+            // Rule 1: zero candidates, several candidates, an unreadable panel
+            // or an answer that cannot be trusted all end here - unmanaged,
+            // with the reason on the record.
+            $unlinked[$serviceId] = ispconfigconnect_adoptionReason($outcome);
+
+            continue;
+        }
+
+        $values = [
+            ServiceProperties::KEY_CLIENT_ID => (string) $outcome['clientid'],
+            ServiceProperties::KEY_CLIENT_USERNAME => $outcome['clientusername'],
+        ];
+        if ($outcome['domainid'] !== null) {
+            $values[ServiceProperties::KEY_DOMAIN_ID] = (string) $outcome['domainid'];
+        }
+        if ($outcome['dnszoneid'] !== null) {
+            $values[ServiceProperties::KEY_DNS_ZONE_ID] = (string) $outcome['dnszoneid'];
+        }
+
+        try {
+            $write($serviceId, $values);
+        } catch (\Throwable $failure) {
+            // The link could not be PERSISTED, so it did not happen. Reporting
+            // it as adopted would claim a link no later operation can read.
+            $unlinked[$serviceId] = 'matched, but the link could not be stored: '
+                . ispconfigconnect_failureText($failure);
+
+            continue;
+        }
+
+        $adopted[$serviceId] = $outcome['evidence'];
+        $linkedIds[$serviceId] = ['id' => $outcome['clientid'], 'username' => $outcome['clientusername']];
+        ispconfigconnect_logAdoption(
+            $serviceId,
+            $outcome['clientid'],
+            $outcome['clientusername'],
+            $outcome['evidence'],
+            'UsageUpdate'
+        );
+    }
+
+    // Rebuild the refs so a service linked a moment ago is billed by THIS
+    // sweep - an adopted service that had to wait a day for its first usage
+    // row would look like the feature had not worked.
+    $updated = [];
+    foreach ($services as $service) {
+        $link = $linkedIds[$service->serviceId] ?? null;
+        $updated[] = $link === null
+            ? $service
+            : new ServiceRef(
+                $service->serviceId,
+                $link['id'],
+                $link['username'] !== '' ? $link['username'] : $service->username
+            );
+    }
+
+    return ['services' => $updated, 'adopted' => $adopted, 'unlinked' => $unlinked, 'note' => ''];
+}
+
+/**
+ * ONE service's link state, as a sentence for the admin service tab - and, for
+ * an unlinked service, the moment it gets adopted.
+ *
+ * The three answers an admin needs, and what each one does:
+ *
+ *   LINKED   - the stored id still resolves. Names the account, so a
+ *              mis-linked service is visible rather than merely "managed".
+ *   STALE    - the stored id no longer exists on the panel (rule 5). It is
+ *              REPORTED, never repaired: the module does not go looking for
+ *              "the client that fits now", because that client could be
+ *              somebody else's. The admin gets the two buttons that fix it.
+ *   UNLINKED - resolved through the adoption seam. A confident match is
+ *              written here and now; anything else is explained, with the
+ *              candidates named when the answer was ambiguous.
+ *
+ * A stored id is never handed to the resolver at all, which is what makes rule
+ * 4 (never overwrite) structural rather than a check that could be forgotten.
+ *
+ * @param array<string, mixed> $params
+ * @param null|callable $adoptionResolver see ispconfigconnect_adoptionResolver()
+ */
+function ispconfigconnect_serviceLinkState(
+    SessionManager $session,
+    array $params,
+    ServiceProperties $properties,
+    ?callable $adoptionResolver = null
+): string {
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    $domain = trim((string) ($params['domain'] ?? ''));
+    $storedId = $properties->clientId();
+
+    if ($storedId !== null) {
+        try {
+            if (!ispconfigconnect_clientExists($session, $storedId)) {
+                return sprintf(
+                    'STALE: the stored ISPConfig client id #%d no longer exists on this panel.'
+                    . ' Nothing has been re-linked - the module will not pick a replacement account'
+                    . ' by itself, because the one it picked could belong to another customer.'
+                    . ' Use "Replace ISPConfig Link" (after setting the Username field to the correct'
+                    . ' ISPConfig account name) or "Unlink from ISPConfig" to clear it.',
+                    $storedId
+                );
+            }
+        } catch (\Throwable $failure) {
+            // A panel that cannot answer is not evidence of staleness.
+            return sprintf(
+                'Linked to ISPConfig client #%d. The panel could not confirm it just now (%s).',
+                $storedId,
+                ispconfigconnect_failureText($failure)
+            );
+        }
+
+        $username = $properties->clientUsername();
+
+        return sprintf(
+            'Linked to ISPConfig client #%d%s.',
+            $storedId,
+            $username !== null && $username !== '' ? ' (' . $username . ')' : ''
+        );
+    }
+
+    $resolve = ispconfigconnect_adoptionResolver($adoptionResolver);
+    if ($resolve === null) {
+        return 'Not linked to an ISPConfig account. Automatic adoption is unavailable on this'
+            . ' install, so link it with the "Link to ISPConfig Account" button (set the service\'s'
+            . ' Username field to the ISPConfig account name first).';
+    }
+
+    try {
+        $answers = $resolve($session, [[
+            'serviceid' => $serviceId,
+            'domain' => $domain,
+            'username' => trim((string) ($params['username'] ?? '')),
+        ]]);
+    } catch (\Throwable $failure) {
+        return 'Not linked to an ISPConfig account - the panel could not be searched just now ('
+            . ispconfigconnect_failureText($failure) . ').';
+    }
+
+    $outcome = ispconfigconnect_adoptionOutcome($answers[$serviceId] ?? null);
+
+    if ($outcome['reason'] !== ISPCONFIGCONNECT_ADOPT_MATCHED || $outcome['clientid'] === null) {
+        // Rule 1. Not a link, and the reason is spelled out rather than left
+        // as a status word.
+        return 'Not linked to an ISPConfig account: ' . ispconfigconnect_adoptionReason($outcome)
+            . ' Use "Link to ISPConfig Account" to link it by name instead.';
+    }
+
+    try {
+        $properties->setClientId($outcome['clientid']);
+        $properties->setClientUsername($outcome['clientusername']);
+        if ($outcome['domainid'] !== null) {
+            $properties->setDomainId($outcome['domainid']);
+        }
+        if ($outcome['dnszoneid'] !== null) {
+            $properties->setDnsZoneId($outcome['dnszoneid']);
+        }
+    } catch (\Throwable $failure) {
+        return 'Not linked: an ISPConfig account was matched, but the link could not be stored ('
+            . ispconfigconnect_failureText($failure) . ').';
+    }
+
+    ispconfigconnect_logAdoption(
+        $serviceId,
+        $outcome['clientid'],
+        $outcome['clientusername'],
+        $outcome['evidence'],
+        'AdminServicesTabFields'
+    );
+
+    return sprintf(
+        'Linked to ISPConfig client #%d%s - adopted automatically just now: %s',
+        $outcome['clientid'],
+        $outcome['clientusername'] !== '' ? ' (' . $outcome['clientusername'] . ')' : '',
+        $outcome['evidence']
+    );
+}
+
+/**
+ * The default service-property writer for the sweep, which has no WHMCS
+ * service model in scope (UsageUpdate is called per SERVER).
+ *
+ * It is the exact mirror of the fallback READER wired in
+ * ispconfigconnect_serviceProperties(): service properties are ordinary
+ * product custom fields, addressed by tblcustomfields.fieldname +
+ * tblcustomfieldsvalues.relid.
+ *
+ * IT THROWS RATHER THAN NO-OPS when the product has no custom-field definition
+ * for a key yet. WHMCS creates those rows through the service model, so a
+ * product that this module has never provisioned on may not have them; a
+ * silent no-op there would report a link that no later read can see. The
+ * caller turns the throw into that service's unlinked reason, and the admin
+ * service tab - which DOES have a model - creates the rows the first time it
+ * adopts a service on that product.
+ *
+ * @return \Closure(int, array<string, string>): void
+ */
+function ispconfigconnect_servicePropertyWriter(): \Closure
+{
+    return static function (int $serviceId, array $values): void {
+        if (!class_exists('\\WHMCS\\Database\\Capsule')) {
+            throw new \RuntimeException('WHMCS\\Database\\Capsule is unavailable');
+        }
+
+        $productId = \WHMCS\Database\Capsule::table('tblhosting')
+            ->where('id', $serviceId)
+            ->value('packageid');
+        if (!is_numeric($productId) || (int) $productId <= 0) {
+            throw new \RuntimeException('the service has no product id in tblhosting');
+        }
+
+        foreach ($values as $key => $value) {
+            $fieldId = \WHMCS\Database\Capsule::table('tblcustomfields')
+                ->where('type', 'product')
+                ->where('relid', (int) $productId)
+                ->where('fieldname', $key)
+                ->value('id');
+
+            if (!is_numeric($fieldId) || (int) $fieldId <= 0) {
+                throw new \RuntimeException(sprintf(
+                    'this service\'s product has no "%s" custom field yet, so the link could not be'
+                    . ' stored - open the service in the admin area once (its ISPConfig tab creates'
+                    . ' the field) and it will be adopted on the next sweep',
+                    $key
+                ));
+            }
+
+            $existing = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+                ->where('fieldid', (int) $fieldId)
+                ->where('relid', $serviceId)
+                ->exists();
+
+            if ($existing) {
+                \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+                    ->where('fieldid', (int) $fieldId)
+                    ->where('relid', $serviceId)
+                    ->update(['value' => $value]);
+            } else {
+                \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')->insert([
+                    'fieldid' => (int) $fieldId,
+                    'relid' => $serviceId,
+                    'value' => $value,
+                ]);
+            }
+        }
+    };
+}
+
+/**
+ * Every service on one server as one read, so the sweep's three derived views
+ * (refs, stored bandwidth, domains) cost one trip rather than three.
+ *
+ * @param null|callable(int): list<array<string, mixed>> $rowProvider
+ * @return list<array<string, mixed>>
+ */
+function ispconfigconnect_serviceRowsOnce(int $serverId, ?callable $rowProvider = null): array
+{
+    try {
+        $rows = $rowProvider === null
+            ? ispconfigconnect_serverServiceRows($serverId)
+            : $rowProvider($serverId);
+    } catch (\Throwable) {
+        return [];
+    }
+
+    // The provider is a seam, so its answer is treated as untrusted: a
+    // non-array, or a list with junk in it, costs the sweep nothing.
+    if (!is_array($rows)) {
+        return [];
+    }
+
+    return array_values(array_filter($rows, 'is_array'));
+}
+
+/**
+ * The service domain of each row - the key automatic adoption matches on.
+ *
+ * @param list<array<string, mixed>> $rows
+ * @return array<int, string>
+ */
+function ispconfigconnect_serviceDomains(array $rows): array
+{
+    $domains = [];
+    foreach ($rows as $row) {
+        $serviceId = (int) ($row['id'] ?? 0);
+        $domain = trim((string) ($row['domain'] ?? ''));
+        if ($serviceId > 0 && $domain !== '') {
+            $domains[$serviceId] = $domain;
+        }
+    }
+
+    return $domains;
+}
+
+/**
+ * Rule 3. Every automatic link gets its own module-log entry carrying the
+ * evidence that justified it, so an operator can audit after the fact what the
+ * module decided and why - not merely that something changed.
+ */
+function ispconfigconnect_logAdoption(
+    int $serviceId,
+    int $clientId,
+    string $username,
+    string $evidence,
+    string $source
+): void {
+    ispconfigconnect_logModuleCall(
+        'Adopt',
+        ['serviceid' => $serviceId, 'source' => $source],
+        [
+            'linked' => true,
+            'ispconfig_client_id' => $clientId,
+            'ispconfig_client_username' => $username,
+            'evidence' => $evidence,
+        ]
+    );
+}
+
+/**
+ * Rule 2's message. Every operation that writes to or deletes panel state ends
+ * up here when the service is not linked.
+ *
+ * WHY THE DOMAIN IS NAMED. Automatic adoption keys on the service DOMAIN, not
+ * on the WHMCS username - a service migrated from another panel carries that
+ * panel's username, which ISPConfig has never heard of. Printing the domain
+ * lets the admin confirm the key the automatic path will actually use before
+ * relying on it.
+ *
+ * @param array<string, mixed> $params
+ */
+function ispconfigconnect_unlinkedRefusal(string $operation, array $params): string
+{
+    $domain = trim((string) ($params['domain'] ?? ''));
+
+    return sprintf(
+        '%s refused: this service is not linked to an ISPConfig account.'
+        . ' An operation that changes or deletes panel state never resolves an account by itself,'
+        . ' because a wrong match would act on a different customer\'s hosting. Link it first, then'
+        . ' retry - either press "Link to ISPConfig Account" on this service (set the service\'s'
+        . ' Username field to the ISPConfig account name first), or leave it to automatic adoption,'
+        . ' which matches on the service domain (%s) during the nightly usage sweep and needs nothing'
+        . ' from you.',
+        $operation,
+        $domain !== '' ? $domain : 'not set on this service'
+    );
+}
+
+/**
+ * Rule 5's message. The stored id no longer resolves on the panel; the module
+ * says so and stops, rather than finding "the client that looks right now".
+ */
+function ispconfigconnect_staleRefusal(string $operation, int $clientId): string
+{
+    return sprintf(
+        '%s refused: the stored ISPConfig client id #%d no longer exists on this panel, so this'
+        . ' service\'s link is stale. The module will not re-point a stale link at another account'
+        . ' by itself - whichever id it picked could belong to a different customer. Check the panel,'
+        . ' then either press "Replace ISPConfig Link" on this service (having set the service\'s'
+        . ' Username field to the correct ISPConfig account name) or press "Unlink from ISPConfig"'
+        . ' to clear the stored ids. Nothing on the panel has been changed.',
+        $operation,
+        $clientId
+    );
+}
+
+/**
+ * Does the stored client id still resolve to a live panel client?
+ *
+ * client_get answers a miss with null rather than an error (queryOneRecord ->
+ * remoting_lib getDataRecord), which is the same check Usage\Collector already
+ * relies on to catch a hand-deleted client. A THROWN failure is not staleness -
+ * it is a panel problem - so it propagates to the caller's normal error path.
+ */
+function ispconfigconnect_clientExists(SessionManager $session, int $clientId): bool
+{
+    return is_array($session->call('client_get', ['client_id' => $clientId]));
 }
 
 /**

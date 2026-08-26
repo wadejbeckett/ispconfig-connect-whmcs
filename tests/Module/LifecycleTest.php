@@ -165,8 +165,15 @@ final class LifecycleTest extends ModuleTestCase
         $result = ispconfigconnect_SuspendAccount($this->params());
 
         self::assertNotSame('success', $result);
-        self::assertStringContainsString('ispconfig_client_id', $result);
-        // No stored id -> no wire traffic at all.
+        // The refusal is written for the person reading it, not for the
+        // developer: it names the operation, says the service is not linked,
+        // and gives both routes to fixing that. Naming the raw property
+        // (ispconfig_client_id) told an admin what the module lacked but
+        // nothing about what to do - see AdoptionTest for the full contract.
+        self::assertStringStartsWith('Suspend refused:', $result);
+        self::assertStringContainsString('not linked', $result);
+        self::assertStringContainsString('Link to ISPConfig Account', $result);
+        // Still: no stored id -> no wire traffic at all.
         self::assertSame([], $this->fake->requestLog);
     }
 }
