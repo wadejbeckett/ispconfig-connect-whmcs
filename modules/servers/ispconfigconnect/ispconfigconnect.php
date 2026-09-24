@@ -1127,6 +1127,9 @@ function ispconfigconnect_UsageUpdate(
     // a later, lower reading (a suspended site stops accruing traffic on the
     // panel) cannot erase it - see Usage\ServiceUsage::toHostingColumnsGiven().
     $storedBandwidth = ispconfigconnect_storedBandwidth($serverId, $rowsOnce);
+    // Alongside it, when each stored figure was written, so a month rollover
+    // resets bwusage instead of billing every month at the highest month seen.
+    $storedLastUpdate = ispconfigconnect_storedLastUpdate($serverId, $rowsOnce);
     $domains = ispconfigconnect_serviceDomains($rows);
 
     $updated = 0;
@@ -1171,7 +1174,10 @@ function ispconfigconnect_UsageUpdate(
                 try {
                     $write(
                         $usage->serviceId,
-                        $usage->toHostingColumnsGiven($storedBandwidth[$usage->serviceId] ?? null)
+                        $usage->toHostingColumnsGiven(
+                            $storedBandwidth[$usage->serviceId] ?? null,
+                            $storedLastUpdate[$usage->serviceId] ?? null
+                        )
                     );
                     $updated++;
                 } catch (\Throwable $writeFailure) {
@@ -1349,16 +1355,21 @@ function ispconfigconnect_MetricProvider(array $params, ?callable $rowProvider =
             $username = '';
 
             if (is_object($tenant)) {
-                $properties = get_object_vars($tenant);
-                $serviceId = isset($properties['id']) && is_numeric($properties['id'])
-                    ? (int) $properties['id']
-                    : 0;
-                $username = isset($properties['username']) && is_scalar($properties['username'])
-                    ? trim((string) $properties['username'])
-                    : '';
-            } elseif (is_int($tenant) || (is_string($tenant) && ctype_digit($tenant))) {
-                $serviceId = (int) $tenant;
+                // A WHMCS service model exposes id/username through accessors,
+                // which get_object_vars() cannot see (they are guarded Eloquent
+                // attributes, not public properties); read them directly. The
+                // null-coalescing also covers a plain stdClass tenant double.
+                $id = $tenant->id ?? null;
+                $serviceId = is_numeric($id) ? (int) $id : 0;
+                $name = $tenant->username ?? null;
+                $username = is_scalar($name) ? trim((string) $name) : '';
+            } elseif (is_int($tenant)) {
+                $serviceId = $tenant;
             } elseif (is_string($tenant)) {
+                // usage() keys tenants by USERNAME, so a string tenant is a
+                // username first; an all-digit username is only treated as a
+                // service id below if no username matches (a numeric username
+                // must not be mistaken for a service id).
                 $username = trim($tenant);
             }
 
@@ -1370,14 +1381,23 @@ function ispconfigconnect_MetricProvider(array $params, ?callable $rowProvider =
                 (int) ($this->params['serverid'] ?? 0),
                 $this->rowProvider
             );
-            foreach ($services as $service) {
-                if ($serviceId > 0 && $service->serviceId === $serviceId) {
-                    return $service;
+
+            if ($username !== '') {
+                foreach ($services as $service) {
+                    if ($service->username === $username) {
+                        return $service;
+                    }
                 }
             }
-            foreach ($services as $service) {
-                if ($username !== '' && $service->username === $username) {
-                    return $service;
+
+            $numericId = $serviceId > 0
+                ? $serviceId
+                : ($username !== '' && ctype_digit($username) ? (int) $username : 0);
+            if ($numericId > 0) {
+                foreach ($services as $service) {
+                    if ($service->serviceId === $numericId) {
+                        return $service;
+                    }
                 }
             }
 
@@ -2364,6 +2384,42 @@ function ispconfigconnect_storedBandwidth(int $serverId, ?callable $rowProvider 
 }
 
 /**
+ * tblhosting.lastupdate per service, from the same rows the sweep already
+ * reads. It lets Usage\ServiceUsage::toHostingColumnsGiven() tell this month's
+ * accumulated bwusage (which a lower reading must not erase) from a stale peak
+ * left over after a month rollover (which must be replaced). Missing values
+ * map to null, which keeps the previous "always keep the higher figure"
+ * behaviour for that service.
+ *
+ * @param null|callable(int): list<array<string, mixed>> $rowProvider
+ * @return array<int, string>
+ */
+function ispconfigconnect_storedLastUpdate(int $serverId, ?callable $rowProvider = null): array
+{
+    try {
+        $rows = $rowProvider === null
+            ? ispconfigconnect_serverServiceRows($serverId)
+            : $rowProvider($serverId);
+    } catch (\Throwable) {
+        return [];
+    }
+
+    $stored = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $serviceId = (int) ($row['id'] ?? 0);
+        $lastUpdate = $row['lastupdate'] ?? null;
+        if ($serviceId > 0 && is_string($lastUpdate) && $lastUpdate !== '') {
+            $stored[$serviceId] = $lastUpdate;
+        }
+    }
+
+    return $stored;
+}
+
+/**
  * Every service on one WHMCS server, as the usage code addresses them.
  *
  * @param null|callable(int): list<array<string, mixed>> $rowProvider
@@ -2431,10 +2487,12 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
                 ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended'),
             ])
             // bwusage comes along so the sweep can refuse to overwrite an
-            // accumulated month's traffic with a lower reading (see
+            // accumulated month's traffic with a lower reading, and lastupdate
+            // so it can tell this month's accumulated total from a stale peak
+            // left over after a month rollover (see
             // Usage\ServiceUsage::toHostingColumnsGiven()); domain is the key
             // automatic adoption matches an unlinked service on.
-            ->get(['id', 'username', 'domain', 'bwusage']);
+            ->get(['id', 'username', 'domain', 'bwusage', 'lastupdate']);
 
         $rows = [];
         foreach (is_iterable($services) ? $services : [] as $service) {
@@ -2448,6 +2506,7 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
                     'bwusage' => isset($columns['bwusage']) && is_numeric($columns['bwusage'])
                         ? (int) $columns['bwusage']
                         : null,
+                    'lastupdate' => isset($columns['lastupdate']) ? (string) $columns['lastupdate'] : null,
                 ];
             }
         }

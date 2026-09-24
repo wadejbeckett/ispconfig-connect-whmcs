@@ -73,6 +73,36 @@ final class UsageUpdateTest extends ModuleTestCase
         );
     }
 
+    public function testMonthRolloverResetsStoredBandwidthInsteadOfKeepingLastMonthsPeak(): void
+    {
+        $clientId = $this->fake->addClient('svc1');
+        $this->fake->addWebsite($clientId, 'one.example', trafficQuotaMegabytes: 10240);
+        // Measured this month: 1024 MiB.
+        $this->fake->setWebTraffic('one.example', thisMonthBytes: 1073741824);
+        // A 51200 MB peak stored LAST month must not carry into this month.
+        $lastMonth = (new \DateTimeImmutable('first day of last month'))->format('Y-m-d H:i:s');
+        $row = $this->row(101, $clientId, 'svc1') + ['bwusage' => 51200, 'lastupdate' => $lastMonth];
+
+        ispconfigconnect_UsageUpdate($this->params(['serverid' => 3]), $this->rows([$row]), $this->writer());
+
+        self::assertSame(1024, $this->writes[101]['bwusage']);
+    }
+
+    public function testThisMonthsAccumulatedBandwidthIsNotErasedByALowerReading(): void
+    {
+        $clientId = $this->fake->addClient('svc1');
+        $this->fake->addWebsite($clientId, 'one.example', trafficQuotaMegabytes: 10240);
+        // A suspended site stops accruing, so the panel reports a LOWER 1024 MiB
+        // than the 5120 MB WHMCS already holds for THIS month - keep the higher.
+        $this->fake->setWebTraffic('one.example', thisMonthBytes: 1073741824);
+        $thisMonth = (new \DateTimeImmutable('now'))->format('Y-m-d H:i:s');
+        $row = $this->row(101, $clientId, 'svc1') + ['bwusage' => 5120, 'lastupdate' => $thisMonth];
+
+        ispconfigconnect_UsageUpdate($this->params(['serverid' => 3]), $this->rows([$row]), $this->writer());
+
+        self::assertSame(5120, $this->writes[101]['bwusage']);
+    }
+
     public function testUsesOneLoginForTheWholeServerSweep(): void
     {
         $first = $this->fake->addClient('svc1');

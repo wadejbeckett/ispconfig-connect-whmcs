@@ -207,6 +207,26 @@ final class MetricProviderTest extends ModuleTestCase
         self::assertSame(1024, self::values($provider->tenantUsage($model))['diskusage']);
     }
 
+    public function testTenantUsageMatchesAnAllDigitUsernameBeforeAServiceId(): void
+    {
+        // A client whose ISPConfig username is all digits, on a service whose id
+        // is NOT that number (diskusage 1024).
+        $numericNameClient = $this->seedClient('4711');
+        // A different service whose id IS 4711, which a naive "digits -> service
+        // id" resolution would wrongly pick (diskusage 2048).
+        $otherClient = $this->fake->addClient('other');
+        $otherDomain = $this->fake->addWebsite($otherClient, 'other.example', hdQuotaMegabytes: 4096);
+        $this->fake->setDiskUsage('web' . $otherDomain, usedKilobytes: 2097152);
+
+        $provider = ispconfigconnect_MetricProvider($this->params(), $this->rows([
+            $this->row(202, $numericNameClient, '4711'),
+            $this->row(4711, $otherClient, 'other'),
+        ]));
+
+        // '4711' is a username, so it resolves to service 202, not service #4711.
+        self::assertSame(1024, self::values($provider->tenantUsage('4711'))['diskusage']);
+    }
+
     public function testAnUnknownTenantYieldsTheMetricCatalogueWithoutUsage(): void
     {
         $metrics = ispconfigconnect_MetricProvider($this->params(), $this->rows([]))->tenantUsage('nobody');
