@@ -7,6 +7,7 @@ namespace Ispconfigconnect\Tests\Unit\Server;
 use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
 use Ispconfigconnect\Tests\Support\FakeIspconfigServer;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\RestClient;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
@@ -395,6 +396,66 @@ final class RemoteMetaDataTest extends TestCase
         self::assertGreaterThan(400, strlen($error), 'all four probes must have reported');
         self::assertLessThanOrEqual(500, strlen($error));
         self::assertStringEndsWith('...', $error);
+    }
+
+    /**
+     * meta_data is a TEXT column and the panel is untrusted. A broken or hostile
+     * panel returning a huge version string (200 KB demonstrated) would bloat
+     * the stored JSON and could overflow the column, dropping the WHOLE
+     * diagnostics row. The version is validated and capped instead: an
+     * implausible string is a per-function probe fault - the other numbers still
+     * render, ispconfig_version is dropped, and the oversized string never
+     * reaches the stored JSON.
+     */
+    public function testAnOversizedVersionStringIsRejectedInsteadOfBloatingTheStoredJson(): void
+    {
+        $this->fake->appVersion = str_repeat('A', 200_000);
+        $this->fake->addClient('alpha');
+
+        $meta = $this->gather();
+
+        self::assertArrayNotHasKey('ispconfig_version', $meta);
+        self::assertSame(1, $meta['client_count'], 'the other probes must still answer');
+        self::assertSame(RemoteMetaData::STATUS_DEGRADED, $meta['ispconfig_status']);
+        self::assertStringContainsString('panel version', (string) $meta['ispconfig_error']);
+
+        // The 200 KB string is nowhere in what WHMCS would store.
+        $stored = (string) json_encode($meta, JSON_THROW_ON_ERROR);
+        self::assertLessThan(1000, strlen($stored));
+        self::assertStringNotContainsString(str_repeat('A', 40), $stored);
+    }
+
+    /** @return array<string, array{string, bool}> version string => is it stored */
+    public static function versionStrings(): array
+    {
+        return [
+            'normal' => ['3.3.1p1', true],
+            'dotted only' => ['3.3.1', true],
+            'dev suffix with space' => ['3.2.11p1 dev', true],
+            'at the 32-char cap' => [str_repeat('9', 32), true],
+            'one over the cap' => [str_repeat('9', 33), false],
+            'markup attempt' => ['<b>3.3</b>', false],
+            'newline injection' => ["3.3.1\n<script>", false],
+            'huge' => [str_repeat('A', 200_000), false],
+        ];
+    }
+
+    #[DataProvider('versionStrings')]
+    public function testOnlyAPlausibleVersionStringIsStored(string $version, bool $stored): void
+    {
+        $this->fake->appVersion = $version;
+        $this->fake->addClient('alpha');
+
+        $meta = $this->gather();
+
+        if ($stored) {
+            self::assertSame($version, $meta['ispconfig_version'] ?? null);
+            self::assertSame(RemoteMetaData::STATUS_OK, $meta['ispconfig_status']);
+        } else {
+            self::assertArrayNotHasKey('ispconfig_version', $meta);
+            self::assertSame(RemoteMetaData::STATUS_DEGRADED, $meta['ispconfig_status']);
+            self::assertStringContainsString('panel version', (string) $meta['ispconfig_error']);
+        }
     }
 
     // ---- session ownership ------------------------------------------------
