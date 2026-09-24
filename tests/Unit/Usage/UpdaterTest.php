@@ -264,13 +264,16 @@ final class UpdaterTest extends TestCase
 
     public function testLockoutAbortsTheWholeRunInsteadOfBurningEveryService(): void
     {
-        // Every further call would extend the 5-minute window (remoting.inc.php),
-        // and SessionManager's circuit is already open - continuing would only
-        // manufacture N identical failures.
-        $session = new SessionManager(new RestClient($this->fake), 'remote', 'wrong-password');
+        // Prime the fake's per-IP failure counter with ten wrong-password
+        // logins. Each uses a FRESH SessionManager - mirroring how every
+        // per-operation entry point builds its own - because one manager now
+        // latches the first LoginFailedException and fails fast on later calls
+        // (spec 1.4: a bad login cannot become valid mid-batch), so ten
+        // distinct managers are needed to spend ten real login attempts.
         for ($i = 0; $i < 10; $i++) {
             try {
-                $session->call('client_get', ['client_id' => 1]);
+                (new SessionManager(new RestClient($this->fake), 'remote', 'wrong-password'))
+                    ->call('client_get', ['client_id' => 1]);
             } catch (\Throwable) {
                 // priming the fake's per-IP failure counter
             }

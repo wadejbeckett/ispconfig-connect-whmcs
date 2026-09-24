@@ -6,6 +6,7 @@ namespace WHMCS\Module\Server\Ispconfigconnect\Api;
 
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\IspconfigException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LockoutException;
+use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LoginFailedException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\SessionExpiredException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException;
 
@@ -43,11 +44,9 @@ final class SessionManager
      *   - TransportException: the panel is unreachable or misconfigured, so
      *     retrying it per call() burns one full CURLOPT_TIMEOUT each time.
      *
-     * LoginFailedException would belong here too (a wrong password/allowlist
-     * cannot become valid mid-batch, and re-attempting spends the panel's
-     * 10-failures-per-5-minutes budget toward a lockout), but latching it is
-     * deferred: it changes the wire behaviour a per-run usage/metrics test in
-     * tests/Unit/Usage relies on. See the hand-off report.
+     *   - LoginFailedException: a wrong password or an IP-allowlist rejection
+     *     cannot become valid mid-batch, and re-attempting each call spends the
+     *     panel's 10-failures-per-5-minutes budget toward a real lockout.
      *
      * This is INSTANCE state, never static: every per-operation entry point
      * builds a fresh SessionManager, which therefore always starts clean.
@@ -86,7 +85,7 @@ final class SessionManager
 
                 return $this->client->call($method, $this->withSession($params));
             }
-        } catch (LockoutException | TransportException $fatal) {
+        } catch (LockoutException | TransportException | LoginFailedException $fatal) {
             // Latch for the rest of this instance's life: none of these becomes
             // valid again on the same manager, and re-attempting each one only
             // extends a lockout or burns another transport timeout (spec 1.4).
