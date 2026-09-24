@@ -286,6 +286,86 @@ final class SessionManagerTest extends TestCase
         self::assertCount($requestsAtLockout, $fake->requestLog);
     }
 
+    // ---- transport-failure circuit (fail fast, per instance) ----------------
+
+    public function testTransportFailureLatchesTheCircuitOnTheSameManager(): void
+    {
+        // A transport failure cannot resolve mid-batch on the same connection.
+        // The NEXT call() on the SAME manager must fail fast with the stored
+        // exception - not re-attempt (burning another CURLOPT_TIMEOUT) and not
+        // silently continue - exactly as a lockout does.
+        $fake = new FakeIspconfigServer();
+        $transport = new class implements HttpTransportInterface {
+            public int $attempts = 0;
+
+            public function post(string $method, string $jsonBody): string
+            {
+                $this->attempts++;
+
+                throw new TransportException('connect timeout after 10s');
+            }
+        };
+        $manager = new SessionManager(
+            new RestClient($transport),
+            'remote',
+            'secret',
+            static fn (): int => $fake->clock,
+        );
+
+        try {
+            $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
+            self::fail('Expected TransportException');
+        } catch (TransportException $first) {
+            $attemptsAfterFirst = $transport->attempts;
+
+            try {
+                $manager->call('server_get_all', []);
+                self::fail('Expected the stored TransportException on the second call');
+            } catch (TransportException $second) {
+                self::assertSame($first, $second, 'the stored exception must be rethrown');
+            }
+            // The second call touched the wire zero times.
+            self::assertSame($attemptsAfterFirst, $transport->attempts);
+        }
+    }
+
+    public function testAFreshManagerDoesNotInheritAnotherInstancesCircuit(): void
+    {
+        // The circuit is per INSTANCE: each per-operation entry point builds a
+        // new SessionManager, which must start clean even right after a sibling
+        // tripped its own circuit.
+        $fake = new FakeIspconfigServer();
+        $failing = new class implements HttpTransportInterface {
+            public function post(string $method, string $jsonBody): string
+            {
+                throw new TransportException('connect timeout after 10s');
+            }
+        };
+
+        $doomed = new SessionManager(
+            new RestClient($failing),
+            'remote',
+            'secret',
+            static fn (): int => $fake->clock,
+        );
+        try {
+            $doomed->call('server_get_all', []);
+            self::fail('Expected TransportException');
+        } catch (TransportException) {
+        }
+
+        $healthy = new SessionManager(
+            new RestClient($fake),
+            'remote',
+            'secret',
+            static fn (): int => $fake->clock,
+        );
+        $healthy->call('server_get_all', []);
+
+        // The fresh manager logged in and ran the call normally.
+        self::assertSame(['login', 'server_get_all'], self::methodSequence($fake));
+    }
+
     // ---- close() ------------------------------------------------------------
 
     public function testCloseLogsOutTheActiveSession(): void

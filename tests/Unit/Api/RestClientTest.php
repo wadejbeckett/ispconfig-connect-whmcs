@@ -56,6 +56,31 @@ final class RestClientTest extends TestCase
         };
     }
 
+    /**
+     * Wraps the behavioral fake, prepending/appending stray bytes to whatever
+     * the fake returns - the shape of a panel that emits a BOM or a PHP notice
+     * around its one JSON envelope.
+     */
+    private static function transportWrapping(
+        FakeIspconfigServer $fake,
+        string $prefix = '',
+        string $suffix = '',
+    ): HttpTransportInterface {
+        return new class ($fake, $prefix, $suffix) implements HttpTransportInterface {
+            public function __construct(
+                private readonly FakeIspconfigServer $fake,
+                private readonly string $prefix,
+                private readonly string $suffix,
+            ) {
+            }
+
+            public function post(string $method, string $jsonBody): string
+            {
+                return $this->prefix . $this->fake->post($method, $jsonBody) . $this->suffix;
+            }
+        };
+    }
+
     // ---- login happy path -------------------------------------------------
 
     public function testLoginReturnsSessionIdInIspconfigFormat(): void
@@ -217,8 +242,10 @@ final class RestClientTest extends TestCase
         }
     }
 
-    public function testMalformedMessageTruncatesBodyTo300Chars(): void
+    public function testMalformedMessageHardCapsAndTruncatesTheShownPrefix(): void
     {
+        // The diagnostic hint is a hint, not a payload: it is hard-capped well
+        // below the body size, cut on a boundary, and the tail never reaches it.
         $body = str_repeat('A', 300) . 'ZZZ-TAIL-MARKER';
         $client = new RestClient(self::transportReturning($body));
 
@@ -226,8 +253,11 @@ final class RestClientTest extends TestCase
             $client->call('login', ['username' => 'remote', 'password' => 'secret']);
             self::fail('Expected MalformedResponseException');
         } catch (MalformedResponseException $exception) {
-            self::assertStringContainsString(str_repeat('A', 300), $exception->getMessage());
-            self::assertStringNotContainsString('ZZZ-TAIL-MARKER', $exception->getMessage());
+            $message = $exception->getMessage();
+            self::assertStringContainsString('315 bytes', $message);
+            self::assertStringNotContainsString('ZZZ-TAIL-MARKER', $message);
+            // Capped at 120 bytes: the 121st 'A' is never shown.
+            self::assertStringNotContainsString(str_repeat('A', 121), $message);
         }
     }
 
@@ -237,6 +267,159 @@ final class RestClientTest extends TestCase
 
         $this->expectException(MalformedResponseException::class);
         $client->call('logout', ['session_id' => 'x']);
+    }
+
+    // ---- the malformed-body hint never leaks response-side secrets (F1/F6) --
+
+    public function testMalformedMessageRedactsAResponseSideSecret(): void
+    {
+        // A body that decodes but is not an envelope (no "code" key) and carries
+        // a stored credential column. The excerpt runs it through the SAME
+        // secret redaction the array scrubber uses, so the value is blanked -
+        // never copied verbatim into tblmodulelog or the admin UI.
+        $secret = 'crypt:$6$leakedpanelhash';
+        $client = new RestClient(
+            self::transportReturning('{"error":"db failure","passwort":"' . $secret . '"}')
+        );
+
+        try {
+            $client->call('client_get_by_username', ['session_id' => 's0000', 'username' => 'jane']);
+            self::fail('Expected MalformedResponseException');
+        } catch (MalformedResponseException $exception) {
+            self::assertStringNotContainsString($secret, $exception->getMessage());
+            self::assertStringContainsString(RestClient::REDACTED_PLACEHOLDER, $exception->getMessage());
+        }
+    }
+
+    public function testMalformedMessageNeverEchoesTheEnvelopeThatFailedToDecode(): void
+    {
+        // A wrapper-mangled body whose {"code"...} envelope carries a live login
+        // session id but is not recoverable (truncated - no closing brace). The
+        // id lives INSIDE the envelope, which is described by offset and never
+        // printed; only the bytes before it are ever shown.
+        $sessionId = 's' . str_repeat('a', 40);
+        $raw = "\xEF\xBB\xBF" . '{"code":"ok","message":"","response":"' . $sessionId . '"';
+        $client = new RestClient(self::transportReturning($raw));
+
+        try {
+            $client->login('remote', 'secret');
+            self::fail('Expected MalformedResponseException');
+        } catch (MalformedResponseException $exception) {
+            self::assertStringNotContainsString($sessionId, $exception->getMessage());
+            self::assertStringContainsString('not shown', $exception->getMessage());
+        }
+    }
+
+    public function testMalformedMessageStaysValidUtf8AndJsonEncodable(): void
+    {
+        // A localized (multibyte) error page cut at the byte cap must not leave a
+        // split UTF-8 sequence: the message stays valid UTF-8 and json_encodable
+        // (WHMCS transports it; a utf8mb4 strict-mode insert would reject the
+        // half-character otherwise).
+        $body = str_repeat('é', 400); // 800 bytes of 2-byte characters, no envelope
+        $client = new RestClient(self::transportReturning($body));
+
+        try {
+            $client->call('login', ['username' => 'remote', 'password' => 'secret']);
+            self::fail('Expected MalformedResponseException');
+        } catch (MalformedResponseException $exception) {
+            $message = $exception->getMessage();
+            self::assertTrue(mb_check_encoding($message, 'UTF-8'), 'message must be valid UTF-8');
+            self::assertIsString(json_encode($message, JSON_THROW_ON_ERROR));
+        }
+    }
+
+    public function testEmptyBodyIsMalformedWithAnEmptyBodyHint(): void
+    {
+        $client = new RestClient(self::transportReturning(''));
+
+        try {
+            $client->call('server_get_all', ['session_id' => 's0000']);
+            self::fail('Expected MalformedResponseException');
+        } catch (MalformedResponseException $exception) {
+            self::assertStringContainsString('empty body', $exception->getMessage());
+        }
+    }
+
+    // ---- BOM / stray-output recovery around a valid envelope (M4a) ----------
+
+    public function testLeadingBomAroundAValidEnvelopeIsRecovered(): void
+    {
+        $client = new RestClient(
+            self::transportReturning("\xEF\xBB\xBF" . '{"code":"ok","message":"","response":42}')
+        );
+
+        self::assertSame(42, $client->call('client_add', ['session_id' => 'x', 'reseller_id' => 0, 'params' => []]));
+    }
+
+    public function testPhpWarningPrefixAroundAValidEnvelopeIsRecovered(): void
+    {
+        $warning = "<br />\n<b>Warning</b>: Undefined array key \"x\" in "
+            . "/usr/local/ispconfig/interface/lib/classes/remote.d/client.inc.php on line 42\n";
+        $client = new RestClient(
+            self::transportReturning($warning . '{"code":"ok","message":"","response":99}')
+        );
+
+        self::assertSame(99, $client->call('client_add', ['session_id' => 'x', 'reseller_id' => 0, 'params' => []]));
+    }
+
+    public function testTrailingOutputAfterAValidEnvelopeIsRecovered(): void
+    {
+        $client = new RestClient(
+            self::transportReturning('{"code":"ok","message":"","response":7}' . "\n<b>Notice</b>: done\n")
+        );
+
+        self::assertSame(7, $client->call('client_add', ['session_id' => 'x', 'reseller_id' => 0, 'params' => []]));
+    }
+
+    public function testGenuinelyNonJsonBodyStillThrowsMalformed(): void
+    {
+        $client = new RestClient(self::transportReturning('<html><body>502 Bad Gateway</body></html>'));
+
+        $this->expectException(MalformedResponseException::class);
+        $client->call('client_add', ['session_id' => 'x', 'reseller_id' => 0, 'params' => []]);
+    }
+
+    public function testABomDoesNotTurnASuccessfulClientAddIntoAFailure(): void
+    {
+        // The regression F2/M4a targets: the row is committed server-side and the
+        // module must read back the id, not a MalformedResponseException that
+        // leaves an orphaned, billable client with no WHMCS record.
+        $fake = new FakeIspconfigServer();
+        $client = new RestClient(self::transportWrapping($fake, "\xEF\xBB\xBF"));
+        $sessionId = $client->login('remote', 'secret');
+
+        $newId = $client->call('client_add', [
+            'session_id' => $sessionId,
+            'reseller_id' => 0,
+            'params' => [
+                'contact_name' => 'Jane Doe',
+                'username' => 'jane',
+                'email' => 'jane@example.com',
+                'language' => 'en',
+                'web_php_options' => 'php-fpm',
+                'ssh_chroot' => 'no',
+                'password' => 'Cl13nt-Pw!',
+            ],
+        ]);
+
+        self::assertNotNull($newId);
+        self::assertCount(1, $fake->clients(), 'the committed client must be visible');
+    }
+
+    public function testStringResponsesAreScrubbedNotOnlyArrays(): void
+    {
+        // scrubResponse() must redact a STRING carrying structured secret data,
+        // not only an array - so a value under a credential key can never reach
+        // the log through the string path (e.g. the failure-path message).
+        $scrubbed = RestClient::scrubResponse(
+            'login',
+            'unexpected output: {"passwort":"crypt:$6$leakedhash","note":"x"}'
+        );
+
+        self::assertIsString($scrubbed);
+        self::assertStringNotContainsString('crypt:$6$leakedhash', $scrubbed);
+        self::assertStringContainsString(RestClient::REDACTED_PLACEHOLDER, $scrubbed);
     }
 
     // ---- login response validation ----------------------------------------

@@ -253,7 +253,14 @@ final class RestClient
     /** Key under which a projection reports how many columns it dropped. */
     public const SCRUB_NOTICE_KEY = 'ispconfigconnect_scrubbed';
 
-    private const BODY_EXCERPT_LIMIT = 300;
+    /**
+     * A hard, deliberately small cap on how many bytes of a non-envelope body
+     * ever reach an exception message (and thus tblmodulelog / the admin UI).
+     * The body is a diagnostic hint, never a payload: enough to recognise an
+     * HTML error page or a display_errors notice, not enough to be a place
+     * another company's customer record could hide.
+     */
+    private const BODY_EXCERPT_LIMIT = 120;
 
     /**
      * Normalized-name lookups, built once from the constants above.
@@ -340,14 +347,19 @@ final class RestClient
 
     private function decode(string $raw): mixed
     {
+        // A UTF-8 BOM (e.g. a panel include saved by a Windows editor) prefixes
+        // the WHOLE body; strip it before matching sentinels or decoding. The
+        // original $raw is kept only for the diagnostic excerpt's byte count.
+        $body = str_starts_with($raw, "\xEF\xBB\xBF") ? substr($raw, 3) : $raw;
+
         // remote/json.php die()s with this plain-text body BEFORE the JSON
         // handler runs when remote_api_allowed != 'yes' (§1.2) - prefix match.
-        if (str_starts_with($raw, 'Remote API is disabled')) {
+        if (str_starts_with($body, 'Remote API is disabled')) {
             throw new ApiDisabledException(ApiDisabledException::SENTINEL);
         }
 
-        $decoded = json_decode($raw, true);
-        if (!is_array($decoded) || !array_key_exists('code', $decoded)) {
+        $decoded = self::decodeEnvelope($body);
+        if ($decoded === null) {
             throw new MalformedResponseException(
                 'Response is not the ISPConfig JSON envelope: ' . $this->excerpt($raw)
             );
@@ -366,11 +378,90 @@ final class RestClient
         throw new ApiProtocolException($code, $message !== '' ? $message : 'API returned code "' . $code . '"');
     }
 
-    private function excerpt(string $body): string
+    /**
+     * Decodes the ISPConfig envelope, recovering from stray output that a
+     * strict decode rejects. json_handler.inc.php prints exactly one envelope
+     * and exit()s, so a PHP notice/deprecation emitted with display_errors=On,
+     * or any bytes echoed around the envelope, wraps a body that is still
+     * RECOVERABLE - and a server-side write (client_add commits the row before
+     * printing "ok") must not read back as a client-side failure.
+     *
+     * @param string $body the response body, already stripped of a leading BOM
+     * @return array<array-key, mixed>|null the {"code",...} envelope, or null
+     *         when the body is not a recoverable envelope
+     */
+    private static function decodeEnvelope(string $body): ?array
     {
-        return strlen($body) > self::BODY_EXCERPT_LIMIT
-            ? substr($body, 0, self::BODY_EXCERPT_LIMIT) . '...'
-            : $body;
+        $decoded = json_decode($body, true);
+        if (is_array($decoded) && array_key_exists('code', $decoded)) {
+            return $decoded;
+        }
+
+        return self::recoverEnvelope($body);
+    }
+
+    /**
+     * Conservative recovery: the slice from the first `{"code"` to the last
+     * `}` is accepted ONLY if that slice itself decodes to a {"code",...}
+     * envelope. Anything less certain keeps the MalformedResponseException.
+     *
+     * @return array<array-key, mixed>|null
+     */
+    private static function recoverEnvelope(string $body): ?array
+    {
+        $start = strpos($body, '{"code"');
+        if ($start === false) {
+            return null;
+        }
+        $end = strrpos($body, '}');
+        if ($end === false || $end <= $start) {
+            return null;
+        }
+
+        $decoded = json_decode(substr($body, $start, $end - $start + 1), true);
+
+        return is_array($decoded) && array_key_exists('code', $decoded) ? $decoded : null;
+    }
+
+    /**
+     * A SAFE, hard-capped hint about a body that is not the JSON envelope -
+     * for the module log and the admin UI. It NEVER echoes envelope bytes (a
+     * wrapper-mangled success can carry a live session id or a stored password
+     * hash inside a {"code"...} it failed to strict-decode), it runs whatever
+     * it does show through the same secret redaction the array scrubber uses,
+     * and it cuts on a UTF-8 character boundary through mb_scrub so json_encode
+     * of the resulting message can never fail on a split multibyte sequence.
+     */
+    private function excerpt(string $raw): string
+    {
+        $bytes = strlen($raw);
+        if ($bytes === 0) {
+            return 'empty body (0 bytes) - the panel returned nothing, e.g. an HTTP '
+                . 'redirect/error page or json_encode() failing on non-UTF-8 record data';
+        }
+
+        $display = str_starts_with($raw, "\xEF\xBB\xBF") ? substr($raw, 3) : $raw;
+
+        // Show only what comes BEFORE the envelope; the envelope itself (where
+        // any secret lives) is described by offset, never printed.
+        $envelopeAt = strpos($display, '{"code"');
+        $shown = $envelopeAt === false ? $display : substr($display, 0, $envelopeAt);
+
+        // Belt and braces for the no-envelope case, where the whole body is
+        // shown: redact any value the array scrubber would mask or drop.
+        $shown = self::redactSecretsInText($shown);
+
+        // Valid UTF-8 first, then a boundary-safe cut: the message must survive
+        // json_encode (WHMCS transports it) and a utf8mb4 strict-mode insert.
+        $scrubbed = mb_scrub($shown, 'UTF-8');
+        $safe = mb_strcut($scrubbed, 0, self::BODY_EXCERPT_LIMIT, 'UTF-8');
+
+        $hint = sprintf('non-JSON body, %d bytes, starts with: %s%s', $bytes, $safe, $safe === $scrubbed ? '' : '...');
+        if ($envelopeAt !== false) {
+            $hint .= sprintf(' (a {"code"...} envelope at byte %d is present but not shown)', $envelopeAt);
+        }
+
+        return $hint;
     }
 
     /**
@@ -436,6 +527,15 @@ final class RestClient
      */
     public static function scrubResponse(string $method, mixed $response): mixed
     {
+        // A STRING response reaches the logger too - notably the exception
+        // MESSAGE on the failure path, which can carry a diagnostic hint about
+        // the panel's body. Run it through the same secret redaction the array
+        // path uses so nothing under a credential/private key survives here
+        // either, not only when the response happens to be an array.
+        if (is_string($response)) {
+            return self::redactSecretsInText($response);
+        }
+
         if (!is_array($response)) {
             return $response;
         }
@@ -446,6 +546,86 @@ final class RestClient
         }
 
         return self::scrub($response);
+    }
+
+    /**
+     * Redacts, out of a free-text string, every value the array scrubber would
+     * mask (credentials, key material) or drop (bank/tax/PII columns), using
+     * the SAME vocabulary so the two can never disagree. Used for a string
+     * response and for the diagnostic body excerpt: if the text is (or wraps) a
+     * decodable object, its secret values are blanked; otherwise it is left
+     * untouched (a session id or a monitor count carries nothing to redact).
+     */
+    private static function redactSecretsInText(string $text): string
+    {
+        if ($text === '' || !str_contains($text, '{')) {
+            return $text;
+        }
+
+        foreach (self::secretValuesInText($text) as $secret) {
+            $text = str_replace($secret, self::REDACTED_PLACEHOLDER, $text);
+        }
+
+        return $text;
+    }
+
+    /**
+     * Best-effort extraction of the secret values carried by any JSON object in
+     * a free-text string: the whole body, a wrapped {"code",...} envelope, or a
+     * single object embedded in surrounding output. Conservative - if none of
+     * those decode, nothing is reported and the text is left as-is.
+     *
+     * @return list<string>
+     */
+    private static function secretValuesInText(string $text): array
+    {
+        $decoded = json_decode($text, true);
+        if (is_array($decoded)) {
+            return self::secretValues($decoded);
+        }
+
+        $envelope = self::recoverEnvelope($text);
+        if (is_array($envelope)) {
+            return self::secretValues($envelope);
+        }
+
+        $start = strpos($text, '{');
+        $end = strrpos($text, '}');
+        if ($start !== false && $end !== false && $end > $start) {
+            $embedded = json_decode(substr($text, $start, $end - $start + 1), true);
+            if (is_array($embedded)) {
+                return self::secretValues($embedded);
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Every string value under a MASKED_KEYS or PRIVATE_KEYS key, at any depth
+     * - the values that must never appear verbatim in a log or the admin UI.
+     *
+     * @param array<array-key, mixed> $payload
+     * @return list<string>
+     */
+    private static function secretValues(array $payload): array
+    {
+        $values = [];
+        $walk = static function (array $node) use (&$walk, &$values): void {
+            foreach ($node as $key => $value) {
+                if (is_array($value)) {
+                    $walk($value);
+                } elseif (
+                    is_string($value) && $value !== '' && is_string($key)
+                    && (self::isMaskedKey($key) || self::isPrivateKey($key))
+                ) {
+                    $values[] = $value;
+                }
+            }
+        };
+        $walk($payload);
+
+        return array_values(array_unique($values));
     }
 
     /**

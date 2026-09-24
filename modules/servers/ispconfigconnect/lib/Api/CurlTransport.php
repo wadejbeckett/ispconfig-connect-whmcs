@@ -56,8 +56,20 @@ class CurlTransport implements HttpTransportInterface
             ));
         }
 
-        if ($result['status'] >= 400) {
-            throw new TransportException(sprintf('HTTP status %d from %s', $result['status'], $url));
+        $status = $result['status'];
+        if ($status < 200 || $status >= 300) {
+            // The interface promises an exception for ANY non-2xx status, not
+            // only >= 400. Redirects are deliberately NOT followed (no
+            // CURLOPT_FOLLOWLOCATION, so the credential body is never re-POSTed
+            // to a Location host); a 3xx/204 would otherwise reach decode() as
+            // an unrecognisable body with the status already lost. An empty
+            // body is called out, since that is the usual shape of the failure.
+            throw new TransportException(sprintf(
+                'HTTP status %d from %s%s',
+                $status,
+                $url,
+                $result['body'] === '' ? ' (empty response body)' : ''
+            ));
         }
 
         return $result['body'];
