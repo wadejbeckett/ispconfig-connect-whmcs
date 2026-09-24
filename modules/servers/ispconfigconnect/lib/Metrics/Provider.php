@@ -196,6 +196,20 @@ final class Provider
      */
     public function usage(array $services): array
     {
+        // WHMCS keys tenant usage by the account username, so two services that
+        // share one are indistinguishable to it: keying both under the same
+        // username would let the last write silently hand one service's usage
+        // to the other. Find the collisions up front and fail EVERY service
+        // involved rather than report a wrong figure for any of them. A shared
+        // username reaches here through the tblhosting.username fallback, or
+        // when two services are linked to one ISPConfig client.
+        $serviceIdsByUsername = [];
+        foreach ($services as $service) {
+            if ($service->username !== '') {
+                $serviceIdsByUsername[$service->username][] = $service->serviceId;
+            }
+        }
+
         $usage = [];
 
         foreach ($services as $service) {
@@ -203,6 +217,21 @@ final class Provider
                 // WHMCS matches tenants by username; an entry we cannot key is
                 // an entry it cannot attribute.
                 $this->failures[$service->serviceId] = 'no ISPConfig username stored for this service';
+
+                continue;
+            }
+            if (count($serviceIdsByUsername[$service->username]) > 1) {
+                $others = array_values(array_filter(
+                    $serviceIdsByUsername[$service->username],
+                    static fn (int $id): bool => $id !== $service->serviceId
+                ));
+                $this->failures[$service->serviceId] = sprintf(
+                    'ISPConfig username %s is shared with service(s) %s - WHMCS keys usage by '
+                        . 'username, so it cannot be attributed to one service and no usage was '
+                        . 'reported for any of them.',
+                    $service->username,
+                    $others === [] ? '(itself, duplicated)' : implode(', ', $others)
+                );
 
                 continue;
             }
@@ -237,7 +266,19 @@ final class Provider
         return $this->failures;
     }
 
-    /** @return array<string, int> */
+    /**
+     * @return array<string, int>
+     *
+     * LIMITATION (see UsageParser::sumBandwidth): 'bandwidth' is the month's
+     * ACTIVE-domain traffic as the panel reports it right now. A mid-month
+     * suspension or ISPConfig over-traffic lock drops inactive domains from
+     * that sum, and WHMCS overwrites the month's period record with whatever we
+     * return - so the figure can fall back towards 0 for the customer who went
+     * furthest over quota. The UsageUpdate path guards tblhosting.bwusage with
+     * a current-month high-water mark; the metric path cannot do the same here
+     * because WHMCS's stored period value is never handed back to this layer to
+     * max() against. The value is at least clamped to >= 0 and never negative.
+     */
     private static function values(ClientUsage $usage): array
     {
         return [
