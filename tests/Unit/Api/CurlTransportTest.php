@@ -176,6 +176,88 @@ final class CurlTransportTest extends TestCase
         }
     }
 
+    public function testRedirectStatusIsRejectedAsNonSuccessWithoutTheRequestBody(): void
+    {
+        // A 3xx is non-2xx: the interface promises an exception. Redirects are
+        // deliberately not followed, so it must not slip through as "success"
+        // and reach the envelope decoder as an unrecognisable body.
+        $secretBody = '{"username":"remote","password":"Sup3r-Secret!"}';
+        $transport = new StubbedExecCurlTransport(self::config(), [
+            'body' => '',
+            'errno' => 0,
+            'error' => '',
+            'status' => 301,
+        ]);
+
+        try {
+            $transport->post('login', $secretBody);
+            self::fail('Expected TransportException');
+        } catch (TransportException $exception) {
+            self::assertStringContainsString('301', $exception->getMessage());
+            self::assertStringNotContainsString('Sup3r-Secret!', $exception->getMessage());
+        }
+    }
+
+    public function testAnEmptyNonSuccessBodyIsNamedAsTheLikelyCause(): void
+    {
+        // A 5xx (or any non-2xx) that also returns nothing is the common shape
+        // of a proxy/error page; the empty body is called out so the operator
+        // is not left with a bare status.
+        $transport = new StubbedExecCurlTransport(self::config(), [
+            'body' => '',
+            'errno' => 0,
+            'error' => '',
+            'status' => 502,
+        ]);
+
+        try {
+            $transport->post('logout', '{"session_id":"x"}');
+            self::fail('Expected TransportException');
+        } catch (TransportException $exception) {
+            self::assertStringContainsString('502', $exception->getMessage());
+            self::assertStringContainsString('empty response body', $exception->getMessage());
+        }
+    }
+
+    public function testA2xxWithAnEmptyBodyIsPassedThroughForTheDecoderToDiagnose(): void
+    {
+        // 204 (and an empty 200) ARE 2xx: the interface promises an exception
+        // only for a non-2xx status, so the transport accepts them and returns
+        // the empty body. Naming an empty body is then the envelope decoder's
+        // job (RestClient), not the transport's.
+        $transport = new StubbedExecCurlTransport(self::config(), [
+            'body' => '',
+            'errno' => 0,
+            'error' => '',
+            'status' => 204,
+        ]);
+
+        self::assertSame('', $transport->post('logout', '{"session_id":"x"}'));
+    }
+
+    public function testOneHundredContinueStatusIsAlsoRejected(): void
+    {
+        // Anything below 200 is non-2xx too.
+        $transport = new StubbedExecCurlTransport(self::config(), [
+            'body' => '',
+            'errno' => 0,
+            'error' => '',
+            'status' => 100,
+        ]);
+
+        $this->expectException(TransportException::class);
+        $transport->post('logout', '{"session_id":"x"}');
+    }
+
+    public function testRedirectsAreNotFollowed(): void
+    {
+        // Enabling CURLOPT_FOLLOWLOCATION would re-POST the credential body to a
+        // Location host on 307/308; it must be absent or explicitly false.
+        $options = (new ExposedCurlTransport(self::config()))->exposedBuildOptions();
+
+        self::assertNotSame(true, $options[CURLOPT_FOLLOWLOCATION] ?? false);
+    }
+
     public function testSuccessfulPostReturnsTheRawBodyAndCleansUpTheTempCaFile(): void
     {
         $envelope = '{"code":"ok","message":"","response":true}';
