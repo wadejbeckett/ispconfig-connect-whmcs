@@ -47,6 +47,9 @@ abstract class ModuleTestCase extends TestCase
     protected function setUp(): void
     {
         ModuleCallLog::reset();
+        if (class_exists('\\WHMCS\\Database\\Capsule')) {
+            \WHMCS\Database\Capsule::reset();
+        }
 
         $this->fake = new FakeIspconfigServer('whmcsremote', self::REMOTE_PASSWORD);
         $this->webServerId = $this->fake->addServer('web01.example.net');
@@ -63,6 +66,9 @@ abstract class ModuleTestCase extends TestCase
     protected function tearDown(): void
     {
         Factory::$transportFactory = null;
+        if (class_exists('\\WHMCS\\Database\\Capsule')) {
+            \WHMCS\Database\Capsule::reset();
+        }
     }
 
     /**

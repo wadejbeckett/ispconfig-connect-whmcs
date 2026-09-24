@@ -539,8 +539,11 @@ final class AdoptionTest extends ModuleTestCase
         self::assertStringContainsString('globex.example', $result);
         // Route 1: correct the Username field.
         self::assertStringContainsString('Username', $result);
-        // Route 2: leave it, and let the domain-keyed automatic sweep do it.
-        self::assertMatchesRegularExpression('/automatic|nightly|sweep/i', $result);
+        // This build ships no adoption resolver, so the message must NOT promise
+        // a nightly sweep that will never run - it says manual linking by name
+        // is the only route.
+        self::assertDoesNotMatchRegularExpression('/nightly|usage sweep/i', $result);
+        self::assertStringContainsString('only route', $result);
     }
 
     public function testLinkAccountRefusesToOverwriteADifferentStoredId(): void

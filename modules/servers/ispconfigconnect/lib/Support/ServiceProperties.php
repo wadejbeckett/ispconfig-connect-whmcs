@@ -51,6 +51,18 @@ final class ServiceProperties
      */
     private ?\Closure $fallbackReader = null;
 
+    /**
+     * Blanks the managed properties across EVERY product's custom-field rows
+     * for this service, not just the current product's. Without it, clear()
+     * (via the model) only blanks the current product's rows, so after a
+     * package change a fallback read resurrects the old product's stored ids -
+     * an Unlink that does not unlink, a Terminate that leaves a live-looking
+     * link, and a Replace that mixes the new client's id with the previous
+     * tenant's website/FTP/database ids. Wired by the entry file with a direct
+     * cross-product update. @var (\Closure(): void)|null
+     */
+    private ?\Closure $fallbackClearer = null;
+
     public function __construct(object $properties)
     {
         if (!method_exists($properties, 'get') || !method_exists($properties, 'save')) {
@@ -150,6 +162,13 @@ final class ServiceProperties
     public function clear(): void
     {
         $this->properties->save(array_fill_keys(self::KEYS, ''));
+
+        // The model save above only reaches the CURRENT product's custom-field
+        // rows. A service that changed product still carries the old product's
+        // rows, which the fallback reader would resurrect, so blank those too.
+        if ($this->fallbackClearer !== null) {
+            ($this->fallbackClearer)();
+        }
     }
 
     private function saveValue(string $key, string $value): void
@@ -160,6 +179,13 @@ final class ServiceProperties
     public function withFallbackReader(callable $reader): self
     {
         $this->fallbackReader = $reader(...);
+
+        return $this;
+    }
+
+    public function withFallbackClearer(callable $clearer): self
+    {
+        $this->fallbackClearer = $clearer(...);
 
         return $this;
     }

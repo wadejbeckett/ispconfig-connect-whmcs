@@ -485,18 +485,26 @@ final class RecipeTest extends TestCase
         self::assertSame('y', $fake->sites()[$result->domainId]['active']);
     }
 
-    public function testWebsiteOnlySuspendWithoutADomainIdMakesNoCallsAtAll(): void
+    public function testWebsiteOnlySuspendWithoutADomainIdFallsBackToTheWholeClientLock(): void
     {
+        // A website-only product whose service has no stored website id (a
+        // linked/adopted service, or Create Website off) must NOT silently do
+        // nothing: with no site to disable, suspension falls back to locking
+        // the whole client so it actually takes effect. Unsuspend reverses it.
         $fake = new FakeIspconfigServer();
         $recipe = $this->recipe($fake);
         $result = $recipe->create($this->product(), $this->service());
         $logOffset = count($fake->requestLog);
 
         $recipe->suspend($result->clientId, null, false);
-        $recipe->unsuspend($result->clientId, null, false);
+        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
+        self::assertContains(
+            'client_update',
+            array_column(array_slice($fake->requestLog, $logOffset), 'method')
+        );
 
-        self::assertSame([], array_slice($fake->requestLog, $logOffset));
-        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        $recipe->unsuspend($result->clientId, null, false);
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
     }
 
     // ── terminate ──────────────────────────────────────────────────────
@@ -602,15 +610,18 @@ final class RecipeTest extends TestCase
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $proId]), [$mailId]);
 
-        // ONE protective client_update: template_additional carries the
-        // DESIRED bare ids and update_client_templates' old-style count-diff
-        // applies the delta atomically (client_templates.inc.php) - no
-        // client_template_additional_add/_delete calls.
-        // client_get precedes it: the protective update re-sends the
-        // template-governed web_php_options/ssh_chroot from the live record
-        // (or permissive defaults when a template gap emptied them).
+        // template_additional carries the DESIRED bare ids and
+        // update_client_templates' old-style count-diff applies the delta
+        // atomically (client_templates.inc.php) - no
+        // client_template_additional_add/_delete calls. client_get precedes the
+        // updates so the protective update can re-send the template-governed
+        // web_php_options/ssh_chroot from the live record. TWO client_updates:
+        // the change is bracketed with the lock state flipped then restored, so
+        // client_update's merged func_client_lock cannot corrupt a locked
+        // client's saved state or re-enable a suspended/disabled object on an
+        // unlocked one.
         self::assertSame(
-            ['client_get', 'client_update'],
+            ['client_get', 'client_update', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         self::assertSame($proId, $fake->clients()[$result->clientId]['template_master']);
@@ -641,11 +652,12 @@ final class RecipeTest extends TestCase
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $basicId]), [$spaceId]);
 
-        // client_get precedes it: the protective update re-sends the
-        // template-governed web_php_options/ssh_chroot from the live record
-        // (or permissive defaults when a template gap emptied them).
+        // client_get precedes the two bracketed client_updates (lock state
+        // flipped then restored - see the addon-delta test above); the
+        // protective update re-sends the template-governed
+        // web_php_options/ssh_chroot from the live record.
         self::assertSame(
-            ['client_get', 'client_update'],
+            ['client_get', 'client_update', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         // Old-style count-diff no-op: the very same assignment rows survive

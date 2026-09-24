@@ -112,7 +112,7 @@ final class Params
 
         return new ServiceParams(
             serviceId: (int) self::str($params, 'serviceid'),
-            domain: trim(self::str($params, 'domain')),
+            domain: self::normalizeDomain(self::str($params, 'domain')),
             username: self::str($params, 'username'),
             password: self::str($params, 'password'),
             clientDetails: [
@@ -163,6 +163,31 @@ final class Params
         $value = $params[$key] ?? null;
 
         return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
+     * Normalise a domain for ISPConfig: trim, lower-case, and IDN-encode to
+     * ASCII punycode. ISPConfig's domain regex rejects upper-case and non-ASCII
+     * input, so an uppercase or internationalised domain would otherwise fail
+     * the web/DNS stage and roll the whole account back. When the intl
+     * extension is absent, a non-ASCII domain is left lower-cased (ISPConfig
+     * will still reject it, but ASCII domains provision correctly).
+     */
+    private static function normalizeDomain(string $domain): string
+    {
+        $domain = strtolower(trim($domain));
+        if ($domain === '') {
+            return '';
+        }
+
+        if (preg_match('/[^\x00-\x7f]/', $domain) === 1 && function_exists('idn_to_ascii')) {
+            $ascii = idn_to_ascii($domain, IDNA_NONTRANSITIONAL_TO_ASCII, INTL_IDNA_VARIANT_UTS46);
+            if (is_string($ascii) && $ascii !== '') {
+                return $ascii;
+            }
+        }
+
+        return $domain;
     }
 
     /**

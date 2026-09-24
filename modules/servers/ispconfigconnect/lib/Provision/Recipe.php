@@ -167,10 +167,13 @@ final class Recipe
      */
     public function suspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        if (!$suspendEntireClient) {
-            if ($domainId !== null) {
-                $this->setWebsiteStatus($domainId, 'inactive');
-            }
+        // Website-only mode acts on the site alone - but ONLY when its id is
+        // known. A linked or adopted service, or a product with Create Website
+        // off, stores no website id; falling through to the whole-client lock
+        // there makes suspension actually take effect instead of a silent
+        // no-op that reports success while the account stays fully live.
+        if (!$suspendEntireClient && $domainId !== null) {
+            $this->setWebsiteStatus($domainId, 'inactive');
 
             return;
         }
@@ -195,10 +198,11 @@ final class Recipe
      */
     public function unsuspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        if (!$suspendEntireClient) {
-            if ($domainId !== null) {
-                $this->setWebsiteStatus($domainId, 'active');
-            }
+        // Exact inverse of suspend(): website-only mode with a known site id
+        // reactivates just that site; otherwise - entire-client mode, or
+        // website-only with no stored site id - reverse the whole-client lock.
+        if (!$suspendEntireClient && $domainId !== null) {
+            $this->setWebsiteStatus($domainId, 'active');
 
             return;
         }
@@ -278,10 +282,33 @@ final class Recipe
             }
         }
 
+        // client_update merges the stored record and re-runs ISPConfig's
+        // func_client_lock on the merged 'locked' value, so a bare template
+        // change would re-snapshot a LOCKED client's state (leaving a later
+        // unsuspend unable to restore anything) or re-enable a suspended or
+        // deliberately-disabled object on an UNLOCKED one. Bracket the change:
+        // apply the template with the lock state flipped, then restore the
+        // original state, so func_client_lock's snapshot/restore runs against a
+        // known state and the net lock state plus every object's active flag
+        // are preserved. Package changes are infrequent admin/billing events,
+        // so the extra client_update is an acceptable cost for that safety.
+        $record = $this->clientRecord($clientId);
+        $wasLocked = (string) ($record['locked'] ?? 'n') === 'y';
+
+        $desiredList = implode('/', $desired);
         $this->protectiveClientUpdate($clientId, [
             'template_master' => $product->clientTemplateId,
-            'template_additional' => implode('/', $desired),
-        ]);
+            'template_additional' => $desiredList,
+            'locked' => $wasLocked ? 'n' : 'y',
+        ], $record);
+
+        // Restore the original lock state. Re-send the desired template list and
+        // reuse the record already read, so this second update needs no extra
+        // client_get / client_template_additional_get round trips.
+        $this->protectiveClientUpdate($clientId, [
+            'template_additional' => $desiredList,
+            'locked' => $wasLocked ? 'y' : 'n',
+        ], $record);
     }
 
     public function jobqueueCount(?int $serverId = null): int

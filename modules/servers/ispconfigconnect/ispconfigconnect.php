@@ -476,6 +476,21 @@ function ispconfigconnect_SuspendAccount(array $params): string
         }
 
         $product = Params::productConfig($params);
+
+        // Entire-client suspension locks the whole client, so refuse if another
+        // live service shares it. Website-only mode touches just this service's
+        // own site and is allowed even on a shared client.
+        if ($product->suspendEntireClient) {
+            $shared = ispconfigconnect_sharedClientRefusal(
+                'Suspend',
+                $clientId,
+                ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId)
+            );
+            if ($shared !== null) {
+                return $shared;
+            }
+        }
+
         $session = Factory::sessionManager($params);
         try {
             (new Recipe($session))->suspend(
@@ -509,6 +524,20 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         }
 
         $product = Params::productConfig($params);
+
+        // Symmetric with Suspend: only the whole-client unlock is refused on a
+        // shared client.
+        if ($product->suspendEntireClient) {
+            $shared = ispconfigconnect_sharedClientRefusal(
+                'Unsuspend',
+                $clientId,
+                ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId)
+            );
+            if ($shared !== null) {
+                return $shared;
+            }
+        }
+
         $session = Factory::sessionManager($params);
         try {
             (new Recipe($session))->unsuspend(
@@ -544,6 +573,18 @@ function ispconfigconnect_TerminateAccount(array $params): string
             // An admin who sees this refusal links the service deliberately and
             // retries; that extra step is the whole point.
             return ispconfigconnect_unlinkedRefusal('Terminate', $params);
+        }
+
+        // One WHMCS service maps to one ISPConfig client. If another live
+        // service also points at this client, client_delete_everything would
+        // delete THEIR hosting too, so refuse before opening a session.
+        $shared = ispconfigconnect_sharedClientRefusal(
+            'Terminate',
+            $clientId,
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId)
+        );
+        if ($shared !== null) {
+            return $shared;
         }
 
         $session = Factory::sessionManager($params);
@@ -596,6 +637,18 @@ function ispconfigconnect_ChangePassword(array $params): string
             return 'Change Password failed: WHMCS passed an empty password.';
         }
 
+        // client_change_password rotates the CLIENT's panel login, which is
+        // shared by every service pointing at this client; refuse if more than
+        // one does, so one customer's rotation cannot lock out another's.
+        $shared = ispconfigconnect_sharedClientRefusal(
+            'Change Password',
+            $clientId,
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId)
+        );
+        if ($shared !== null) {
+            return $shared;
+        }
+
         $session = Factory::sessionManager($params);
         try {
             // Rotate everything the module provisioned with the service
@@ -631,6 +684,18 @@ function ispconfigconnect_ChangePackage(array $params): string
             // assignments - applying one customer's package to another's
             // account silently changes what they are allowed to use.
             return ispconfigconnect_unlinkedRefusal('Change Package', $params);
+        }
+
+        // A package change rewrites the client's template and limits for the
+        // whole client; refuse if another live service shares it, so one
+        // customer's upgrade cannot silently re-limit another's account.
+        $shared = ispconfigconnect_sharedClientRefusal(
+            'Change Package',
+            $clientId,
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId)
+        );
+        if ($shared !== null) {
+            return $shared;
         }
 
         $product = Params::productConfig($params);
@@ -705,7 +770,7 @@ function ispconfigconnect_AdminServicesTabFields(array $params, ?callable $adopt
         $fields = [
             // The plain-English state comes FIRST: it is the row that answers
             // "is this service managed, and if not why not".
-            'ISPConfig Link' => $live['link'],
+            'ISPConfig Link' => htmlspecialchars($live['link'], ENT_QUOTES),
             'ISPConfig Client ID' => $clientId === null ? 'not linked' : (string) $clientId,
             'ISPConfig Username' => htmlspecialchars($username, ENT_QUOTES),
             'ISPConfig Domain ID' => $domainId === null ? 'n/a' : (string) $domainId,
@@ -950,8 +1015,15 @@ function ispconfigconnect_ClientArea(array $params, ?callable $ssoStateReader = 
     }
 
     $serviceId = (int) ($params['serviceid'] ?? 0);
+    // Never offer a panel login for a service that is not active: a suspended,
+    // cancelled or fraud service must not be able to reach the panel. WHMCS
+    // always passes domainstatus to the module; when it is absent (only in
+    // isolated tests) the gate is not applied.
+    $status = trim((string) ($params['domainstatus'] ?? ''));
+    $statusAllowsSso = $status === '' || $status === ispconfigconnect_serviceStatus('ACTIVE', 'Active');
     $ssoAvailable = $clientId !== null
         && $serviceId > 0
+        && $statusAllowsSso
         && ispconfigconnect_serverSsoState($params, $ssoStateReader) === CompanionClient::STATUS_INSTALLED;
 
     return [
@@ -1465,23 +1537,94 @@ function ispconfigconnect_serviceProperties(array $params): \WHMCS\Module\Server
     $properties = Params::serviceProperties($params);
     $serviceId = (int) ($params['serviceid'] ?? 0);
     if ($serviceId > 0 && class_exists('\\WHMCS\\Database\\Capsule')) {
-        $properties->withFallbackReader(static function (string $key) use ($serviceId): ?string {
-            try {
-                $value = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
-                    ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
-                    ->where('tblcustomfields.type', 'product')
-                    ->where('tblcustomfields.fieldname', $key)
-                    ->where('tblcustomfieldsvalues.relid', $serviceId)
-                    ->value('tblcustomfieldsvalues.value');
+        // The service's current product, so the reader can prefer its rows
+        // when more than one product carries a value for a key (e.g. right
+        // after a package change, before resaveAll migrates them).
+        $currentProductId = ispconfigconnect_currentPackageId($serviceId);
 
-                return $value === null ? null : (string) $value;
-            } catch (\Throwable) {
+        $properties->withFallbackReader(
+            static function (string $key) use ($serviceId, $currentProductId): ?string {
+                // Prefer the current product's row, then any product's, newest
+                // row first - so the answer is deterministic rather than
+                // "whichever row the database happened to return first". When
+                // the current product is unknown, the null pass alone runs.
+                $passes = $currentProductId !== null ? [$currentProductId, null] : [null];
+                foreach ($passes as $productId) {
+                    try {
+                        $query = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+                            ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
+                            ->where('tblcustomfields.type', 'product')
+                            ->where('tblcustomfields.fieldname', $key)
+                            ->where('tblcustomfieldsvalues.relid', $serviceId);
+                        if ($productId !== null) {
+                            $query->where('tblcustomfields.relid', $productId);
+                        }
+                        $value = $query
+                            ->orderByDesc('tblcustomfieldsvalues.id')
+                            ->value('tblcustomfieldsvalues.value');
+                    } catch (\Throwable) {
+                        return null;
+                    }
+                    if ($value !== null && (string) $value !== '') {
+                        return (string) $value;
+                    }
+                }
+
                 return null;
+            }
+        );
+
+        // Blank the managed ids across EVERY product's rows for this service,
+        // so clear() (Unlink/Terminate/Replace) truly forgets the link instead
+        // of leaving an old product's rows for the reader to resurrect.
+        $properties->withFallbackClearer(static function () use ($serviceId): void {
+            try {
+                $fieldIds = \WHMCS\Database\Capsule::table('tblcustomfields')
+                    ->where('type', 'product')
+                    ->whereIn('fieldname', ServiceProperties::KEYS)
+                    ->pluck('id');
+                $ids = [];
+                foreach (is_iterable($fieldIds) ? $fieldIds : [] as $fieldId) {
+                    if (is_numeric($fieldId)) {
+                        $ids[] = (int) $fieldId;
+                    }
+                }
+                if ($ids === []) {
+                    return;
+                }
+                \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+                    ->where('relid', $serviceId)
+                    ->whereIn('fieldid', $ids)
+                    ->update(['value' => '']);
+            } catch (\Throwable) {
+                // A schema difference must not turn clear() into a fatal; the
+                // model save already blanked the current product's rows.
             }
         });
     }
 
     return $properties;
+}
+
+/**
+ * The service's current product id (tblhosting.packageid), or null when it
+ * cannot be read. Used to disambiguate cross-product custom-field rows.
+ */
+function ispconfigconnect_currentPackageId(int $serviceId): ?int
+{
+    if ($serviceId <= 0 || !class_exists('\\WHMCS\\Database\\Capsule')) {
+        return null;
+    }
+
+    try {
+        $packageId = \WHMCS\Database\Capsule::table('tblhosting')
+            ->where('id', $serviceId)
+            ->value('packageid');
+
+        return is_numeric($packageId) && (int) $packageId > 0 ? (int) $packageId : null;
+    } catch (\Throwable) {
+        return null;
+    }
 }
 
 /**
@@ -1807,6 +1950,25 @@ function ispconfigconnect_singleSignOn(
             );
 
         return ispconfigconnect_ssoFailure($context, $serviceId, null, null, $detail, $customerFacing);
+    }
+
+    // A non-active service must not reach the panel. WHMCS passes domainstatus
+    // to the module; when present and not Active, refuse the customer path (a
+    // suspended, cancelled or fraud service otherwise still logs in).
+    $status = trim((string) ($params['domainstatus'] ?? ''));
+    if (
+        $customerFacing
+        && $status !== ''
+        && $status !== ispconfigconnect_serviceStatus('ACTIVE', 'Active')
+    ) {
+        return ispconfigconnect_ssoFailure(
+            $context,
+            $serviceId,
+            $clientId,
+            null,
+            sprintf('Single sign-on is only available while the service is active; this service is %s.', $status),
+            true
+        );
     }
 
     // MIXED FLEET, the customer path. The button is only rendered for services
@@ -2751,8 +2913,8 @@ function ispconfigconnect_link(array $params, string $context, bool $replace): s
             // verify, and a wasted login is a wasted login.
             return $label . ' refused: this service\'s Username field is empty, and the module will'
                 . ' not guess which ISPConfig account it means. Put the ISPConfig account name in the'
-                . ' service\'s Username field and press the button again - or leave it alone and let'
-                . ' automatic adoption match on the service domain during the nightly usage sweep.';
+                . ' service\'s Username field and press the button again.'
+                . ispconfigconnect_adoptionRouteClause(trim((string) ($params['domain'] ?? '')));
         }
 
         $session = Factory::sessionManager($params);
@@ -2798,6 +2960,19 @@ function ispconfigconnect_link(array $params, string $context, bool $replace): s
             // Rule 4, the idempotent case: already exactly this. Nothing is
             // written and nothing is an error.
             return 'success';
+        }
+
+        // One WHMCS service = one ISPConfig client. Never bind to a client that
+        // another live service already holds: a typo or a paste from the wrong
+        // ticket resolves to a real account, and linking here would hand this
+        // customer another's panel over SSO and delete it on terminate.
+        $shared = ispconfigconnect_sharedClientRefusal(
+            $label,
+            $resolvedId,
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $resolvedId)
+        );
+        if ($shared !== null) {
+            return $shared;
         }
 
         if ($storedId !== null && !$replace) {
@@ -2876,14 +3051,13 @@ function ispconfigconnect_noSuchAccount(string $label, string $name, array $para
         '%s refused: this ISPConfig panel has no account named "%s", so nothing was linked and'
         . ' nothing was changed. That is the usual result for a service migrated from another'
         . ' control panel: the WHMCS Username field still holds the OLD panel\'s login name, which'
-        . ' ISPConfig has never seen. Automatic adoption does not use that field at all - it matches'
-        . ' on the service DOMAIN (%s). Two ways forward: either set this service\'s Username field'
-        . ' to the ISPConfig account name (System > Clients in the panel lists them) and press the'
-        . ' button again, or change nothing and let automatic adoption link it on the next nightly'
-        . ' usage sweep, which reports in the module log what it matched and why.',
+        . ' ISPConfig has never seen. Set this service\'s Username field to the ISPConfig account'
+        . ' name that owns %s (System > Clients in the panel lists them) and press the button'
+        . ' again.%s',
         $label,
         $name,
-        $domain !== '' ? $domain : 'not set on this service - set it, or the automatic path cannot work either'
+        $domain !== '' ? $domain : 'this service (currently no domain is set)',
+        ispconfigconnect_adoptionRouteClause($domain)
     );
 }
 
@@ -2987,6 +3161,19 @@ function ispconfigconnect_adoptUnlinked(
         }
         if ($outcome['dnszoneid'] !== null) {
             $values[ServiceProperties::KEY_DNS_ZONE_ID] = (string) $outcome['dnszoneid'];
+        }
+
+        // Never adopt a client another live service already holds: matching on
+        // a customer-controlled domain plus a shared client is the cross-tenant
+        // takeover path. Leave it unmanaged with the reason on the record.
+        if (ispconfigconnect_otherServicesLinkedToClient($serviceId, $outcome['clientid']) !== []) {
+            $unlinked[$serviceId] = sprintf(
+                'matched ISPConfig client #%d, but another WHMCS service is already linked to it, so it'
+                . ' was left unmanaged rather than shared.',
+                $outcome['clientid']
+            );
+
+            continue;
         }
 
         try {
@@ -3116,6 +3303,17 @@ function ispconfigconnect_serviceLinkState(
         // as a status word.
         return 'Not linked to an ISPConfig account: ' . ispconfigconnect_adoptionReason($outcome)
             . ' Use "Link to ISPConfig Account" to link it by name instead.';
+    }
+
+    // Never adopt a client another live service already holds (cross-tenant
+    // takeover via a customer-controlled domain).
+    if (ispconfigconnect_otherServicesLinkedToClient($serviceId, $outcome['clientid']) !== []) {
+        return sprintf(
+            'Not linked: this service\'s domain matches ISPConfig client #%d, but another WHMCS service'
+            . ' is already linked to that client. Give each service its own ISPConfig client, or unlink'
+            . ' the other, then link this one by name.',
+            $outcome['clientid']
+        );
     }
 
     try {
@@ -3307,14 +3505,35 @@ function ispconfigconnect_unlinkedRefusal(string $operation, array $params): str
     return sprintf(
         '%s refused: this service is not linked to an ISPConfig account.'
         . ' An operation that changes or deletes panel state never resolves an account by itself,'
-        . ' because a wrong match would act on a different customer\'s hosting. Link it first, then'
-        . ' retry - either press "Link to ISPConfig Account" on this service (set the service\'s'
-        . ' Username field to the ISPConfig account name first), or leave it to automatic adoption,'
-        . ' which matches on the service domain (%s) during the nightly usage sweep and needs nothing'
-        . ' from you.',
+        . ' because a wrong match would act on a different customer\'s hosting. Press "Link to'
+        . ' ISPConfig Account" on this service (set the Username field to the ISPConfig account name'
+        . ' that owns %s first), then retry.%s',
         $operation,
-        $domain !== '' ? $domain : 'not set on this service'
+        $domain !== '' ? $domain : 'this service (currently no domain is set)',
+        ispconfigconnect_adoptionRouteClause($domain)
     );
+}
+
+/**
+ * The "second way forward" clause the refusal messages append. Automatic
+ * adoption only exists when an Adopt\Resolver is installed; this build ships
+ * none, so the honest message on a normal install is that linking by name is
+ * the only route. Only when a resolver is actually present does the message
+ * promise the nightly sweep - so the docs and the UI never tell an admin to
+ * wait for a sweep that will never run.
+ */
+function ispconfigconnect_adoptionRouteClause(string $domain): string
+{
+    if (ispconfigconnect_adoptionResolver() !== null) {
+        return sprintf(
+            ' Or change nothing and let automatic adoption match on the service domain (%s) during the'
+            . ' nightly usage sweep, which records in the module log what it matched and why.',
+            $domain !== '' ? $domain : 'not set on this service - set it, or the automatic path cannot work either'
+        );
+    }
+
+    return ' Automatic adoption is not installed on this WHMCS, so linking by name is the only route'
+        . ' until it is.';
 }
 
 /**
@@ -3345,7 +3564,118 @@ function ispconfigconnect_staleRefusal(string $operation, int $clientId): string
  */
 function ispconfigconnect_clientExists(SessionManager $session, int $clientId): bool
 {
-    return is_array($session->call('client_get', ['client_id' => $clientId]));
+    // A non-positive id never names a real client. client_get(-1) in
+    // particular returns the WHOLE client table (remoting_lib getDataRecord),
+    // which would otherwise read back as "exists" for a hand-edited or blank
+    // custom field and let a delete/terminate proceed on nothing.
+    if ($clientId <= 0) {
+        return false;
+    }
+
+    $record = $session->call('client_get', ['client_id' => $clientId]);
+
+    // client_get answers a miss with null. When it returns a record, confirm
+    // it is the one asked for rather than a list or a coincidental row.
+    return is_array($record)
+        && isset($record['client_id'])
+        && (int) $record['client_id'] === $clientId;
+}
+
+/**
+ * Other non-terminated WHMCS services that store the SAME ispconfig_client_id
+ * as this one - the services a whole-client operation (terminate, lock, panel
+ * password rotation, template change) on $clientId would also hit.
+ *
+ * One WHMCS service maps to one ISPConfig client (spec 3.3); sharing a client
+ * across services means terminating one deletes the others' hosting, so the
+ * write paths use this to refuse before acting. Terminated, Cancelled and
+ * Fraud services are excluded: they hold no live claim on the client.
+ *
+ * @return list<array{serviceid: int, userid: int, domain: string, status: string}>
+ */
+function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clientId): array
+{
+    if ($clientId <= 0 || !class_exists('\\WHMCS\\Database\\Capsule')) {
+        return [];
+    }
+
+    try {
+        $rows = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+            ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
+            ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
+            ->where('tblcustomfields.type', 'product')
+            ->where('tblcustomfields.fieldname', ServiceProperties::KEY_CLIENT_ID)
+            ->where('tblcustomfieldsvalues.value', (string) $clientId)
+            ->where('tblcustomfieldsvalues.relid', '!=', $serviceId)
+            ->whereNotIn('tblhosting.domainstatus', [
+                ispconfigconnect_serviceStatus('TERMINATED', 'Terminated'),
+                ispconfigconnect_serviceStatus('CANCELLED', 'Cancelled'),
+                ispconfigconnect_serviceStatus('FRAUD', 'Fraud'),
+            ])
+            ->get([
+                'tblhosting.id as id',
+                'tblhosting.userid as userid',
+                'tblhosting.domain as domain',
+                'tblhosting.domainstatus as status',
+            ]);
+
+        $result = [];
+        foreach (is_iterable($rows) ? $rows : [] as $row) {
+            $columns = (array) $row;
+            $otherId = (int) ($columns['id'] ?? 0);
+            if ($otherId > 0) {
+                $result[] = [
+                    'serviceid' => $otherId,
+                    'userid' => (int) ($columns['userid'] ?? 0),
+                    'domain' => (string) ($columns['domain'] ?? ''),
+                    'status' => (string) ($columns['status'] ?? ''),
+                ];
+            }
+        }
+
+        return $result;
+    } catch (\Throwable) {
+        // A schema difference must not silently disable the guard by throwing
+        // into a caller's success path - but it also cannot invent conflicts.
+        // Callers treat [] as "no known conflict"; the DB-less test runtime and
+        // a genuinely single-service client both land here.
+        return [];
+    }
+}
+
+/**
+ * The shared-client refusal an operation returns when another service would be
+ * caught by a whole-client action, or null when the client is not shared.
+ *
+ * @param list<array{serviceid: int, userid: int, domain: string, status: string}> $others
+ */
+function ispconfigconnect_sharedClientRefusal(string $operation, int $clientId, array $others): ?string
+{
+    if ($others === []) {
+        return null;
+    }
+
+    $descriptions = [];
+    foreach ($others as $other) {
+        $descriptions[] = sprintf(
+            'service #%d (%s%s, %s)',
+            $other['serviceid'],
+            $other['domain'] !== '' ? $other['domain'] : 'no domain',
+            $other['userid'] > 0 ? ', WHMCS client #' . $other['userid'] : '',
+            $other['status'] !== '' ? $other['status'] : 'unknown status'
+        );
+    }
+
+    return sprintf(
+        '%s refused: this service\'s ISPConfig client #%d is also linked to %s. This module maps one'
+        . ' WHMCS service to one ISPConfig client, and a whole-client action here would hit the other'
+        . ' service(s) too - terminating would delete their hosting. Give each service its own'
+        . ' ISPConfig client, or "Unlink from ISPConfig" the ones that should not point here, then'
+        . ' retry. Nothing has been changed.',
+        $operation,
+        $clientId,
+        implode(', ', $descriptions)
+    );
 }
 
 /**
