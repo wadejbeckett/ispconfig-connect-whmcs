@@ -105,7 +105,7 @@ Two figures on that page originate with **WHMCS, not the module**, and are easy 
 would read `0` forever, so the hook replaces it on our own rows with the client count just probed
 from the panel. *WHMCS Usage Stats* — the `1/200` — is WHMCS counting the services it has assigned
 to the server against that server's *Maximum No. of Accounts* field, and reports nothing about the
-panel at all. [`docs/INSTALL.md`](docs/INSTALL.md) §6.4 breaks down every number on the page.
+panel at all. [`docs/INSTALL.md`](docs/INSTALL.md) §7.4 breaks down every number on the page.
 
 ### Why single sign-on needs something on the panel
 
@@ -120,7 +120,7 @@ Single sign-on is therefore **optional and self-configuring**. This module probe
 per servers-page render (`get_function_list`) and offers the button only where the add-on answers;
 on every other panel customers simply get the panel URL and their username, and nothing is broken
 by its absence. Setup lives in that project's README — see
-[`docs/INSTALL.md` §6.5](docs/INSTALL.md) for the one WHMCS-side detail and the link.
+[`docs/INSTALL.md` §7.5](docs/INSTALL.md) for the one WHMCS-side detail and the link.
 
 ## Security posture
 
@@ -162,13 +162,13 @@ See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through and
 [`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user.
 For the optional single sign-on button, the setup path is
 [`ispconfig-sso` → *Install and remove*](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove),
-run on the ISPConfig server. [`docs/INSTALL.md`](docs/INSTALL.md) §6.5 carries the one WHMCS-side
+run on the ISPConfig server. [`docs/INSTALL.md`](docs/INSTALL.md) §7.5 carries the one WHMCS-side
 detail (which grant checkbox to tick) and the troubleshooting for it.
 
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (787 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (912 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. (The `ispconfig-sso` project carries
 its own separate harness in its own repository.) The suite and the static analysis are currently run
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5

@@ -124,7 +124,7 @@ panel** — a stock panel needs no grant here, and the module will simply keep t
 | `connect_sso_token_create` | mints a 45-second, single-use panel-login token bound to one client, so the module never has to store or replay a customer's panel password |
 
 The project ships its own `lib/remote.conf.php`, so the grant appears as a checkbox of its own on the
-Remote Users form. [`INSTALL.md` §6.5](INSTALL.md) names that checkbox and where to tick it; the
+Remote Users form. [`INSTALL.md` §7.5](INSTALL.md) names that checkbox and where to tick it; the
 project's own README is the setup path and the source for everything panel-side (installation, the
 HTTPS requirement, and what to do when the checkbox is missing from the form):
 [**`ispconfig-sso` → *3. Install and remove***](https://github.com/wadejbeckett/ispconfig-sso#3-install-and-remove).

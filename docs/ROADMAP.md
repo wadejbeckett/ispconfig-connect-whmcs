@@ -2,7 +2,7 @@
 
 **As at:** 2026-08-25
 **Against:** WHMCS 9.0.6, ISPConfig 3.3.1p1, PHP 8.2 — one live production install
-**Code state (checked while writing this page):** 544 automated tests pass, static analysis
+**Code state (checked while writing this page):** 912 automated tests pass, static analysis
 (PHPStan level 6) reports no errors.
 
 This is the honest answer to "where does the plan stand?". It is written to be readable without

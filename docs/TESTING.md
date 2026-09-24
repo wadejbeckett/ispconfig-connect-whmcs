@@ -34,7 +34,7 @@ php vendor/bin/phpunit --testsuite module  # the WHMCS entry points, end to end
 php vendor/bin/phpunit --filter UsageParser
 ```
 
-Last full run (2026-08-25): **755 tests, 3081 assertions, OK**.
+Last full run (2026-09-24): **912 tests, 3572 assertions, OK**.
 
 Two suites, deliberately separated:
 

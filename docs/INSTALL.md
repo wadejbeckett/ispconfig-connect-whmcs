@@ -358,9 +358,9 @@ writes the four usage columns of `tblhosting` for every service on it:
 | WHMCS column | ISPConfig source |
 |---|---|
 | `diskusage` | `quota_get_by_user` — the repquota block count for each of the client's websites |
-| `disklimit` | `web_domain.hd_quota` (MB; `-1`/`0` = unlimited, reported to WHMCS as a limit of `0`) |
-| `bwusage` | `trafficquota_get_by_user` — this calendar month's `web_traffic` bytes |
-| `bwlimit` | `web_domain.traffic_quota` (MB, same unlimited convention) |
+| `disklimit` | `web_domain.hd_quota` (MB; `-1`/`0` = unlimited, in which case the column is **left unset** so WHMCS keeps the product's own limit) |
+| `bwusage` | `trafficquota_get_by_user` — this calendar month's `web_traffic` bytes (reset at the month boundary, never carried forward as a peak) |
+| `bwlimit` | `web_domain.traffic_quota` (MB, same unlimited convention as `disklimit`) |
 
 Requirements and behaviour worth knowing:
 

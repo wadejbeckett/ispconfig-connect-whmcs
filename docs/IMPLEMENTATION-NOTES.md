@@ -579,7 +579,7 @@ makes the MetaData labels conditional, and creates one genuinely awkward constra
 Resolution: `GetRemoteMetaData` caches `sso_available` into `tblservers_remote.meta_data` (one
 `get_function_list` call, already granted), and `MetaData()` reads that cache with a single joined
 query, memoised per request and defaulting to *not advertised* on any failure. The operator-visible
-consequence is documented in INSTALL §6.5: after installing `ispconfig-sso` on the panel, open
+consequence is documented in INSTALL §7.5: after installing `ispconfig-sso` on the panel, open
 Configuration > Servers once.
 
 **`AdminSingleSignOnLabel` is deliberately never advertised.** WHMCS documents that label as
@@ -637,7 +637,7 @@ the module is activated"). On 9.0.6, for a **provisioning (servers) module**, th
 Consequence for this module: a hook file under `modules/servers/ispconfigconnect/` is **dead code**.
 The admin-area hook therefore ships as `modules/servers/ispconfigconnect/hooks/ispconfigconnect.php`
 and is **copied by the operator into `includes/hooks/`**, which is the documented, always-scanned
-location (INSTALL §2 and §6.4).
+location (INSTALL §2 and §7.4).
 
 ### 6.2 Finding 2 — the styled `remote-meta-data` block is core-rendered and gated to bundled modules
 
