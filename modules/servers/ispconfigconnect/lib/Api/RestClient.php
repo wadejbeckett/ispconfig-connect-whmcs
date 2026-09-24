@@ -162,6 +162,21 @@ final class RestClient
         // data, and the module never reads them.
         'client_get_emailcontact' => self::CLIENT_ROW_LOGGED,
         'client_get_by_username' => self::SYS_USER_ROW_LOGGED,
+        // Usage/metrics reads run on EVERY sweep and answer with SELECT * rows
+        // from customer tables - web_domain (apache_directives, custom_php_ini
+        // hold operator secrets; ssl_key/ssl_request the site's TLS key),
+        // mail_user (name, cc, autoresponder text), web_database and dns_soa
+        // (mbox contact). Only numeric usage/quota columns and the structural
+        // ids the log needs are kept; MASKED_KEYS survive (masked by value),
+        // everything else is dropped before logging.
+        'quota_get_by_user' => self::WEB_DOMAIN_USAGE_LOGGED,
+        'sites_web_domain_get' => self::WEB_DOMAIN_USAGE_LOGGED,
+        'databasequota_get_by_user' => self::DATABASE_USAGE_LOGGED,
+        'mailquota_get_by_user' => self::MAIL_USAGE_LOGGED,
+        // FTP-user and DNS-zone reads are used only for a COUNT, so nothing but
+        // the id and the group filter is worth logging.
+        'sites_ftp_user_get' => self::FTP_USER_LOGGED,
+        'dns_zone_get' => self::DNS_ZONE_LOGGED,
     ];
 
     /**
@@ -246,6 +261,57 @@ final class RestClient
      * @var list<string>
      */
     private const ALLOWED_PREFIXES = ['limit', 'sysperm'];
+
+    /**
+     * What survives a web_domain row (quota_get_by_user / sites_web_domain_get):
+     * the disk/traffic usage and quota numbers Usage\UsageParser reads plus the
+     * structural ids, and nothing else - apache_directives and custom_php_ini
+     * (operator secrets) and every other column are dropped, ssl_key/ssl_request
+     * are masked by MASKED_KEYS.
+     *
+     * @var list<string>
+     */
+    private const WEB_DOMAIN_USAGE_LOGGED = [
+        'domain_id', 'sys_groupid', 'domain', 'active',
+        'hd_quota', 'traffic_quota', 'used', 'used_raw', 'soft', 'soft_raw',
+    ];
+
+    /**
+     * What survives a web_database row (databasequota_get_by_user): the storage
+     * numbers and ids only.
+     *
+     * @var list<string>
+     */
+    private const DATABASE_USAGE_LOGGED = [
+        'database_id', 'sys_groupid', 'database_name',
+        'database_quota', 'database_quota_raw', 'used', 'used_raw',
+    ];
+
+    /**
+     * What survives a mail_user row (mailquota_get_by_user): the mailbox storage
+     * numbers and ids only - never name, cc, email or autoresponder_text.
+     *
+     * @var list<string>
+     */
+    private const MAIL_USAGE_LOGGED = [
+        'mailuser_id', 'sys_groupid', 'quota', 'quota_raw', 'used', 'used_raw',
+    ];
+
+    /**
+     * What survives an ftp_user row (sites_ftp_user_get, read only to COUNT):
+     * the id and the group filter - never dir, username or uid/gid.
+     *
+     * @var list<string>
+     */
+    private const FTP_USER_LOGGED = ['ftp_user_id', 'sys_groupid', 'active'];
+
+    /**
+     * What survives a dns_soa row (dns_zone_get, read only to COUNT): the id and
+     * the group filter - never the mbox contact address or the origin.
+     *
+     * @var list<string>
+     */
+    private const DNS_ZONE_LOGGED = ['id', 'sys_groupid', 'active'];
 
     /** Value substituted for a scrubbed key that stays visible in the log. */
     public const REDACTED_PLACEHOLDER = '[redacted by ispconfigconnect]';

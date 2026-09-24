@@ -952,13 +952,48 @@ final class RestClientTest extends TestCase
         ], JSON_THROW_ON_ERROR);
         $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
 
-        $client->call('sites_web_domain_get', ['session_id' => 's0000', 'primary_id' => 1]);
+        // server_get is NOT a projected customer-record read, so this exercises
+        // the generic PRIVATE_KEYS/heuristic scrub and its normalized matching.
+        $client->call('server_get', ['session_id' => 's0000', 'server_id' => 1]);
 
         $logged = $this->logged[0]['response'];
         self::assertIsArray($logged);
         self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['Bank-Account-IBAN']);
         self::assertContains('crypt:$6$panelhash', $this->logged[0]['sensitive']);
         self::assertSame('one.example', $logged['domain']);
+    }
+
+    public function testUsageReadsDropCustomerPiiAndOperatorSecretsFromTheLog(): void
+    {
+        // mailquota_get_by_user answers with SELECT * mail_user rows: mailbox
+        // PII (name, cc, autoresponder text) and, on web_domain reads,
+        // apache_directives/custom_php_ini operator secrets. Only usage numbers
+        // and ids may reach tblmodulelog.
+        $envelope = json_encode([
+            'code' => 'ok',
+            'message' => '',
+            'response' => [[
+                'mailuser_id' => 5,
+                'sys_groupid' => 3,
+                'used' => '52428800',
+                'quota' => '0',
+                'email' => 'someone@customer.example',
+                'name' => 'A Real Customer',
+                'cc' => 'boss@customer.example',
+                'autoresponder_text' => 'On holiday until Monday',
+            ]],
+        ], JSON_THROW_ON_ERROR);
+        $client = new RestClient(self::transportReturning($envelope), $this->recordingLogger());
+
+        $client->call('mailquota_get_by_user', ['session_id' => 's0000', 'client_id' => 5]);
+
+        $row = $this->logged[0]['response'][0];
+        self::assertSame(5, $row['mailuser_id']);
+        self::assertSame('52428800', $row['used']);
+        self::assertArrayNotHasKey('email', $row);
+        self::assertArrayNotHasKey('name', $row);
+        self::assertArrayNotHasKey('cc', $row);
+        self::assertArrayNotHasKey('autoresponder_text', $row);
     }
 
     public function testTheRequestStaysReadableExceptForColumnsTheModuleNeverAuthors(): void

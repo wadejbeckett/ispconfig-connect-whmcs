@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Ispconfigconnect\Tests\Module;
 
 /**
- * TestConnection: login plus the three read probes (server_get_all,
- * client_templates_get_all, monitor_jobqueue_count), with an actionable
- * error message for every verified failure mode of the 3.3.1p1 wire contract.
+ * TestConnection: login plus the read probes (the two dropdown-loader grants,
+ * the job-queue reachability probe, and the safe client/site/usage reads every
+ * lifecycle and sweep operation depends on), with an actionable error message
+ * for every verified failure mode of the 3.3.1p1 wire contract.
  */
 final class TestConnectionTest extends ModuleTestCase
 {
@@ -22,6 +23,19 @@ final class TestConnectionTest extends ModuleTestCase
                 'server_get_all',
                 'client_templates_get_all',
                 'monitor_jobqueue_count',
+                // Safe read probes: each uses an id/name that matches nothing,
+                // so a present grant answers "not found" and only a missing
+                // grant is refused (spec 3.6 least-privilege verification).
+                'client_get',
+                'client_get_all',
+                'client_get_by_username',
+                'client_get_sites_by_user',
+                'sites_web_domain_get',
+                'sites_ftp_user_get',
+                'dns_zone_get',
+                'quota_get_by_user',
+                'mailquota_get_by_user',
+                'databasequota_get_by_user',
                 // The SSO presence probe rides the SAME session as the grant
                 // probes: Test Connection is the moment an admin is looking at
                 // this server, so it is where single sign-on gets reported.
@@ -68,7 +82,12 @@ final class TestConnectionTest extends ModuleTestCase
      */
     public function testARefusedProbeIsReportedAsUndeterminableAndNamesTheGrant(): void
     {
-        $this->fake->setGrants(['server_get', 'client_templates_get_all', 'monitor_jobqueue_count']);
+        // Every required grant EXCEPT the optional SSO probe (get_function_list)
+        // is present, so the only finding is that one probe grant.
+        $this->fake->setGrants(array_values(array_diff(
+            \WHMCS\Module\Server\Ispconfigconnect\Api\Permissions::requiredGrants(),
+            ['get_function_list']
+        )));
 
         $result = ispconfigconnect_TestConnection($this->params());
 

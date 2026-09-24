@@ -108,7 +108,21 @@ final class PermissionsTest extends TestCase
         $probes = Permissions::readProbes();
 
         self::assertSame(
-            ['server_get_all', 'client_templates_get_all', 'monitor_jobqueue_count'],
+            [
+                'server_get_all',
+                'client_templates_get_all',
+                'monitor_jobqueue_count',
+                'client_get',
+                'client_get_all',
+                'client_get_by_username',
+                'client_get_sites_by_user',
+                'sites_web_domain_get',
+                'sites_ftp_user_get',
+                'dns_zone_get',
+                'quota_get_by_user',
+                'mailquota_get_by_user',
+                'databasequota_get_by_user',
+            ],
             array_keys($probes)
         );
         foreach ($probes as $method => $probe) {

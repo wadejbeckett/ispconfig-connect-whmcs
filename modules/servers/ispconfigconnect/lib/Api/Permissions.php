@@ -178,10 +178,34 @@ final class Permissions
      */
     public static function readProbes(): array
     {
+        // Every probe is a pure read whose params match NOTHING on a real
+        // panel: with the grant it answers null/[]/"not found" (no side
+        // effect), and without it checkPerm() throws permission_denied - which
+        // is exactly what ispconfigconnect_missingGrants() keys on. A large
+        // positive id is used rather than 0, because a FALSY client id makes
+        // the *quota* readers answer with every domain on the server
+        // (quota_lib.inc.php); trafficquota_get_by_user is therefore left out
+        // and its grant is covered by quota_get_by_user, which shares the same
+        // "Quota functions" checkbox group (interface client remote.conf.php).
+        $missingId = 2147483646;
+
         return [
             'server_get_all' => ['grant' => self::grantFor('server_get_all'), 'params' => []],
             'client_templates_get_all' => ['grant' => self::grantFor('client_templates_get_all'), 'params' => []],
             'monitor_jobqueue_count' => ['grant' => self::grantFor('monitor_jobqueue_count'), 'params' => ['server_id' => 0]],
+            // Client reads - every suspend, terminate, link and sync needs one.
+            'client_get' => ['grant' => self::grantFor('client_get'), 'params' => ['client_id' => $missingId]],
+            'client_get_all' => ['grant' => self::grantFor('client_get_all'), 'params' => []],
+            'client_get_by_username' => ['grant' => self::grantFor('client_get_by_username'), 'params' => ['username' => 'ispconfigconnect_probe_no_such_user']],
+            'client_get_sites_by_user' => ['grant' => self::grantFor('client_get_sites_by_user'), 'params' => ['sys_userid' => 0, 'sys_groupid' => '0']],
+            // Object reads used by provisioning, suspend and usage.
+            'sites_web_domain_get' => ['grant' => self::grantFor('sites_web_domain_get'), 'params' => ['primary_id' => $missingId]],
+            'sites_ftp_user_get' => ['grant' => self::grantFor('sites_ftp_user_get'), 'params' => ['primary_id' => $missingId]],
+            'dns_zone_get' => ['grant' => self::grantFor('dns_zone_get'), 'params' => ['primary_id' => $missingId]],
+            // Usage-metric reads (the whole "Quota functions" group).
+            'quota_get_by_user' => ['grant' => self::grantFor('quota_get_by_user'), 'params' => ['client_id' => $missingId]],
+            'mailquota_get_by_user' => ['grant' => self::grantFor('mailquota_get_by_user'), 'params' => ['client_id' => $missingId]],
+            'databasequota_get_by_user' => ['grant' => self::grantFor('databasequota_get_by_user'), 'params' => ['client_id' => $missingId]],
         ];
     }
 }

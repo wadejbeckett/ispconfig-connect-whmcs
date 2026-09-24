@@ -1443,15 +1443,29 @@ function ispconfigconnect_GetRemoteMetaData(array $params): array
             // "this panel has no single sign-on" to every reader of this row on
             // the strength of a permission we were denied. `sso_state` carries
             // the three-way truth for readers that can use it.
-            try {
-                $state = ispconfigconnect_companionClient($params, $session)->status();
-                $meta['sso_state'] = $state;
-                if ($state !== CompanionClient::STATUS_UNKNOWN) {
-                    $meta['sso_available'] = $state === CompanionClient::STATUS_INSTALLED;
+            $abortedOnConnection = ($meta['ispconfig_status'] ?? '') === RemoteMetaData::STATUS_UNAVAILABLE
+                || str_contains((string) ($meta['ispconfig_error'] ?? ''), 'remaining probes skipped');
+
+            if ($abortedOnConnection) {
+                // gather() already stopped on a connection-level failure. A
+                // second login here for the SSO probe would repeat it and spend
+                // another failed login against the panel's 10-per-5-minutes
+                // lockout budget (spec 1.4), so skip it and record UNKNOWN.
+                $meta['sso_state'] = CompanionClient::STATUS_UNKNOWN;
+            } else {
+                try {
+                    $state = ispconfigconnect_companionClient($params, $session)->status();
+                    $meta['sso_state'] = $state;
+                    if ($state !== CompanionClient::STATUS_UNKNOWN) {
+                        $meta['sso_available'] = $state === CompanionClient::STATUS_INSTALLED;
+                    }
+                } catch (\Throwable) {
+                    // WHMCS stores meta_data WHOLESALE, so omitting the key would
+                    // DELETE a previously known state, not preserve it. Record
+                    // UNKNOWN explicitly - readers treat it as "neither offer nor
+                    // withhold" (ispconfigconnect_ssoStateOfRow).
+                    $meta['sso_state'] = CompanionClient::STATUS_UNKNOWN;
                 }
-            } catch (\Throwable) {
-                // Unknown beats a false negative: leave both keys out so the
-                // previous answer is not contradicted by a transient failure.
             }
 
             return $meta;
@@ -1672,7 +1686,19 @@ function ispconfigconnect_missingGrants(SessionManager $session): array
         try {
             $session->call($method, $probe['params']);
         } catch (PermissionDeniedException) {
+            // The grant is missing: checkPerm() refused the call.
             $missing[] = sprintf("'%s' (needed by %s)", $probe['grant'], $method);
+        } catch (\Throwable $failure) {
+            // A connection-level failure (unreachable panel, lockout, bad
+            // credentials) is not a grant verdict - it means we could not
+            // check at all, so let it abort TestConnection's usual way.
+            if (ispconfigconnect_isConnectionLevel($failure)) {
+                throw $failure;
+            }
+            // Any other remote fault ("no such client/record", an empty-result
+            // validation error) means the call REACHED the panel and was not
+            // refused, so the grant is present. The probes use ids/names that
+            // match nothing precisely so this is the normal answer.
         }
     }
 
