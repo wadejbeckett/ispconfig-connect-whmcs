@@ -163,12 +163,93 @@ final class HooksTest extends TestCase
     public function testFallsBackToTheRequestPathWhenFilenameIsAbsent(): void
     {
         // A renamed admin directory is supported, so only the basename counts.
-        $this->withRequestUri('/secret-admin/configservers.php?action=manage&id=3', function (): void {
+        // The list has no action, which is what makes it the page we render on.
+        $this->withRequestUri('/secret-admin/configservers.php', function (): void {
             self::assertStringContainsString(
                 ISPCONFIGCONNECT_METAPANEL_ID,
                 $this->render([], [$this->row()])
             );
         });
+    }
+
+    /**
+     * configservers.php serves the server list AND the edit, add and group
+     * forms and their POST handlers. Only the list carries the table this block
+     * decorates, so every other action must render nothing - no query, no
+     * payload, and no risk of the block being attached to a non-table container
+     * on a form page.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function nonListActions(): array
+    {
+        return [
+            'edit a server' => [['action' => 'manage', 'id' => '3']],
+            'add a server' => [['action' => 'add']],
+            'manage a group' => [['action' => 'managegroup', 'id' => '3']],
+            'save handler' => [['action' => 'save', 'id' => '3']],
+            'group save handler' => [['action' => 'managegroupsave']],
+        ];
+    }
+
+    /** @param array<string, string> $get */
+    #[DataProvider('nonListActions')]
+    public function testRendersNothingOnConfigserversSubPages(array $get): void
+    {
+        $this->withGet($get, function (): void {
+            self::assertSame(
+                '',
+                $this->render($this->vars('configservers'), [$this->row()]),
+                'a configservers action other than the list must not render'
+            );
+        });
+    }
+
+    /** The list is the one action that renders: no action, or action=list. */
+    public function testRendersOnTheServersListAction(): void
+    {
+        foreach ([[], ['action' => 'list']] as $get) {
+            $this->withGet($get, function (): void {
+                self::assertStringContainsString(
+                    ISPCONFIGCONNECT_METAPANEL_ID,
+                    $this->render($this->vars('configservers'), [$this->row()]),
+                    'the servers list must render'
+                );
+            });
+        }
+    }
+
+    /**
+     * A configservers action carried only in the request URI (not $_GET) must
+     * gate the block too - the URI is the fallback the page check already uses.
+     */
+    public function testASubPageActionInTheRequestUriAlsoSuppressesTheBlock(): void
+    {
+        $this->withRequestUri('/admin/configservers.php?action=manage&id=3', function (): void {
+            self::assertSame('', $this->render($this->vars('configservers'), [$this->row()]));
+        });
+    }
+
+    /**
+     * A sub-page must be gated BEFORE the query runs, exactly like any other
+     * non-servers page - the whole point is to keep configservers's edit/add/
+     * group actions from paying for a query on every request.
+     */
+    public function testASubPageNeverReachesTheDatabase(): void
+    {
+        $touched = false;
+        $this->withGet(['action' => 'manage', 'id' => '3'], function () use (&$touched): void {
+            ispconfigconnect_metaPanelFooterOutput(
+                $this->vars('configservers'),
+                static function () use (&$touched): array {
+                    $touched = true;
+
+                    return [];
+                }
+            );
+        });
+
+        self::assertFalse($touched, 'the row provider must not be called on a configservers sub-page');
     }
 
     // ---- content ---------------------------------------------------------
@@ -423,6 +504,62 @@ final class HooksTest extends TestCase
         self::assertStringNotContainsString('innerHTML', $html);
     }
 
+    // ---- row matching (L1) -----------------------------------------------
+
+    /**
+     * The injected script must anchor a row on the server's OWN edit link
+     * (configservers.php?action=manage&id=N) and nothing else: a
+     * configservers.php?action=managegroup&id=N (server groups) link shares the
+     * id namespace and would otherwise decorate a group row for the same id.
+     *
+     * PHPUnit cannot run the DOM script, so this locks the guard in at the
+     * source level; the executed jsdom-style behaviour is covered by a manual
+     * verification recorded with the change.
+     */
+    public function testTheScriptAnchorsRowsOnlyOnTheManageActionLink(): void
+    {
+        $script = $this->behaviourScriptOf(
+            $this->render($this->vars('configservers'), [$this->row()])
+        );
+
+        self::assertMatchesRegularExpression(
+            '/action=manage\(\?:\[&#\]\|\$\)/',
+            $script,
+            'the preferred-link filter must require action=manage'
+        );
+    }
+
+    /**
+     * The Accounts rewrite mutates a cell WHMCS core owns, so it must run only
+     * when the row was found by an id link - never on the hostname-text
+     * fallback, which can match another vendor's row for the same host.
+     */
+    public function testTheAccountsRewriteRunsOnlyForALinkMatchedRow(): void
+    {
+        $script = $this->behaviourScriptOf(
+            $this->render($this->vars('configservers'), [$this->row()])
+        );
+
+        self::assertStringContainsString('var matchedByLink = false;', $script);
+        self::assertMatchesRegularExpression(
+            '/if\s*\(\s*matchedByLink\s*\)\s*\{\s*correctAccountCount\(/',
+            $script,
+            'correctAccountCount must be gated behind a link match'
+        );
+    }
+
+    /** The behaviour <script> (the last one), not the JSON payload element. */
+    private function behaviourScriptOf(string $html): string
+    {
+        $open = strrpos($html, '<script>');
+        self::assertIsInt($open);
+        $start = $open + strlen('<script>');
+        $end = strpos($html, '</script>', $start);
+        self::assertIsInt($end);
+
+        return substr($html, $start, $end - $start);
+    }
+
     /**
      * Runs $body with $_SERVER['REQUEST_URI'] set, restoring whatever the
      * runtime had (CLI has none at all).
@@ -441,6 +578,24 @@ final class HooksTest extends TestCase
             } else {
                 $_SERVER['REQUEST_URI'] = $previous;
             }
+        }
+    }
+
+    /**
+     * Runs $body with $_GET replaced by $get - WHMCS's authoritative source for
+     * the configservers action - and restores it afterwards.
+     *
+     * @param array<string, string> $get
+     * @param callable(): void $body
+     */
+    private function withGet(array $get, callable $body): void
+    {
+        $previous = $_GET;
+        $_GET = $get;
+        try {
+            $body();
+        } finally {
+            $_GET = $previous;
         }
     }
 

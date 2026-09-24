@@ -241,7 +241,21 @@ final class RemoteMetaData
             throw new \UnexpectedValueException('server_get_app_version returned no ispc_app_version');
         }
 
-        return trim($version);
+        $version = trim($version);
+
+        // The panel is untrusted and meta_data is a TEXT column: a broken or
+        // hostile panel returning a huge (200 KB has been demonstrated) or
+        // otherwise exotic version string would bloat the stored JSON, overflow
+        // the column, and drop the whole diagnostics row. A real ISPConfig
+        // version is short and made of digits, dots, letters and the odd space,
+        // plus or minus (e.g. "3.3.1p1", "3.2.11p1 dev"), so anything outside
+        // that shape is treated as a per-function probe fault - it degrades to
+        // "unknown" like any other failed probe rather than being stored.
+        if (!preg_match('/^[0-9A-Za-z.\-+ ]{1,32}$/', $version)) {
+            throw new \UnexpectedValueException('server_get_app_version returned an implausible version string');
+        }
+
+        return $version;
     }
 
     /**

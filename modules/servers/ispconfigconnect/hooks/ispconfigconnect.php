@@ -183,13 +183,52 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
         $filename = is_scalar($filename) ? strtolower(trim((string) $filename)) : '';
 
         if ($filename === ISPCONFIGCONNECT_METAPANEL_PAGE) {
-            return true;
+            $onServersScript = true;
+        } else {
+            $path = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH);
+            $onServersScript = is_string($path)
+                && strtolower(basename($path)) === ISPCONFIGCONNECT_METAPANEL_PAGE . '.php';
         }
 
-        $path = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH);
+        // configservers.php is not one page: the same script serves the server
+        // LIST and the edit, add and group forms plus their POST handlers
+        // (action=manage, add, managegroup, save, ...). Only the list carries
+        // the servers table this block decorates, so run only there - no action,
+        // or action=list. This keeps the query and the ~6 KB payload off every
+        // other configservers action, where they would run for nothing and the
+        // parentNode fallback could even attach the block to a non-table
+        // container.
+        return $onServersScript && ispconfigconnect_metaPanelIsListAction();
+    }
 
-        return is_string($path)
-            && strtolower(basename($path)) === ISPCONFIGCONNECT_METAPANEL_PAGE . '.php';
+    /**
+     * True when the current request is the servers LIST rather than one of
+     * configservers.php's other actions - i.e. no `action`, or action=list.
+     *
+     * WHMCS reads the action from the query string, so $_GET is authoritative;
+     * the request URI is parsed as a fallback for the same reason the page check
+     * has one - a build that populates the superglobals differently must not
+     * silently disable the gate.
+     */
+    function ispconfigconnect_metaPanelIsListAction(): bool
+    {
+        $action = null;
+        if (isset($_GET['action']) && is_scalar($_GET['action'])) {
+            $action = (string) $_GET['action'];
+        } else {
+            $query = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_QUERY);
+            if (is_string($query) && $query !== '') {
+                parse_str($query, $parsed);
+                $candidate = $parsed['action'] ?? null;
+                if (is_scalar($candidate)) {
+                    $action = (string) $candidate;
+                }
+            }
+        }
+
+        $action = strtolower(trim((string) $action));
+
+        return $action === '' || $action === 'list';
     }
 
     /**
@@ -523,10 +562,17 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                         var match = /[?&]id=(\d+)(?:&|#|$)/.exec(href);
                         if (!match) { continue; }
                         if (href.indexOf('configservers') !== -1) {
-                            // A link to this server's own edit page: unambiguous
-                            // wherever it sits, so a redesigned (non-table) layout
-                            // still resolves.
-                            if (!preferred[match[1]]) { preferred[match[1]] = link; }
+                            // Only the per-server EDIT link (action=manage) is an
+                            // unambiguous anchor for a server row, and it exists
+                            // wherever the row is, so a redesigned (non-table)
+                            // layout still resolves. configservers.php with
+                            // action=managegroup (server groups) shares the id
+                            // namespace, so any configservers link that is NOT
+                            // action=manage is ignored outright - never taken as a
+                            // row anchor and never used as a fallback either.
+                            if (/[?&]action=manage(?:[&#]|$)/.test(href) && !preferred[match[1]]) {
+                                preferred[match[1]] = link;
+                            }
                         } else if (!fallback[match[1]] && link.closest && link.closest('table')) {
                             // Some other ?id=N link, accepted only inside a table -
                             // sidebar and breadcrumb links must never be mistaken
@@ -580,12 +626,19 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                         var server = servers[s];
                         if (!server || !server.lines || !server.lines.length) { continue; }
                         var link = links[String(server.id)];
+                        var matchedByLink = false;
                         var cell = link && link.closest ? link.closest('td') : null;
                         if (!cell && link) { cell = link.parentNode; }
+                        if (cell) { matchedByLink = true; }
                         if (!cell) { cell = cellWithExactText(server.hostname); }
                         if (!cell || cell.querySelector('.__CLASS__')) { continue; }
                         cell.appendChild(buildBlock(server.lines));
-                        correctAccountCount(cell, server);
+                        // The Accounts rewrite MUTATES a cell core owns, so only
+                        // do it when the row is certain: a link (id) match. A
+                        // hostname-text match can land on another vendor's row for
+                        // the same host, so the block is placed there but core's
+                        // Accounts figure is left untouched.
+                        if (matchedByLink) { correctAccountCount(cell, server); }
                     }
                 }
 

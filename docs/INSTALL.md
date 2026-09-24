@@ -448,20 +448,23 @@ from three different sources. They are easy to mistake for each other, so:
 | What you see | Where it comes from | What it means |
 |---|---|---|
 | **WHMCS Usage Stats**, e.g. `1/200` | WHMCS itself | The number of **WHMCS services assigned to this server**, over the server's own **Maximum No. of Accounts** field (Servers > Edit). Pure WHMCS arithmetic — it says nothing about the panel, and no module can change it. A perfectly healthy panel reads `0/200` until WHMCS services point at it. |
-| **Accounts: N** | WHMCS's cache (`tblservers_remote.num_accounts`) | WHMCS's own cached count of accounts on the server. Nothing the module reports while the page renders reaches this figure — that was tested on WHMCS 9.0.6 — so it stays **blank on a freshly added server**. The run that hands WHMCS an account list is **Sync Accounts** (§7.3); run that once if you want a number here. |
+| **Accounts: N** | This module, via the admin hook (§2) | The **live ISPConfig client count** from the last metadata refresh — the same figure as *Clients* below. Core's own value for this cell is `tblservers_remote.num_accounts`, a column no returned key populates for this module (tested on WHMCS 9.0.6), so core would show **0** forever; with the admin hook installed the block rewrites the cell client-side to the real count when the page renders. **Without the hook it reads 0**, and no server sync will change that — do not run *Sync Accounts* to fill it. |
 | **Services: N** | This module | The number of **ISPConfig clients** on the panel — the same figure as *Clients* below, because this module provisions exactly one ISPConfig client per WHMCS service. Refreshed every time the page renders. (It used to be a website count; counting vhosts meant a bulk read that dragged every site's TLS private key across the API, so that number was removed rather than approximated.) |
 | **ISPConfig Version / Pending Jobs / Clients / ISPConfig Nodes / Last Updated** | This module, via the admin hook (§2) | Panel version; the depth of ISPConfig's datalog job queue (mutations accepted but not yet applied — a number that keeps climbing means the panel's cron is not running); the number of **ISPConfig clients**, which is this module's own always-fresh answer to "how many accounts"; how many servers the panel fronts; and when WHMCS last refreshed the block. |
 | **Probe Errors** | This module | Shown instead of a missing value when a probe fails: the page shows *why*, rather than breaking or quietly reading zero. |
 
 Two consequences worth knowing:
 
-- **Clients vs Accounts.** *Clients* is live; *Accounts* is a cached sync
-  result. They can legitimately disagree until the next *Sync Accounts* run.
+- **Clients vs Accounts.** With the admin hook installed, *Accounts* is rewritten
+  to the very same live client count as *Clients*, so the two always agree.
+  Without the hook, *Clients* is not shown at all and *Accounts* reads 0 — a
+  server sync will not change that.
 - If the **ISPConfig Version / Pending Jobs / Clients** lines are missing
   entirely, the admin hook file is not installed — see §2.
 
-Nothing on this page contacts the panel more than once per render, and a panel
-that is down costs the block, never the page.
+Rendering this page refreshes each ISPConfig server's block once (about seven
+API requests to that panel per server per render); a panel that is down costs
+the block, never the page.
 
 ### 7.5 Single sign-on (optional, needs the separate `ispconfig-sso` project)
 
