@@ -92,7 +92,7 @@ final class Collector
         );
         $this->assertAttributable($clientId, $usage);
 
-        $usage = $usage->withSysGroupId($usage->sysGroupId ?? $this->resolveGroupId($username));
+        $usage = $usage->withSysGroupId($usage->sysGroupId ?? $this->resolveGroupId($clientId, $username));
         if ($usage->sysGroupId === null) {
             // Without a group there is no safe filter for the two listings,
             // and an unfiltered *_get would return the whole panel.
@@ -251,8 +251,18 @@ final class Collector
      * zero anyway and nothing is lost by failing loudly - while a username
      * that no longer resolves means the module's stored identity for the
      * service is wrong, which the operator has to see.
+     *
+     * The resolved sys_user row MUST belong to $clientId. client_get_by_username
+     * keys on the username alone (remote.d/client.inc.php), and the stored
+     * username and client id can disagree - a panel-side rename, or a service
+     * that fell back to tblhosting.username. If the row names a different
+     * client, its default_group scopes the FTP and DNS listings to THAT
+     * client's records, billing one customer's zones and FTP users to another.
+     * The username is not enough to attribute usage, so a mismatch is refused
+     * rather than trusted (the memo key is the client id, so the username is
+     * otherwise invisible to attribution).
      */
-    private function resolveGroupId(string $username): ?int
+    private function resolveGroupId(int $clientId, string $username): ?int
     {
         if ($username === '') {
             return null;
@@ -262,6 +272,20 @@ final class Collector
         if (!is_array($record)) {
             return null;
         }
+
+        $recordClientId = QuotaMath::toInt($record['client_id'] ?? 0);
+        if ($recordClientId !== $clientId) {
+            throw new UsageException(sprintf(
+                'ISPConfig username %s resolves to client #%d, not the #%d stored for this '
+                    . 'service - the stored username and client id disagree (a panel-side rename, '
+                    . 'or a fallback to tblhosting.username). Refusing to scope FTP/DNS counts by '
+                    . "another client's group.",
+                $username,
+                $recordClientId,
+                $clientId
+            ));
+        }
+
         $groupId = QuotaMath::toInt($record['default_group'] ?? null);
 
         return $groupId > 0 ? $groupId : null;

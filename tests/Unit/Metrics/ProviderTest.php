@@ -246,6 +246,56 @@ final class ProviderTest extends TestCase
         self::assertStringContainsString('username', $provider->failures()[102]);
     }
 
+    public function testTwoServicesSharingAUsernameAreBothFailedNotSilentlyCollapsed(): void
+    {
+        // WHMCS keys usage by the account username, so two services that share
+        // one collide on the tenant key. Keying both under it would let the last
+        // write silently overwrite the first, handing one service's usage to the
+        // other (review U7). Both must be failed, and nothing reported for the
+        // shared key. A shared username reaches usage() via the
+        // tblhosting.username fallback or when two services link to one client.
+        $first = $this->fake->addClient('clientA');
+        $this->fake->addWebsite($first, 'a.example', hdQuotaMegabytes: 512);
+        $second = $this->fake->addClient('clientB');
+        $this->fake->addWebsite($second, 'b.example', hdQuotaMegabytes: 1024);
+
+        $provider = $this->provider();
+        $usage = $provider->usage([
+            new ServiceRef(101, $first, 'dup'),
+            new ServiceRef(102, $second, 'dup'),
+        ]);
+
+        self::assertSame([], $usage);
+        self::assertArrayHasKey(101, $provider->failures());
+        self::assertArrayHasKey(102, $provider->failures());
+        self::assertStringContainsString('shared', $provider->failures()[101]);
+        self::assertStringContainsString('102', $provider->failures()[101]);
+        self::assertStringContainsString('101', $provider->failures()[102]);
+        // Neither collided service is read from the panel at all.
+        self::assertNotContains('quota_get_by_user', $this->calledMethods());
+    }
+
+    public function testAUniqueUsernameIsStillReportedAlongsideACollidingPair(): void
+    {
+        $unique = $this->seedFullClient();
+        $a = $this->fake->addClient('clientA');
+        $this->fake->addWebsite($a, 'a.example');
+        $b = $this->fake->addClient('clientB');
+        $this->fake->addWebsite($b, 'b.example');
+
+        $provider = $this->provider();
+        $usage = $provider->usage([
+            new ServiceRef(101, $unique['clientId'], $unique['username']),
+            new ServiceRef(102, $a, 'dup'),
+            new ServiceRef(103, $b, 'dup'),
+        ]);
+
+        self::assertSame(['svc1'], array_keys($usage));
+        self::assertArrayNotHasKey(101, $provider->failures());
+        self::assertArrayHasKey(102, $provider->failures());
+        self::assertArrayHasKey(103, $provider->failures());
+    }
+
     public function testADeletedPanelClientIsAFailureNotAZeroUsageTenant(): void
     {
         // A stale ispconfig_client_id answers every quota call with zero rows

@@ -165,13 +165,40 @@ final class UsageParser
      * and a vhostsubdomain/vhostalias logs into its own log folder - so a
      * client's domains never account for each other's bytes.
      *
+     * KNOWN ONE-DAY LAG (U4), documented not silently swallowed: 200-logfiles
+     * runs at '0 0 * * *' and writes each day's bytes with
+     * traffic_date = date('Y-m-d', time() - 86400) - the PREVIOUS day. So the
+     * last calendar day of month M is only inserted at 00:00 on M+1/01, dated
+     * M/last-day. By then 'this_month' filters on M+1 and no longer sees it,
+     * and this module deliberately never reads 'last_month'. The result: about
+     * one day of every month's traffic (~1/30) is never reported to any period.
+     * Shifting the window (reading 'lastdays' = day-of-month + 1 and folding the
+     * previous month's final day in) would land those bytes in a WHMCS period,
+     * but it also re-opens the 'this_month'-only guarantee the whole class is
+     * built around and risks mis-bucketing across the WHMCS month boundary, so
+     * it is left as a documented under-report rather than a speculative change.
+     *
      * NOTE an asymmetry worth knowing at invoice time: this query filters
      * "active = 'y'" (quota_lib.inc.php:83) while get_quota_data() does not.
-     * A suspended service - the module sets web_domain.active = 'n' via
-     * sites_web_domain_set_status - therefore keeps reporting disk but drops
-     * to zero bandwidth, and because WHMCS keeps only the latest reading for
-     * the month, a mid-month suspension erases that month's traffic instead of
-     * freezing it. Pinned by MetricPeriodSemanticsTest.
+     * A domain drops out of the traffic sum the moment it goes inactive, and
+     * because WHMCS keeps only the latest reading for the month, the next
+     * collection replaces that month's record with the reduced figure instead
+     * of freezing it. TWO things set active = 'n' mid-month:
+     *   1. Suspension - the module sets web_domain.active = 'n' via
+     *      sites_web_domain_set_status. Pinned by MetricPeriodSemanticsTest.
+     *   2. ISPConfig's OWN over-traffic lock - 300-quota_notify.inc.php sets
+     *      traffic_quota_lock = 'y', active = 'n' on any site whose monthly
+     *      traffic exceeds its traffic_quota, until the month ends. So the
+     *      customer who went FURTHEST over their quota is exactly the one whose
+     *      bandwidth metric drops back towards 0 for the rest of the month.
+     * The UsageUpdate path (ServiceUsage::toHostingColumnsGiven) protects
+     * tblhosting.bwusage from this with a current-month high-water mark. The
+     * metric path cannot: WHMCS overwrites the period record and this layer is
+     * never handed the stored value back to compare against (Provider::usage()
+     * receives only ServiceRefs). The floor here is that the reported value is
+     * clamped to >= 0 (QuotaMath::bytesToMegabytes) and never negative - a
+     * closer fix would need the entry file to read the stored period figure and
+     * pass it in. Documented, not silently wrong.
      *
      * The LIMIT comes from the web_domain traffic_quota column (megabytes) on
      * the disk-quota rows, which is where the panel keeps it - and that is
