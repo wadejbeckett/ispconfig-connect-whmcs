@@ -438,14 +438,14 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
     }
     // ── product addons: WHMCS passes the PARENT service's id ─────────────
 
-    public function testEveryOperationOnAProductAddonRefusesAndLeavesTheParentsClientAlone(): void
+    public function testEveryOperationOnAProductAddonOfALinkedParentRefusesAndLeavesTheParentAlone(): void
     {
-        // The parent service (42) is linked to a client; WHMCS calls the
-        // module for an addon on it with serviceid = 42 and addonId = 7.
+        // Parent service 42 is linked to a client (its product custom field).
+        // WHMCS calls the module for an addon on it with serviceid = 42 and
+        // addonId = 7; the addon's own, addon-scoped properties are empty.
         $clientId = $this->fake->addClient('parentcustomer');
         $this->fake->addWebsite($clientId, 'parent.example');
-        $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
-        Capsule::enable();
+        $this->seedServiceLinkedToClient(42, $clientId);
         $addon = $this->params(['serviceid' => 42, 'addonId' => 7]);
 
         $mark = $this->wireMark();
@@ -457,13 +457,46 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
             'Change Package' => ispconfigconnect_ChangePackage($addon),
             'Terminate' => ispconfigconnect_TerminateAccount($addon),
         ] as $operation => $result) {
-            self::assertStringContainsString('cannot run on a product addon', $result, $operation);
+            self::assertStringContainsString(
+                'cannot run on this product addon: its parent service #42 is itself linked to ISPConfig client #' . $clientId,
+                $result,
+                $operation
+            );
         }
 
-        // Nothing reached the panel, the parent's client survives, and the
-        // parent's link is still stored.
+        // Nothing reached the panel, and the parent's client and its stored
+        // link are untouched.
         self::assertSame([], $this->methodsSince($mark));
         self::assertArrayHasKey($clientId, $this->fake->clients());
-        self::assertSame((string) $clientId, $this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
+        self::assertSame(
+            [(string) $clientId],
+            array_column(array_filter(Capsule::rows('tblcustomfieldsvalues'), static fn (array $r): bool => $r['relid'] === 42), 'value')
+        );
+    }
+
+    public function testAProductAddonOfAnUnlinkedParentRunsOnItsOwnProperties(): void
+    {
+        // The parent (42) is not an ISPConfig service; the addon (7) carries
+        // its own client in its addon-scoped properties, as earlier builds let
+        // it provision.
+        Capsule::seed('tblhosting', [['id' => 42, 'packageid' => 300, 'domainstatus' => 'Active']]);
+        $clientId = $this->fake->addClient('addoncustomer');
+        $this->fake->addWebsite($clientId, 'addon.example');
+        $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
+        $addon = $this->params(['serviceid' => 42, 'addonId' => 7]);
+
+        self::assertSame('success', ispconfigconnect_SuspendAccount($addon));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('success', ispconfigconnect_UnsuspendAccount($addon));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+    }
+
+    public function testAProductAddonIsRefusedWhenItsParentCannotBeChecked(): void
+    {
+        // The Capsule double is left disabled, so every query throws - the
+        // parent's link cannot be read, which must not read as "not linked".
+        $result = ispconfigconnect_SuspendAccount($this->params(['serviceid' => 42, 'addonId' => 7]));
+
+        self::assertStringContainsString('could not be checked', $result);
     }
 }

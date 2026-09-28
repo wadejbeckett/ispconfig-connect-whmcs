@@ -24,10 +24,20 @@ find ispconfigconnect -type f | wc -l
 
 | Build | Commit | Files | Digest |
 |---|---|---|---|
-| This build | `<COMMIT>` | `<FILES>` | `<DIGEST>` |
+| This build | the head of `claude/zen-franklin-z7oak2` that carries this table (`git log -1 -- docs/LIVE-TEST-PLAN.md`) | 58 | `4fdf357f05bbb57fb9e7292a645bb387cdcc29cf3433b91416b0d090bfadc364` |
 | Earlier live-verified build (`build/phase-0-1`) | `1ed05b3` | 57 | recorded in the prerequisites backup |
 
+Per-file digests for the three files most worth checking by hand:
+
+| File | sha256 |
+|---|---|
+| `ispconfigconnect.php` | `c796ad137bfb2f82a58f0192acd5f4fb4a053042001f7cdb23f611391e82404f` |
+| `hooks/ispconfigconnect.php` | `7a2f7bf20dc392d92294f854799336c649a3fbb8d96b478747072b59b7cdafc1` |
+| `hooks/install-hook.sh` | `36dbd86532c14755510c2bada8bbbcce7f2cc729f332f98cc5b36fb630c3dc26` |
+
 Run the same `find | sha256sum` on the WHMCS host after deploying. It must match this table.
+If a later commit changes anything under `modules/servers/ispconfigconnect/`, this table is
+out of date: recompute it from that commit before testing.
 
 ## 1. Prerequisites
 
@@ -380,12 +390,15 @@ Press Unsuspend on S2. Untick the box again.
 Tick the box again.
 (c) Suspend S2 (P2, website-only). In ISPConfig, tick Locked on S2's client by hand. Press
 Unsuspend on S2, then untick Locked in ISPConfig.
+(d) Upgrades only, if a service was suspended by the earlier build under a whole-client
+product: untick *Suspend Entire Client* on that product and press Unsuspend.
 
 **Expected**: (a) Unsuspend sets the website active (`sites_web_domain_set_status` with
 `active`); no `client_update`; the site serves again. (b) Unsuspend unlocks the client
 (`client_update` with `locked='n'`): mail, FTP and the site are all active again, and a
 following Change Package is not refused. (c) Unsuspend sets the website active but leaves the
-hand-set lock in place (no `client_update`).
+hand-set lock in place (no `client_update`). (d) `Unsuspend refused: this service's ISPConfig client #<N> is locked, but this product suspends the website only and the module has no record of locking it ...`;
+nothing changes. Tick the box again, press Unsuspend: the client is unlocked.
 
 ### Step 17: Link, Replace and shared-client refusals
 
@@ -499,13 +512,13 @@ for S1 on every product is blank. (b) `Terminate refused` with the stale text
 (`the stored ISPConfig client id #<N> no longer exists`); nothing deleted. (c) The same stale
 refusal, and no `client_get` with an id of 0 or less in the Module Log.
 
-### Step 23b: Product addons are refused
+### Step 23b: Product addons on an ISPConfig parent are refused
 
 Create a product addon with Module = ISPConfig Connect, add it to S2 and press its Create
 button (Clients > C2 > S2 > Addons; verify path). Set the addon's module back to none
 afterwards.
 
-**Expected**: `... ISPConfig Connect cannot run on a product addon. ... Nothing has been changed.`
+**Expected**: `ISPConfig Connect cannot run on this product addon: its parent service #<S2> is itself linked to ISPConfig client #<N> ... Nothing has been changed.`
 No panel call in the Module Log, and S2 and its ISPConfig client are unchanged.
 
 ### Step 24: Server Sync (read-only)

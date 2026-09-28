@@ -34,7 +34,7 @@ php vendor/bin/phpunit --testsuite module  # the WHMCS entry points, end to end
 php vendor/bin/phpunit --filter UsageParser
 ```
 
-Last full run (2026-09-28, this branch): **1033 tests, 4341 assertions, OK**. The same suite also
+Last full run (2026-09-28, this branch): **1041 tests, 4388 assertions, OK**. The same suite also
 passes on real PHP 8.2.34 and 8.3.35 builds (there, the three installer tests that need root were
 skipped).
 

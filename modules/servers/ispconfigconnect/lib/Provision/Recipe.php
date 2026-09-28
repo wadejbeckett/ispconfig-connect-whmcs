@@ -219,6 +219,57 @@ final class Recipe
         return true;
     }
 
+    /** Whether the client is locked (suspended as a whole) right now. */
+    public function clientIsLocked(int $clientId): bool
+    {
+        return (string) ($this->clientRecord($clientId)['locked'] ?? 'n') === 'y';
+    }
+
+    /**
+     * Lock a client whose service may still have its website off from an
+     * earlier website-only suspension: the website is set active FIRST, so the
+     * lock's snapshot records it as active and the unlock brings it back.
+     *
+     * Reads the client before changing anything. An already-locked client is
+     * left exactly as it is - no reactivation, no second lock (which would
+     * poison the snapshot) - and false is returned. If the lock itself fails,
+     * a website this call reactivated is set inactive again, so a failed
+     * Suspend never leaves a suspended service's website live without saying so.
+     *
+     * @return bool true when this call locked the client, false when it was
+     *         already locked
+     */
+    public function lockOverWebsiteSuspension(int $clientId, int $domainId): bool
+    {
+        $record = $this->clientRecord($clientId);
+        if ((string) ($record['locked'] ?? 'n') === 'y') {
+            return false;
+        }
+
+        $reactivated = $this->reactivateWebsiteIfInactive($domainId);
+        try {
+            $this->protectiveClientUpdate($clientId, ['locked' => 'y'], $record);
+        } catch (\Throwable $failure) {
+            if ($reactivated) {
+                try {
+                    $this->setWebsiteStatus($domainId, 'inactive');
+                } catch (\Throwable) {
+                    throw new \RuntimeException(sprintf(
+                        '%s - and ISPConfig website #%d, set active just before the lock so that the unlock'
+                        . ' would restore it, could not be set inactive again: it is LIVE now. Press Suspend'
+                        . ' again.',
+                        $failure->getMessage(),
+                        $domainId
+                    ), 0, $failure);
+                }
+            }
+
+            throw $failure;
+        }
+
+        return true;
+    }
+
     /**
      * Set one website active if - and only if - it is inactive now. For a
      * website-only suspension whose mode was never recorded (made by an

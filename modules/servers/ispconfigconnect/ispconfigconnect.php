@@ -482,7 +482,9 @@ function ispconfigconnect_SuspendAccount(array $params): string
 
         $product = Params::productConfig($params);
         $domainId = $properties->domainId();
-        $recorded = $properties->suspendedAs();
+        $stored = $properties->suspendedAs();
+        $recorded = ispconfigconnect_currentSuspensionRecord($params, $stored);
+        $suspended = ispconfigconnect_serviceStatusOf($params) === ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended');
 
         // Already suspended under the whole-client lock (the product may have
         // changed since): stay in that mode. The lock covers this service's
@@ -516,25 +518,57 @@ function ispconfigconnect_SuspendAccount(array $params): string
             }
         }
 
-        $session = Factory::sessionManager($params);
-        try {
-            $recipe = new Recipe($session);
-            // Suspended website-only before, whole-client now (the product
-            // changed in between): put the website back first, so the lock's
-            // snapshot records it as active and the unlock brings it back.
-            if ($entireClient && $recorded === ServiceProperties::SUSPENDED_AS_WEBSITE && $domainId !== null) {
-                $recipe->unsuspend($clientId, $domainId, false);
-            }
-            $recipe->suspend($clientId, $domainId, $entireClient);
-        } finally {
-            $session->close();
+        // RECORD FIRST. The mode is written before the panel is touched, so a
+        // WHMCS write failure stops here with nothing changed, instead of
+        // leaving a suspension in place that Unsuspend would reverse in the
+        // wrong mode. A panel failure below puts the previous record back.
+        $mode = $entireClient ? ServiceProperties::SUSPENDED_AS_CLIENT : ServiceProperties::SUSPENDED_AS_WEBSITE;
+        $recordFailure = ispconfigconnect_recordSuspension($properties, $params, $mode);
+        if ($recordFailure !== null) {
+            return 'Suspend failed: WHMCS could not store how this service is suspended (' . $recordFailure
+                . '), so the panel was not touched. Nothing has been changed.';
         }
 
-        ispconfigconnect_recordSuspension(
-            $properties,
-            $params,
-            $entireClient ? ServiceProperties::SUSPENDED_AS_CLIENT : ServiceProperties::SUSPENDED_AS_WEBSITE
-        );
+        try {
+            $session = Factory::sessionManager($params);
+            try {
+                $recipe = new Recipe($session);
+                // Whole-client now, and the website may still be off from a
+                // website-only suspension - recorded, or made by an earlier
+                // build (no record) on a service WHMCS already has Suspended.
+                // Put the website back first so the lock's snapshot records it
+                // as active; a client that is already locked is left alone.
+                $convert = $entireClient && $domainId !== null && (
+                    $recorded === ServiceProperties::SUSPENDED_AS_WEBSITE
+                    || ($recorded === null && $suspended)
+                );
+                if ($convert) {
+                    $locked = $recipe->lockOverWebsiteSuspension($clientId, $domainId);
+                    if (!$locked && $recorded === ServiceProperties::SUSPENDED_AS_WEBSITE) {
+                        // Locked by someone else: this service's suspension
+                        // stays the website-only one the module applied, so
+                        // Unsuspend will not lift a lock it did not set.
+                        ispconfigconnect_recordSuspension($properties, $params, ServiceProperties::SUSPENDED_AS_WEBSITE);
+                        ispconfigconnect_logModuleCall(
+                            'SuspendAccount',
+                            ['serviceid' => (int) ($params['serviceid'] ?? 0), 'ispconfig_client_id' => $clientId],
+                            [
+                                'decision' => 'the ISPConfig client is already locked, but not by this module; the'
+                                    . ' website-only suspension stays in place and the lock is left alone',
+                            ]
+                        );
+                    }
+                } else {
+                    $recipe->suspend($clientId, $domainId, $entireClient);
+                }
+            } finally {
+                $session->close();
+            }
+        } catch (\Throwable $failure) {
+            ispconfigconnect_recordSuspension($properties, $params, $stored);
+
+            throw $failure;
+        }
 
         return 'success';
     } catch (\Throwable $failure) {
@@ -568,7 +602,7 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         // website-only suspension would stay in place behind a no-op unlock.
         // The mode Suspend recorded decides; the product's setting only stands
         // in for suspensions made before the mode was recorded.
-        $recorded = $properties->suspendedAs();
+        $recorded = ispconfigconnect_currentSuspensionRecord($params, $properties->suspendedAs());
         $entireClient = $recorded !== null
             ? $recorded === ServiceProperties::SUSPENDED_AS_CLIENT
             : $product->suspendEntireClient;
@@ -617,6 +651,25 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         $session = Factory::sessionManager($params);
         try {
             $recipe = new Recipe($session);
+
+            // No record and a website-only product, but the client is locked:
+            // an earlier build's whole-client suspension (the product changed
+            // since), or a lock set by hand in ISPConfig. The two cannot be
+            // told apart, and reactivating only the website would leave mail,
+            // FTP and databases off behind a "success" - so say so instead.
+            if (!$entireClient && $recorded === null && $recipe->clientIsLocked($clientId)) {
+                return sprintf(
+                    'Unsuspend refused: this service\'s ISPConfig client #%d is locked, but this product suspends'
+                    . ' the website only and the module has no record of locking it - the lock comes from a'
+                    . ' whole-client suspension by an earlier build, or was set by hand in ISPConfig.'
+                    . ' Reactivating only the website would leave mail, FTP and databases off while WHMCS shows'
+                    . ' the service Active. If the lock came from a whole-client suspension, tick "Suspend Entire'
+                    . ' Client" on the product, press Unsuspend, then untick it; if it was set by hand, remove it'
+                    . ' in ISPConfig and press Unsuspend again. Nothing has been changed.',
+                    $clientId
+                );
+            }
+
             $unlocked = $recipe->unsuspend($clientId, $domainId, $entireClient);
 
             // No recorded mode, a whole-client product, and no lock to lift:
@@ -665,24 +718,50 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
 
 /**
  * Record how the service is suspended on the panel (or that it no longer is),
- * for Unsuspend to reverse. The panel change it describes has already been
- * made, so a failure to store it must not turn that into an error: it is
- * logged, and Unsuspend falls back to the product's setting.
+ * for Unsuspend to reverse. A failure is logged and handed back as text, so
+ * each caller decides: Suspend writes the record BEFORE touching the panel
+ * and stops on a failure; Unsuspend and Change Package have already changed
+ * the panel and report or tolerate it (a record left behind on a service that
+ * is Active again is ignored - see ispconfigconnect_currentSuspensionRecord()).
  *
  * @param array<string, mixed> $params
  * @param ServiceProperties::SUSPENDED_AS_*|null $mode
+ * @return string|null null on success, otherwise the error
  */
-function ispconfigconnect_recordSuspension(ServiceProperties $properties, array $params, ?string $mode): void
+function ispconfigconnect_recordSuspension(ServiceProperties $properties, array $params, ?string $mode): ?string
 {
     try {
         $properties->setSuspendedAs($mode);
+
+        return null;
     } catch (\Throwable $failure) {
+        $error = ispconfigconnect_failureText($failure);
         ispconfigconnect_logModuleCall(
             'RecordSuspension',
             ['serviceid' => (int) ($params['serviceid'] ?? 0), 'suspended_as' => $mode ?? ''],
-            ['error' => ispconfigconnect_failureText($failure)]
+            ['error' => $error]
         );
+
+        return $error;
     }
+}
+
+/**
+ * The stored suspension mode, if it describes a suspension that can still be
+ * in place: only while WHMCS has the service Suspended (or sends no status).
+ * On an Active service a record can only be left over from a write that
+ * failed after an Unsuspend, and trusting it would make the next Suspend lock
+ * a whole client for a website-only product.
+ *
+ * @param array<string, mixed> $params
+ * @param ServiceProperties::SUSPENDED_AS_*|null $stored
+ * @return ServiceProperties::SUSPENDED_AS_*|null
+ */
+function ispconfigconnect_currentSuspensionRecord(array $params, ?string $stored): ?string
+{
+    $status = ispconfigconnect_serviceStatusOf($params);
+
+    return $status === '' || $status === ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended') ? $stored : null;
 }
 
 /**
@@ -922,7 +1001,18 @@ function ispconfigconnect_ChangePackage(array $params): string
         // later operations read them without the fallback.
         $properties->resaveAll();
         if ($reSuspendedAs !== null) {
-            ispconfigconnect_recordSuspension($properties, $params, $reSuspendedAs);
+            $recordFailure = ispconfigconnect_recordSuspension($properties, $params, $reSuspendedAs);
+            if ($recordFailure !== null) {
+                return sprintf(
+                    'Change Package applied the new package and suspended this service again (%s), but WHMCS'
+                    . ' could not store that (%s). Before unsuspending, set the service\'s %s field to "%s" so'
+                    . ' that Unsuspend reverses the right thing.',
+                    $reSuspendedAs === ServiceProperties::SUSPENDED_AS_CLIENT ? 'the whole client is locked' : 'its website is off',
+                    $recordFailure,
+                    ServiceProperties::KEY_SUSPENDED_AS,
+                    $reSuspendedAs
+                );
+            }
         }
 
         if ($reSuspendFailure !== null) {
@@ -1834,20 +1924,40 @@ function ispconfigconnect_AdminSingleSignOn(array $params): array
  */
 function ispconfigconnect_serviceProperties(array $params): \WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties
 {
-    // PRODUCT ADDONS ARE NOT SUPPORTED. For an addon, WHMCS passes the PARENT
-    // service's id as serviceid (and the addon's own id as addonId), so every
-    // lookup keyed on serviceid below - the property reader, the cross-product
-    // clearer, the shared-client check - would read and act on the PARENT
-    // service's ISPConfig client: an addon Terminate would delete the parent's
-    // hosting. Every lifecycle, button and page path reads properties through
-    // here first, so refusing here stops all of them before any panel call.
-    if ((int) ($params['addonId'] ?? 0) > 0) {
-        throw new \DomainException(
-            'ISPConfig Connect cannot run on a product addon. For an addon, WHMCS passes the parent'
-            . ' service\'s id, so every operation would act on the parent service\'s ISPConfig client.'
-            . ' Set this addon\'s module to none, and use ISPConfig Connect on products only. Nothing has'
-            . ' been changed.'
-        );
+    // PRODUCT ADDONS. For an addon, WHMCS passes the PARENT service's id as
+    // serviceid (the addon's own id is addonId) and the Addon as the model,
+    // whose properties are addon-scoped. Every lookup below keyed on
+    // serviceid - the cross-product reader and clearer - would therefore read
+    // and blank the PARENT's ids, and an addon Terminate would delete the
+    // parent's hosting. So an addon gets its own properties only, with no
+    // lookup keyed on the parent; and when the parent is itself linked to an
+    // ISPConfig client (or that cannot be checked), every operation refuses
+    // before any panel call. Every lifecycle, button and page path reads
+    // properties through here first.
+    $addonId = (int) ($params['addonId'] ?? 0);
+    if ($addonId > 0) {
+        $parentId = (int) ($params['serviceid'] ?? 0);
+        $parentClient = null;
+        $checked = true;
+        if ($parentId > 0 && class_exists('\\WHMCS\\Database\\Capsule')) {
+            try {
+                $parentClient = ispconfigconnect_effectivePropertyValues(ServiceProperties::KEY_CLIENT_ID, [$parentId])[$parentId] ?? null;
+            } catch (\Throwable) {
+                $checked = false;
+            }
+        }
+        if (!$checked || $parentClient !== null) {
+            throw new \DomainException(sprintf(
+                'ISPConfig Connect cannot run on this product addon: %s, and for an addon WHMCS passes the parent'
+                . ' service\'s id, so an operation here could reach the parent\'s ISPConfig client. Provision'
+                . ' this hosting as its own product service instead. Nothing has been changed.',
+                $checked
+                    ? sprintf('its parent service #%d is itself linked to ISPConfig client #%s', $parentId, $parentClient)
+                    : sprintf('whether its parent service #%d is linked to an ISPConfig client could not be checked', $parentId)
+            ));
+        }
+
+        return Params::serviceProperties($params);
     }
 
     $properties = Params::serviceProperties($params);

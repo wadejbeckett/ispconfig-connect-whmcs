@@ -190,7 +190,7 @@ detail (which grant checkbox to tick) and the troubleshooting for it.
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (1033 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (1041 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. (The `ispconfig-sso` project carries
 its own separate harness in its own repository.) The suite and the static analysis are currently run
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5

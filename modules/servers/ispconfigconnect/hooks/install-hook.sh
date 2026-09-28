@@ -142,7 +142,7 @@ as_writer() {
         return
     fi
     if [ "$writer_user" = "$writer_uid" ]; then
-        fail "refusing to change $hook_dir as root - it is owned by uid $writer_uid, which has no account name, so runuser and su cannot switch to it and setpriv is not installed; install setpriv (util-linux), chown the directory to a named user, or run this script as that uid (e.g. sudo -u '#$writer_uid')"
+        fail "refusing to change $hook_dir as root - it is owned by uid $writer_uid, which has no account name, so runuser and su cannot switch to it and setpriv is not installed; install setpriv (util-linux; 'apk add setpriv' on Alpine) and re-run this script, or chown $hook_dir to the named user the web server runs as"
     fi
     fail "refusing to change $hook_dir as root - it is owned by $writer_user and no privilege-drop tool (runuser/setpriv/su) is available; re-run this script as $writer_user"
 }

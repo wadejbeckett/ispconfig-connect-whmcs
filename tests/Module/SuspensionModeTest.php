@@ -215,4 +215,105 @@ final class SuspensionModeTest extends ModuleTestCase
 
         self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params(self::ENTIRE)));
     }
+    // ---- round 3: suspensions from earlier builds, locks set by hand, failures ----
+
+    public function testAnUnrecordedClientLockUnderAWebsiteOnlyProductIsRefusedNotHalfUndone(): void
+    {
+        // An earlier build locked the whole client (no record); the product
+        // has since turned website-only.
+        [$clientId, $siteId, $ftpId] = $this->created(self::ENTIRE);
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::ENTIRE)));
+        $this->model->serviceProperties->save([ServiceProperties::KEY_SUSPENDED_AS => '']);
+
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_UnsuspendAccount($this->params(self::WEBSITE_ONLY + ['status' => 'Suspended']));
+
+        self::assertStringStartsWith('Unsuspend refused: this service\'s ISPConfig client #' . $clientId . ' is locked', $result);
+        self::assertStringContainsString('Nothing has been changed', $result);
+        self::assertSame(['login', 'client_get', 'logout'], $this->methodsSince($mark));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('n', $this->fake->ftpUsers()[$ftpId]['active']);
+
+        // Following the advice - the whole-client setting for one Unsuspend -
+        // brings everything back.
+        self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended'])));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('y', $this->fake->sites()[$siteId]['active']);
+    }
+
+    public function testAnUnrecordedWebsiteSuspensionIsNotLockedOffWhenSuspendedAgainUnderAWholeClientProduct(): void
+    {
+        [$clientId, $siteId] = $this->created(self::WEBSITE_ONLY);
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::WEBSITE_ONLY)));
+        $this->model->serviceProperties->save([ServiceProperties::KEY_SUSPENDED_AS => '']);
+
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended'])));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended'])));
+        self::assertSame('y', $this->fake->sites()[$siteId]['active'], 'the lock recorded the website as active');
+    }
+
+    public function testConvertingToALockLeavesAHandSetLockAndTheWebsiteSuspensionAlone(): void
+    {
+        [$clientId, $siteId] = $this->created(self::WEBSITE_ONLY);
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::WEBSITE_ONLY)));
+        $this->fake->lockClient($clientId);
+
+        $mark = $this->wireMark();
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended'])));
+
+        // Not reactivated, not re-locked, and still recorded as website-only.
+        self::assertSame(['login', 'client_get', 'logout'], $this->methodsSince($mark));
+        self::assertSame('n', $this->fake->sites()[$siteId]['active']);
+        self::assertSame(ServiceProperties::SUSPENDED_AS_WEBSITE, $this->recorded());
+
+        // So Unsuspend reverses only its own website suspension.
+        self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended'])));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+    }
+
+    public function testAFailedLockDuringConversionPutsTheWebsiteBackOffAndKeepsTheRecord(): void
+    {
+        [$clientId, $siteId] = $this->created(self::WEBSITE_ONLY);
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::WEBSITE_ONLY)));
+        $this->fake->failNextWith('client_update', 'database_error UPDATE client');
+
+        $result = ispconfigconnect_SuspendAccount($this->params(self::ENTIRE + ['status' => 'Suspended']));
+
+        self::assertStringStartsWith('Suspend failed:', $result);
+        self::assertStringContainsString('database_error UPDATE client', $result);
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('n', $this->fake->sites()[$siteId]['active'], 'the website is not left live');
+        self::assertSame(ServiceProperties::SUSPENDED_AS_WEBSITE, $this->recorded());
+    }
+
+    public function testSuspendStopsBeforeThePanelWhenTheModeCannotBeRecorded(): void
+    {
+        [$clientId] = $this->created(self::ENTIRE);
+        $this->model->serviceProperties->throwOnSaveMessage = 'Deadlock found when trying to get lock';
+
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_SuspendAccount($this->params(self::ENTIRE));
+
+        self::assertStringStartsWith('Suspend failed: WHMCS could not store how this service is suspended', $result);
+        self::assertStringContainsString('Deadlock found', $result);
+        self::assertSame([], $this->methodsSince($mark));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+    }
+
+    public function testARecordLeftOnAnActiveServiceDoesNotWidenTheNextSuspension(): void
+    {
+        // Unsuspend succeeded but blanking the record failed: the service is
+        // Active with 'client' still stored. The next Suspend, on a
+        // website-only product, must stay website-only.
+        [$clientId, $siteId, $ftpId] = $this->created(self::WEBSITE_ONLY);
+        $this->model->serviceProperties->save([ServiceProperties::KEY_SUSPENDED_AS => ServiceProperties::SUSPENDED_AS_CLIENT]);
+
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::WEBSITE_ONLY + ['status' => 'Active'])));
+
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('n', $this->fake->sites()[$siteId]['active']);
+        self::assertSame('y', $this->fake->ftpUsers()[$ftpId]['active']);
+        self::assertSame(ServiceProperties::SUSPENDED_AS_WEBSITE, $this->recorded());
+    }
 }

@@ -11,7 +11,7 @@ stand, so the work can be picked up later without the original session. It belon
   `build/phase-0-1` plus the fix rounds below.
 - **PR:** wadejbeckett/ispconfig-connect-whmcs#1, draft. Its description holds the first round's
   "Fixed" table.
-- **Verification (this commit):** 1033 tests and 4341 assertions pass, also in random order.
+- **Verification (this commit):** 1041 tests and 4388 assertions pass, also in random order.
   The same suite passes on real PHP 8.2.34 and 8.3.35 builds (there, the three installer tests that
   need root were skipped). PHPStan 2.2.9 at level 6 reports no errors. `sh -n`, `dash -n` and
   `bash -n` are clean on the hook installer.
@@ -99,6 +99,22 @@ stand, so the work can be picked up later without the original session. It belon
      instead of "success".
    - **Installer:** the WHMCS path is resolved physically (a symlink in a root-only directory
      works), and a nameless owner uid without setpriv gets an accurate message.
+3c. **Third review round** (three reviewers over the second round's fixes, each finding
+   verified; 5 of 6 confirmed - one medium, four low - all fixed with regression tests):
+   - A whole-client lock from an earlier build, under a product now set to website-only, is
+     refused with instructions instead of a half-undone "success".
+   - The suspension record is written before the panel is touched (a WHMCS write failure
+     changes nothing), put back on a panel failure, and ignored on an Active service.
+   - Converting a website-only suspension into a lock checks the client first (a hand-set lock
+     is left alone) and puts the website back off if the lock fails; an unrecorded website-only
+     suspension from an earlier build is converted the same way.
+   - Product addons are refused only when the parent service is itself linked to ISPConfig (or
+     that cannot be checked); other addons run on their own ids, as before.
+   - The installer's nameless-uid message no longer suggests a `sudo` form that stock sudo
+     rejects.
+   - Not changed, by decision: the transport circuit has no extra cap for a panel that accepts
+     logins while every read times out (the verifier found no ISPConfig mechanism for that, and
+     the live-verified build had no circuit at all).
 4. **Test infrastructure.** `tests/stubs/CapsuleDouble.php` is an in-memory stand-in for
    `WHMCS\Database\Capsule`. It is disabled by default, and tests opt in with
    `Capsule::seed()`. The guards are covered in `tests/Module/OwnershipAndSafetyTest.php` and

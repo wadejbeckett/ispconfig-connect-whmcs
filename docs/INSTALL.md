@@ -189,10 +189,12 @@ success tick.
 Hosting* (or similar), Module Settings tab → Module Name **ISPConfig
 Connect**, then work through the options (their order is fixed):
 
-> **Products only, not product addons.** For a product addon, WHMCS passes the
-> *parent* service's id, so every operation would act on the parent's
-> ISPConfig client. The module refuses every operation on an addon and changes
-> nothing; leave the module of your product addons set to none.
+> **Use products, not product addons.** For a product addon, WHMCS passes the
+> *parent* service's id. When that parent is itself linked to an ISPConfig
+> client (or that cannot be checked), every operation on the addon refuses and
+> changes nothing, because it could otherwise reach the parent's client. An
+> addon on a parent that is not an ISPConfig service runs on its own stored ids
+> only, as in earlier builds; provision new ISPConfig hosting as a product.
 
 1. **Client Template** — dropdown loaded live from the panel: the ISPConfig
    *master* client template that defines the account's limits. Create your
@@ -410,8 +412,22 @@ setting is unlocked, and a website suspended under the old setting is set
 active again. A client lock you set **by hand** in ISPConfig on a service the
 module suspended website-only is left alone. Suspensions made by an earlier
 build carry no record; for those Unsuspend follows the product's current
-setting and, when the product locks the whole client but the client is not
-locked, sets the service's website active if it is off.
+setting, with two safety nets. When the product locks the whole client but the
+client is not locked, the service's website is set active if it is off. When
+the product suspends the website only but the client **is** locked, Unsuspend
+refuses and says why: that lock came from an earlier whole-client suspension or
+was set by hand, and reactivating only the website would leave mail, FTP and
+databases off behind a success. Tick *Suspend Entire Client* for that one
+Unsuspend (or remove a hand-set lock in ISPConfig) and press it again.
+
+The record is written **before** the panel is touched, so a WHMCS database
+error stops Suspend with nothing changed, and a panel failure puts the
+previous record back. A record is only trusted while WHMCS has the service
+Suspended: one left behind on an Active service is ignored. Turning a
+website-only suspension into a whole-client lock (Suspend pressed again after
+the product setting changed) sets the website active first so the lock records
+it as active, leaves a client that is already locked alone, and sets the
+website inactive again if the lock fails.
 
 ### One WHMCS service per ISPConfig client
 
@@ -522,8 +538,8 @@ ISPConfig locks out a source IP for 5 minutes after **10 failed logins within
 module logs in once per operation, retries an expired session exactly once,
 and stops calling the panel for the rest of the operation as soon as it sees a
 lockout or a rejected login. A transport failure (a timeout, an HTTP error from
-a proxy) stops it only after **two in a row**; any answer from the panel resets
-that count, so one transient failure costs one call, not the rest of a nightly
+a proxy) stops it only after **two in a row**; any answer from the panel,
+including a successful re-login between two failures, resets that count, so one transient failure costs one call, not the rest of a nightly
 sweep (§7.1). Normal operation therefore stays far from the limit.
 
 Be aware that the counter is **per source IP as the panel sees it**: if your
@@ -596,7 +612,8 @@ Requirements and behaviour worth knowing:
 - One unreadable service never costs the others their import: a panel fault,
   or a single transport failure (a timeout, an HTTP 500 from a proxy), is
   recorded as that service's `skipped` reason and the sweep moves on. Two
-  transport failures **in a row** on the same server are taken to mean the
+  transport failures **in a row** on the same server (with no successful
+  re-login between them) are taken to mean the
   panel has gone away: the rest of that server's sweep is not attempted, and
   each remaining service is listed under `skipped` with that same reason. A
   lockout seen mid-sweep aborts the server's run (`error`), and nothing is
