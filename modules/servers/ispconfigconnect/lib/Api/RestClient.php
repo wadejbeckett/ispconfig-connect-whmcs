@@ -495,10 +495,31 @@ final class RestClient
      * wrapper-mangled success can carry a live session id or a stored password
      * hash inside a {"code"...} it failed to strict-decode), it runs whatever
      * it does show through the same secret redaction the array scrubber uses,
-     * and it cuts on a UTF-8 character boundary through mb_scrub so json_encode
-     * of the resulting message can never fail on a split multibyte sequence.
+     * and it cuts on a UTF-8 character boundary so json_encode of the resulting
+     * message can never fail on a split multibyte sequence.
+     *
+     * ext-mbstring is used when it is there and never REQUIRED: without it, the
+     * mb_* calls used to throw "Call to undefined function" (an \Error, not an
+     * IspconfigException), so the admin saw that instead of this diagnostic,
+     * and a caller that sorts failures by exception class could misread the
+     * reply. BOTH functions are checked because symfony/polyfill-mbstring - the
+     * likeliest stand-in on a host without the extension - defines mb_scrub
+     * but not mb_strcut.
      */
     private function excerpt(string $raw): string
+    {
+        return self::describeNonEnvelopeBody(
+            $raw,
+            function_exists('mb_scrub') && function_exists('mb_strcut')
+        );
+    }
+
+    /**
+     * The body of excerpt(), with the mbstring decision made by the caller so
+     * that BOTH cut paths are reachable from a unit test on a host that has the
+     * extension loaded (the test suite's own runner requires it).
+     */
+    private static function describeNonEnvelopeBody(string $raw, bool $useMbstring): string
     {
         $bytes = strlen($raw);
         if ($bytes === 0) {
@@ -517,17 +538,92 @@ final class RestClient
         // shown: redact any value the array scrubber would mask or drop.
         $shown = self::redactSecretsInText($shown);
 
-        // Valid UTF-8 first, then a boundary-safe cut: the message must survive
+        // Valid UTF-8 and a boundary-safe cut: the message must survive
         // json_encode (WHMCS transports it) and a utf8mb4 strict-mode insert.
-        $scrubbed = mb_scrub($shown, 'UTF-8');
-        $safe = mb_strcut($scrubbed, 0, self::BODY_EXCERPT_LIMIT, 'UTF-8');
+        if ($useMbstring) {
+            $scrubbed = mb_scrub($shown, 'UTF-8');
+            $safe = mb_strcut($scrubbed, 0, self::BODY_EXCERPT_LIMIT, 'UTF-8');
+            $truncated = $safe !== $scrubbed;
+        } else {
+            [$safe, $truncated] = self::utf8SafePrefixWithoutMbstring($shown, self::BODY_EXCERPT_LIMIT);
+        }
 
-        $hint = sprintf('non-JSON body, %d bytes, starts with: %s%s', $bytes, $safe, $safe === $scrubbed ? '' : '...');
+        $hint = sprintf('non-JSON body, %d bytes, starts with: %s%s', $bytes, $safe, $truncated ? '...' : '');
         if ($envelopeAt !== false) {
             $hint .= sprintf(' (a {"code"...} envelope at byte %d is present but not shown)', $envelopeAt);
         }
 
         return $hint;
+    }
+
+    /**
+     * The no-mbstring stand-in for mb_strcut(mb_scrub(...)): at most $limit
+     * bytes, always valid UTF-8, using only core string functions and PCRE
+     * (always compiled into PHP).
+     *
+     * Cut FIRST, then scrub, so the regex only ever sees $limit bytes - the
+     * body can be megabytes of HTML. Three steps:
+     *   1. cut to the byte limit;
+     *   2. if the cut split a multibyte character, drop that character's
+     *      leading bytes rather than show a replacement for a character that
+     *      was valid in the body (only after a real cut - a partial sequence at
+     *      the body's true end is an invalid byte and is replaced in step 3);
+     *   3. replace every byte that is not part of a well-formed UTF-8 sequence
+     *      with "?" (mbstring's default substitute character), ONE byte for
+     *      one byte, so the result can never grow past the cap.
+     *
+     * @return array{0: string, 1: bool} the prefix, and whether the text was cut
+     */
+    private static function utf8SafePrefixWithoutMbstring(string $text, int $limit): array
+    {
+        $truncated = strlen($text) > $limit;
+        $prefix = $truncated ? substr($text, 0, $limit) : $text;
+
+        if ($truncated) {
+            // Walk back over at most three trailing bytes to the last lead byte
+            // (a UTF-8 character is at most four bytes long) and compare the
+            // length it declares with the bytes actually left after the cut.
+            $length = strlen($prefix);
+            for ($at = $length - 1; $at >= 0 && $at >= $length - 3; $at--) {
+                $byte = ord($prefix[$at]);
+                if (($byte & 0xC0) === 0x80) {
+                    continue; // continuation byte: keep looking for its lead
+                }
+                $declared = match (true) {
+                    $byte >= 0xF0 => 4,
+                    $byte >= 0xE0 => 3,
+                    $byte >= 0xC0 => 2,
+                    default => 1,
+                };
+                if ($length - $at < $declared) {
+                    $prefix = substr($prefix, 0, $at);
+                }
+                break;
+            }
+        }
+
+        // Well-formed UTF-8 per RFC 3629 (no overlongs, no surrogates, nothing
+        // past U+10FFFF), matched byte-wise - deliberately WITHOUT the /u
+        // modifier, which would make the whole match fail on the very input
+        // this exists to repair. Anything else is a single stray byte.
+        $scrubbed = preg_replace_callback(
+            '/[\x00-\x7F]'
+                . '|[\xC2-\xDF][\x80-\xBF]'
+                . '|\xE0[\xA0-\xBF][\x80-\xBF]'
+                . '|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}'
+                . '|\xED[\x80-\x9F][\x80-\xBF]'
+                . '|\xF0[\x90-\xBF][\x80-\xBF]{2}'
+                . '|[\xF1-\xF3][\x80-\xBF]{3}'
+                . '|\xF4[\x80-\x8F][\x80-\xBF]{2}'
+                . '|(.)/s',
+            static fn (array $match): string => isset($match[1]) ? '?' : $match[0],
+            $prefix
+        );
+
+        // preg_replace_callback() returns null only on a PCRE failure, which
+        // this linear, non-/u pattern over at most $limit bytes cannot hit; an
+        // empty hint is still valid UTF-8 if it ever did.
+        return [$scrubbed ?? '', $truncated];
     }
 
     /**

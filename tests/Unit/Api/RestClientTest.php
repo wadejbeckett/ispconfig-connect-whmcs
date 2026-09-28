@@ -6,6 +6,7 @@ namespace Ispconfigconnect\Tests\Unit\Api;
 
 use Ispconfigconnect\Tests\Support\FakeIspconfigServer;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\ApiDisabledException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\ApiProtocolException;
@@ -327,6 +328,127 @@ final class RestClientTest extends TestCase
             self::assertTrue(mb_check_encoding($message, 'UTF-8'), 'message must be valid UTF-8');
             self::assertIsString(json_encode($message, JSON_THROW_ON_ERROR));
         }
+    }
+
+    // ---- the same hint on a host WITHOUT ext-mbstring ------------------------
+    //
+    // mb_scrub/mb_strcut are used when present and must never be required: an
+    // undefined-function \Error on this path replaced the diagnostic (and is
+    // not an IspconfigException, so callers that sort failures by class could
+    // misread it). The suite's runner needs mbstring itself, so the fallback is
+    // driven through the helper that takes the mbstring decision as a flag.
+
+    /** The hint exactly as excerpt() builds it, with mbstring on or off. */
+    private static function describeBody(string $raw, bool $useMbstring): string
+    {
+        $hint = (new \ReflectionMethod(RestClient::class, 'describeNonEnvelopeBody'))
+            ->invoke(null, $raw, $useMbstring);
+        self::assertIsString($hint);
+
+        return $hint;
+    }
+
+    /** The part of a hint that shows body bytes, without the "..." marker. */
+    private static function shownPart(string $hint): string
+    {
+        $marker = 'starts with: ';
+        $at = strpos($hint, $marker);
+        self::assertNotFalse($at, 'the hint must show a prefix of the body');
+        $shown = substr($hint, $at + strlen($marker));
+
+        return str_ends_with($shown, '...') ? substr($shown, 0, -3) : $shown;
+    }
+
+    private static function assertValidUtf8AndJsonEncodable(string $text): void
+    {
+        // preg's /u check, not mb_check_encoding: the point is a host without
+        // mbstring, so the assertion does not lean on it either.
+        self::assertSame(1, preg_match('//u', $text), 'must be valid UTF-8');
+        self::assertIsString(json_encode($text, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * A multibyte character straddling the 120-byte cap at every possible
+     * offset: 2-, 3- and 4-byte characters, preceded by 0-3 ASCII bytes so the
+     * cut lands on each byte of the character in turn.
+     *
+     * @return iterable<string, array{string}>
+     */
+    public static function bodiesCutMidCharacter(): iterable
+    {
+        foreach (['é' => 'two-byte', '€' => 'three-byte', "\u{1F600}" => 'four-byte'] as $char => $label) {
+            for ($pad = 0; $pad <= 3; $pad++) {
+                yield sprintf('%s, %d ASCII byte(s) first', $label, $pad) => [str_repeat('x', $pad) . str_repeat($char, 200)];
+            }
+        }
+    }
+
+    #[DataProvider('bodiesCutMidCharacter')]
+    public function testWithoutMbstringACutMidCharacterDropsThePartialCharacter(string $body): void
+    {
+        $hint = self::describeBody($body, useMbstring: false);
+        $shown = self::shownPart($hint);
+
+        self::assertValidUtf8AndJsonEncodable($hint);
+        self::assertLessThanOrEqual(120, strlen($shown), 'the 120-byte cap must hold');
+        self::assertGreaterThan(116, strlen($shown), 'at most one partial character (< 4 bytes) is dropped');
+        self::assertStringStartsWith($shown, $body, 'only whole characters of the body are shown, none replaced');
+        self::assertStringEndsWith('...', $hint, 'a cut body is marked as cut');
+        // Same answer as the mbstring path on valid UTF-8 input.
+        self::assertSame(self::describeBody($body, useMbstring: true), $hint);
+    }
+
+    public function testWithoutMbstringInvalidBytesAreReplacedOneForOne(): void
+    {
+        // Latin-1 bytes, a lone lead byte, a truncated 3-byte sequence, an
+        // encoded UTF-16 surrogate and an overlong "/" - none of them UTF-8.
+        $body = "<p>Fehler: Datei f\xFCr Kunde \xC3( \xE2\x82 \xED\xA0\x80 \xC0\xAF ok</p>";
+
+        $hint = self::describeBody($body, useMbstring: false);
+        $shown = self::shownPart($hint);
+
+        self::assertValidUtf8AndJsonEncodable($hint);
+        self::assertSame(
+            '<p>Fehler: Datei f?r Kunde ?( ?? ??? ?? ok</p>',
+            $shown,
+            'each stray byte becomes one "?", so the byte count - and the cap - cannot grow'
+        );
+        self::assertStringEndsWith('ok</p>', $hint, 'an uncut body carries no "..." marker');
+    }
+
+    public function testWithoutMbstringTheRedactionAndTheCapStillHold(): void
+    {
+        // A non-envelope body with a stored credential column, invalid bytes
+        // before it and a long multibyte tail that forces a cut mid-character.
+        $secret = 'crypt:$6$leakedpanelhash';
+        $body = "\xFF\xFE<pre>" . '{"error":"db failure","passwort":"' . $secret . '"}' . '</pre>'
+            . str_repeat('€', 100);
+
+        $hint = self::describeBody($body, useMbstring: false);
+        $shown = self::shownPart($hint);
+
+        self::assertStringNotContainsString($secret, $hint);
+        self::assertStringContainsString(RestClient::REDACTED_PLACEHOLDER, $hint);
+        self::assertValidUtf8AndJsonEncodable($hint);
+        self::assertLessThanOrEqual(120, strlen($shown));
+        self::assertStringStartsWith('??<pre>', $shown);
+        self::assertStringContainsString(sprintf('%d bytes', strlen($body)), $hint);
+        self::assertStringEndsWith('...', $hint);
+    }
+
+    public function testWithoutMbstringTheEnvelopeIsStillDescribedByOffsetOnly(): void
+    {
+        // Same envelope guarantee as the mbstring path: bytes before a
+        // {"code"...} are shown (scrubbed), the envelope itself never is.
+        $sessionId = 's' . str_repeat('b', 40);
+        $raw = "Notice: caf\xE9 " . '{"code":"ok","message":"","response":"' . $sessionId . '"';
+
+        $hint = self::describeBody($raw, useMbstring: false);
+
+        self::assertStringNotContainsString($sessionId, $hint);
+        self::assertStringContainsString('starts with: Notice: caf? ', $hint);
+        self::assertStringContainsString('envelope at byte 13 is present but not shown', $hint);
+        self::assertValidUtf8AndJsonEncodable($hint);
     }
 
     public function testEmptyBodyIsMalformedWithAnEmptyBodyHint(): void
