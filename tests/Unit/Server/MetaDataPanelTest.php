@@ -133,6 +133,30 @@ final class MetaDataPanelTest extends TestCase
         self::assertDoesNotMatchRegularExpression('/(^|[^\w$])\$\(/', $html);
     }
 
+    /**
+     * WHMCS writes a server row's edit link relative ("?action=manage&id=N"),
+     * and a server group's link (action=managegroup) shares the id namespace.
+     * The row matcher must therefore judge the RESOLVED URL and accept only
+     * action=manage on configservers.php. The old substring test on the raw
+     * attribute took any configservers link with an id - a group link
+     * included - and sent every relative one down the fallback path.
+     *
+     * The same code runs in the live hook file; HooksTest executes it and
+     * holds this copy to it byte for byte. Here it is checked in the rendered
+     * output, which also proves the heredoc emits each `$` anchor literally
+     * rather than eating it.
+     */
+    public function testTheRowMatcherAnchorsOnlyTheResolvedEditLink(): void
+    {
+        $html = MetaDataPanel::render([$this->server(1, ['pending_jobs' => 1], null)]);
+
+        self::assertStringContainsString('new URL(href, document.baseURI || window.location.href)', $html);
+        self::assertStringContainsString("target.action === 'manage'", $html);
+        self::assertStringContainsString('/(?:^|\/)configservers\.php$/i.test(path)', $html);
+        self::assertStringContainsString('/^\d+$/.test(id)', $html);
+        self::assertStringNotContainsString("href.indexOf('configservers')", $html);
+    }
+
     public function testEveryConfiguredServerGetsItsOwnPayloadEntry(): void
     {
         $html = MetaDataPanel::render([
