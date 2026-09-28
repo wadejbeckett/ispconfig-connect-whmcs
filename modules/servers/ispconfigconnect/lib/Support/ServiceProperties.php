@@ -27,6 +27,18 @@ final class ServiceProperties
     public const KEY_DATABASE_ID = 'ispconfig_database_id';
     public const KEY_DATABASE_USER_ID = 'ispconfig_database_user_id';
 
+    /**
+     * How the module last suspended this service on the panel - 'client' (the
+     * whole-client lock) or 'website' (this service's website only) - or blank
+     * while it is not suspended. Unsuspend reverses THIS, not whatever the
+     * product's "Suspend Entire Client" box says by then: the box can change,
+     * and the service can move to another product, while it is suspended.
+     */
+    public const KEY_SUSPENDED_AS = 'ispconfig_suspended_as';
+
+    public const SUSPENDED_AS_CLIENT = 'client';
+    public const SUSPENDED_AS_WEBSITE = 'website';
+
     /** @var list<string> every property this module manages */
     public const KEYS = [
         self::KEY_CLIENT_ID,
@@ -37,6 +49,7 @@ final class ServiceProperties
         self::KEY_DNS_ZONE_ID,
         self::KEY_DATABASE_ID,
         self::KEY_DATABASE_USER_ID,
+        self::KEY_SUSPENDED_AS,
     ];
 
     private readonly object $properties;
@@ -152,6 +165,23 @@ final class ServiceProperties
     public function setDatabaseUserId(int $value): void
     {
         $this->saveValue(self::KEY_DATABASE_USER_ID, (string) $value);
+    }
+
+    /**
+     * 'client' or 'website' while the module has the service suspended; null
+     * when it is not, or when the suspension predates this property.
+     */
+    public function suspendedAs(): ?string
+    {
+        $value = $this->stringValue(self::KEY_SUSPENDED_AS);
+
+        return $value === self::SUSPENDED_AS_CLIENT || $value === self::SUSPENDED_AS_WEBSITE ? $value : null;
+    }
+
+    /** @param self::SUSPENDED_AS_*|null $mode null blanks it (not suspended) */
+    public function setSuspendedAs(?string $mode): void
+    {
+        $this->saveValue(self::KEY_SUSPENDED_AS, $mode ?? '');
     }
 
     /**

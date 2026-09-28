@@ -232,8 +232,8 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
   - at once on `LockoutException` (any further request extends the lockout window);
   - at once on `LoginFailedException` (wrong credentials or an IP-allowlist rejection cannot turn
     valid mid-batch, and each retry spends the 10-failures budget);
-  - on `TransportException` only after **two consecutive** ones. Any panel answer — a success or any
-    other `IspconfigException` — resets the count. One transient timeout or proxy 5xx therefore
+  - on `TransportException` only after **two consecutive** ones. Any panel answer — a success, a
+    successful (re-)login, or any other `IspconfigException` — resets the count. One transient timeout or proxy 5xx therefore
     costs one call, not the rest of a usage/metrics sweep that shares the manager across a server's
     services; two in a row stop the rest of that server's sweep, each remaining service failing
     with the stored exception. Every transport failure also forgets the session id, so `close()`

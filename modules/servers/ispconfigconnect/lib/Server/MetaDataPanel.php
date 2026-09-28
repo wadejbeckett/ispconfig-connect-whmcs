@@ -287,12 +287,31 @@ final class MetaDataPanel
                         var server = servers[s];
                         if (!server || !server.lines || !server.lines.length) { continue; }
                         var link = links[String(server.id)];
-                        var cell = link && link.closest ? link.closest('td') : null;
-                        if (!cell && link) { cell = link.parentNode; }
+                        var cell = null;
+                        var linkCell = link && link.closest ? link.closest('td') : null;
+                        if (!linkCell && link) { linkCell = link.parentNode; }
+                        if (linkCell) {
+                            // The edit link identifies the row, but core renders
+                            // it alone in a narrow icon column; the block belongs
+                            // under the server's name, in the row's first cell.
+                            cell = firstCellOf(linkCell.parentNode) || linkCell;
+                        }
                         if (!cell) { cell = cellWithExactText(server.hostname); }
                         if (!cell || cell.querySelector('.{$blockClass}')) { continue; }
                         cell.appendChild(buildBlock(server.lines));
                     }
+                }
+
+                function firstCellOf(row) {
+                    if (!row) { return null; }
+                    if (row.cells && row.cells.length) { return row.cells[0]; }
+                    var kids = row.childNodes || [];
+                    for (var k = 0; k < kids.length; k++) {
+                        if (kids[k].nodeType === 1 && (kids[k].tagName === 'TD' || kids[k].tagName === 'TH')) {
+                            return kids[k];
+                        }
+                    }
+                    return null;
                 }
 
                 if (document.readyState === 'loading') {

@@ -330,4 +330,26 @@ final class WebsiteOnlySuspensionTest extends ModuleTestCase
         self::assertNull($this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
         self::assertNull($this->storedWebsiteId());
     }
+    public function testReplacingTheSameAccountSaysWhyNoWebsiteIdWasStored(): void
+    {
+        // Linked to a client whose websites do not include the service domain:
+        // the refusal says to press Replace ISPConfig Link, so that button must
+        // not answer 'success' while storing nothing.
+        $clientId = $this->fake->addClient('customer');
+        $this->fake->addWebsite($clientId, 'another-site.example');
+        $this->model->serviceProperties->save([
+            ServiceProperties::KEY_CLIENT_ID => (string) $clientId,
+            ServiceProperties::KEY_CLIENT_USERNAME => 'customer',
+        ]);
+
+        $result = ispconfigconnect_RelinkAccount($this->params(self::WEBSITE_ONLY + ['username' => 'customer']));
+
+        self::assertStringStartsWith(
+            'Replace ISPConfig Link kept the existing link to ISPConfig client #' . $clientId,
+            $result
+        );
+        self::assertStringContainsString('could not store the website id this product needs to suspend', $result);
+        self::assertStringNotContainsString('website id not stored', $result);
+        self::assertNull($this->model->serviceProperties->get(ServiceProperties::KEY_DOMAIN_ID));
+    }
 }

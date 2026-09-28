@@ -394,6 +394,32 @@ final class UsageUpdateTest extends ModuleTestCase
         self::assertSame('42', ispconfigconnect_serverServiceRows(3)[0]['ispconfig_client_id']);
     }
 
+    public function testAnOldProductsIdIsNotReadWhenANewerBlankRowSaysUnlinked(): void
+    {
+        // Package change A -> B, then the link was cleared on B only (an
+        // earlier build's Unlink, or the admin blanking the field). The
+        // property reader, the admin tab and the shared-client check all read
+        // this service as UNLINKED; the sweep must not bill the old client's
+        // usage to it.
+        $this->seedServiceOnTwoProducts([
+            ['fieldid' => 3, 'value' => '42'],
+            ['fieldid' => 4, 'value' => 'olduser'],
+            ['fieldid' => 1, 'value' => ''],
+            ['fieldid' => 2, 'value' => ''],
+        ]);
+
+        $rows = ispconfigconnect_serverServiceRows(3);
+        self::assertSame('', (string) ($rows[0]['ispconfig_client_id'] ?? ''));
+        self::assertSame(
+            ispconfigconnect_effectivePropertyValues('ispconfig_client_id', [101]),
+            [],
+            'the sweep and the shared-client check agree'
+        );
+
+        ispconfigconnect_UsageUpdate($this->params(['serverid' => 3]), null, $this->writer());
+        self::assertArrayNotHasKey(101, $this->writes);
+    }
+
     public function testTheNightlySweepBillsAServiceWhoseOldProductRowIsBlank(): void
     {
         $clientId = $this->fake->addClient('svc1');

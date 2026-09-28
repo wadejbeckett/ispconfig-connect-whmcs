@@ -194,25 +194,51 @@ final class Recipe
      * object except those tmp_data remembers as previously-inactive
      * (functions.inc.php func_client_lock).
      *
+     * @return bool whether anything was written: false only in entire-client
+     *         mode on a client that was not locked
      * @throws \InvalidArgumentException website-only mode with no website id -
      *         see requireWebsiteId()
      */
-    public function unsuspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
+    public function unsuspend(int $clientId, ?int $domainId, bool $suspendEntireClient): bool
     {
         // Exact inverse of suspend(): website-only mode reactivates just the
         // site, and never touches the client lock.
         if (!$suspendEntireClient) {
             $this->setWebsiteStatus(self::requireWebsiteId($domainId, 'unsuspend'), 'active');
 
-            return;
+            return true;
         }
 
         $record = $this->clientRecord($clientId);
         if ((string) ($record['locked'] ?? 'n') !== 'y') {
-            return; // not locked - nothing to restore
+            return false; // not locked - nothing to restore
         }
 
         $this->protectiveClientUpdate($clientId, ['locked' => 'n'], $record);
+
+        return true;
+    }
+
+    /**
+     * Set one website active if - and only if - it is inactive now. For a
+     * website-only suspension whose mode was never recorded (made by an
+     * earlier build) on a service whose product has since switched to the
+     * whole-client lock: the client is not locked, so the whole-client
+     * unsuspend has nothing to undo, but the website is still off. Reads first
+     * so an already-active site gets no write at all.
+     *
+     * @return bool whether the website was reactivated
+     */
+    public function reactivateWebsiteIfInactive(int $domainId): bool
+    {
+        $site = $this->session->call('sites_web_domain_get', ['primary_id' => $domainId]);
+        if (!is_array($site) || !isset($site['active']) || (string) $site['active'] === 'y') {
+            return false;
+        }
+
+        $this->setWebsiteStatus($domainId, 'active');
+
+        return true;
     }
 
     public function terminate(int $clientId): void

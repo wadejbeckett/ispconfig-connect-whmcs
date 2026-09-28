@@ -436,4 +436,34 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
         self::assertFalse($result['success']);
         self::assertArrayHasKey('errorMsg', $result);
     }
+    // ── product addons: WHMCS passes the PARENT service's id ─────────────
+
+    public function testEveryOperationOnAProductAddonRefusesAndLeavesTheParentsClientAlone(): void
+    {
+        // The parent service (42) is linked to a client; WHMCS calls the
+        // module for an addon on it with serviceid = 42 and addonId = 7.
+        $clientId = $this->fake->addClient('parentcustomer');
+        $this->fake->addWebsite($clientId, 'parent.example');
+        $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
+        Capsule::enable();
+        $addon = $this->params(['serviceid' => 42, 'addonId' => 7]);
+
+        $mark = $this->wireMark();
+        foreach ([
+            'Create Account' => ispconfigconnect_CreateAccount($addon),
+            'Suspend' => ispconfigconnect_SuspendAccount($addon),
+            'Unsuspend' => ispconfigconnect_UnsuspendAccount($addon),
+            'Change Password' => ispconfigconnect_ChangePassword($addon),
+            'Change Package' => ispconfigconnect_ChangePackage($addon),
+            'Terminate' => ispconfigconnect_TerminateAccount($addon),
+        ] as $operation => $result) {
+            self::assertStringContainsString('cannot run on a product addon', $result, $operation);
+        }
+
+        // Nothing reached the panel, the parent's client survives, and the
+        // parent's link is still stored.
+        self::assertSame([], $this->methodsSince($mark));
+        self::assertArrayHasKey($clientId, $this->fake->clients());
+        self::assertSame((string) $clientId, $this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
+    }
 }

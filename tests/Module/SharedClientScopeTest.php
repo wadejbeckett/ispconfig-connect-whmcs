@@ -11,7 +11,9 @@ use WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties;
  * Which other services the one-service-per-client guard counts as sharers.
  *
  * ISPConfig client ids are per-panel auto-increments, so a service on another
- * panel holding the same number is a different customer (readiness R1). And a
+ * panel holding the same number is a different customer (readiness R1) - but
+ * only when the stored usernames prove it, because two server records can
+ * reach one panel under different addresses (round-2 review). And a
  * service is judged by the client id the module would actually read for it,
  * not by any stale custom-field row an old product left behind (R11).
  */
@@ -21,6 +23,7 @@ final class SharedClientScopeTest extends ModuleTestCase
     private const NEW_PRODUCT = 200;
     private const FIELD_OLD_PRODUCT = 90;
     private const FIELD_NEW_PRODUCT = 91;
+    private const FIELD_USERNAME = 92;
 
     protected function setUp(): void
     {
@@ -28,6 +31,7 @@ final class SharedClientScopeTest extends ModuleTestCase
         Capsule::seed('tblcustomfields', [
             ['id' => self::FIELD_OLD_PRODUCT, 'type' => 'product', 'fieldname' => ServiceProperties::KEY_CLIENT_ID, 'relid' => self::OLD_PRODUCT],
             ['id' => self::FIELD_NEW_PRODUCT, 'type' => 'product', 'fieldname' => ServiceProperties::KEY_CLIENT_ID, 'relid' => self::NEW_PRODUCT],
+            ['id' => self::FIELD_USERNAME, 'type' => 'product', 'fieldname' => ServiceProperties::KEY_CLIENT_USERNAME, 'relid' => self::OLD_PRODUCT],
         ]);
     }
 
@@ -62,6 +66,11 @@ final class SharedClientScopeTest extends ModuleTestCase
         Capsule::seed('tblcustomfieldsvalues', [$row]);
     }
 
+    private function seedUsername(int $serviceId, string $username): void
+    {
+        Capsule::seed('tblcustomfieldsvalues', [['fieldid' => self::FIELD_USERNAME, 'relid' => $serviceId, 'value' => $username]]);
+    }
+
     /** @return list<int> the service ids the guard reports for service 42 and client 7 */
     private function sharersOf42(): array
     {
@@ -73,14 +82,76 @@ final class SharedClientScopeTest extends ModuleTestCase
 
     // ── R1: client ids are per panel ─────────────────────────────────────
 
-    public function testAServiceOnAnotherPanelIsNotASharer(): void
+    public function testAServiceOnAnotherPanelWithAnotherClientUsernameIsNotASharer(): void
+    {
+        $this->seedServers([[1, 'panel-a.example', '10.0.0.1'], [2, 'panel-b.example', '10.0.0.2']]);
+        $this->seedService(42, 2);
+        $this->seedService(99, 1);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(42, 'bob');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(99, 'alice');
+
+        self::assertSame([], $this->sharersOf42());
+    }
+
+    public function testTheLinkingCallersUsernameIsUsedWhenThisServiceHasNoneStoredYet(): void
     {
         $this->seedServers([[1, 'panel-a.example', '10.0.0.1'], [2, 'panel-b.example', '10.0.0.2']]);
         $this->seedService(42, 2);
         $this->seedService(99, 1);
         $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(99, 'alice');
 
-        self::assertSame([], $this->sharersOf42());
+        self::assertSame([], ispconfigconnect_otherServicesLinkedToClient(42, 7, 'Bob'));
+        $same = ispconfigconnect_otherServicesLinkedToClient(42, 7, 'ALICE');
+        self::assertIsArray($same);
+        self::assertSame([99], array_column($same, 'serviceid'));
+    }
+
+    /**
+     * Two WHMCS server records can reach ONE panel under different strings.
+     * Addresses alone never drop a sharer: the same client has one username.
+     *
+     * @return array<string, array{0: array{0: int, 1: string, 2: string}, 1: array{0: int, 1: string, 2: string}}>
+     */
+    public static function aliasRecordsForOnePanel(): array
+    {
+        return [
+            'two host names' => [[1, 'panel.example.net', '203.0.113.10'], [2, 'server1.example.net', '']],
+            'host name and IP in the Hostname field' => [[1, 'panel.example.net', ''], [2, '203.0.113.10', '']],
+            'IPv4 and IPv6' => [[1, '', '203.0.113.10'], [2, '', '2001:db8::10']],
+        ];
+    }
+
+    /**
+     * @param array{0: int, 1: string, 2: string} $recordA
+     * @param array{0: int, 1: string, 2: string} $recordB
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('aliasRecordsForOnePanel')]
+    public function testAliasServerRecordsForOnePanelStillShareWhenTheUsernamesMatch(array $recordA, array $recordB): void
+    {
+        $this->seedServers([$recordA, $recordB]);
+        $this->seedService(42, 1);
+        $this->seedService(99, 2);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(42, 'sharedcustomer');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(99, 'sharedcustomer');
+
+        self::assertSame([99], $this->sharersOf42());
+    }
+
+    public function testAServiceOnAnotherPanelIsKeptWhenEitherUsernameIsMissing(): void
+    {
+        $this->seedServers([[1, 'panel-a.example', '10.0.0.1'], [2, 'panel-b.example', '10.0.0.2']]);
+        $this->seedService(42, 2);
+        $this->seedService(99, 1);
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(99, 'alice');
+        // Service 42 stores no username, so nothing proves a different client.
+
+        self::assertSame([99], $this->sharersOf42());
     }
 
     public function testAServiceOnTheSameServerRecordIsASharer(): void
@@ -157,9 +228,12 @@ final class SharedClientScopeTest extends ModuleTestCase
         $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
         $this->seedServers([[1, 'panel-a.example', '10.0.0.1'], [2, 'panel-b.example', '10.0.0.2']]);
         $this->seedService(42, 2);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, (string) $clientId);
+        $this->seedUsername(42, 'panelbcustomer');
         // Another customer's service on panel A happens to hold the same number.
         $this->seedService(99, 1);
         $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, (string) $clientId);
+        $this->seedUsername(99, 'panelacustomer');
 
         self::assertSame('success', ispconfigconnect_TerminateAccount($this->params(['serviceid' => 42, 'serverid' => 2])));
         self::assertArrayNotHasKey($clientId, $this->fake->clients());

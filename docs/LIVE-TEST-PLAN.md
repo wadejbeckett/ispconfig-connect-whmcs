@@ -120,7 +120,9 @@ skip to section 3.
    and allows entire-client Unsuspend only while no other sharer is Suspended. Decide which
    service owns each client and "Unlink from ISPConfig" the others. Rows that span two
    **different** panels are just the same number on two panels and are not refused, provided
-   the two WHMCS server records share no Hostname or IP Address.
+   the two WHMCS server records share no Hostname or IP Address AND the services store
+   different `ispconfig_client_username` values. Where a username is missing, store it (Replace
+   ISPConfig Link with the right Username) or expect a refusal.
 6. **Custom-field rows left on old products**:
 
    ```sql
@@ -136,9 +138,10 @@ skip to section 3.
    should not be linked, press "Unlink from ISPConfig" on it: Unlink now blanks every product's
    rows.
 7. **Custom-field names**: `SELECT id,relid,fieldname FROM tblcustomfields WHERE type='product' AND fieldname LIKE 'ispconfig%';`
-   must return only the exact keys `ispconfig_client_id`, `ispconfig_client_username`,
+   must return only these exact keys: `ispconfig_client_id`, `ispconfig_client_username`,
    `ispconfig_domain_id`, `ispconfig_ftp_user_id`, `ispconfig_mail_domain_id`,
-   `ispconfig_dns_zone_id`, `ispconfig_database_id`, `ispconfig_database_user_id`. A renamed
+   `ispconfig_dns_zone_id`, `ispconfig_database_id`, `ispconfig_database_user_id`, and
+   `ispconfig_suspended_as` (new in this build; WHMCS creates it on the first Suspend). A renamed
    field (for example `ispconfig_client_id|Client ID`) is invisible to the shared-client check.
 8. **Non-positive stored ids**:
    `SELECT v.relid,v.value FROM tblcustomfieldsvalues v JOIN tblcustomfields f ON f.id=v.fieldid WHERE f.fieldname='ispconfig_client_id' AND v.value<>'' AND (v.value NOT REGEXP '^[0-9]+$' OR v.value='0');`
@@ -203,6 +206,9 @@ admin pages load; no new fatals in the PHP-FPM error log.
 As root, from wherever the module was unpacked (a private checkout is fine):
 `sh <path>/modules/servers/ispconfigconnect/hooks/install-hook.sh /path/to/whmcs`, then run it
 again, then with `--status`.
+
+Optional: create `/root/whmcs` as a symlink to the WHMCS directory and run the installer
+with `/root/whmcs`; it must install to the physical path and print it.
 
 **Expected**: first run prints `installed /path/to/whmcs/includes/hooks/ispconfigconnect.php`,
 exit 0. Second run prints `already up to date: ...`, exit 0. `--status` prints
@@ -296,15 +302,18 @@ canary, and wait for the job queue. Suspend S1, then check
 `SELECT locked,tmp_data FROM dbispconfig.client WHERE client_id=<N>;`. Then Unsuspend.
 
 **Expected**: Suspend: `client_get` then `client_update` with `locked='y'`; every object
-inactive; `tmp_data` `prev_active` lists only the canary. Unsuspend: `client_update` with
-`locked='n'`; everything active again except the canary. Re-enable the canary by hand.
+inactive; `tmp_data` `prev_active` lists only the canary; S1's `ispconfig_suspended_as` is
+`client`. Unsuspend: `client_update` with `locked='n'`; everything active again except the
+canary; `ispconfig_suspended_as` is blank. Re-enable the canary by hand.
 
 ### Step 12: Website-only Suspend
 
 Create S2 on P2 for C2. Suspend, then Unsuspend.
 
 **Expected**: Suspend sends only `sites_web_domain_set_status` with `inactive`; the client is
-not locked; mail and FTP stay active; the site stops serving. Unsuspend sends `active`.
+not locked; mail and FTP stay active; the site stops serving; `ispconfig_suspended_as` is
+`website`. Unsuspend sends `sites_web_domain_set_status` with `active` and blanks
+`ispconfig_suspended_as`.
 
 ### Step 13: Website-only Suspend on a linked service
 
@@ -322,7 +331,10 @@ Press Suspend.
 website id; the admin tab shows the ISPConfig website id. (b)
 `Suspend refused: this product suspends the website only, but no ISPConfig website id is stored for this service, so there is nothing safe to suspend. Press "Replace ISPConfig Link" ...`;
 no panel call is made and the client is NOT locked. (c) Replace stores the website id again;
-Suspend and Unsuspend behave as in step 12.
+Suspend and Unsuspend behave as in step 12. Optional: change S3's domain in WHMCS to one the
+client has no website for, blank the website id again and press Replace: it answers
+`Replace ISPConfig Link kept the existing link to ISPConfig client #<N>, but could not store the website id this product needs to suspend: ...`
+instead of success.
 
 ### Step 14: Change Package on an active client
 
@@ -357,8 +369,23 @@ product to P1 (entire client), Save, press Change Package. Then Unsuspend S2.
 **Expected**: (a) Success. The Module Log shows `client_update` followed by
 `sites_web_domain_set_status` with `inactive`; the site stays offline; the client is not
 locked. (b) Success. `client_update` is followed by a second `client_update` with
-`locked='y'`: the client is now locked, the way P1 suspends. Unsuspend unlocks it and the
-site, mail and FTP are all active.
+`locked='y'`: the client is now locked, the way P1 suspends, and `ispconfig_suspended_as` is
+`client`. Unsuspend unlocks it and the site, mail and FTP are all active.
+
+### Step 16b: Changing the suspension setting while suspended
+
+(a) Suspend S2 (P2, website-only). Tick *Suspend Entire Client* on P2 and save the product.
+Press Unsuspend on S2. Untick the box again.
+(b) Suspend S1 (P1, whole client). Untick *Suspend Entire Client* on P1. Press Unsuspend on S1.
+Tick the box again.
+(c) Suspend S2 (P2, website-only). In ISPConfig, tick Locked on S2's client by hand. Press
+Unsuspend on S2, then untick Locked in ISPConfig.
+
+**Expected**: (a) Unsuspend sets the website active (`sites_web_domain_set_status` with
+`active`); no `client_update`; the site serves again. (b) Unsuspend unlocks the client
+(`client_update` with `locked='n'`): mail, FTP and the site are all active again, and a
+following Change Package is not refused. (c) Unsuspend sets the website active but leaves the
+hand-set lock in place (no `client_update`).
 
 ### Step 17: Link, Replace and shared-client refusals
 
@@ -393,9 +420,12 @@ Create S4 for C2 on P1 WITHOUT running Create (set it Active and save; verify pa
    With S4 Active: Unsuspend succeeds and the Module Log has an `UnsuspendAccount` line naming
    S4 as a live sharer.
 5. S1's operations work again.
-6. The ISPC-TEST-2 service does NOT block S1 (Change Password succeeds). The ISPC-NEGATIVE
-   service DOES block it (`Change Password refused ... also linked to service #...`), because
-   that record points at the same panel.
+6. The ISPC-TEST-2 service does NOT block S1 (Change Password succeeds), provided both
+   services store different `ispconfig_client_username` values; with a blank username on
+   either side it DOES block (the safe direction). The ISPC-NEGATIVE service DOES block S1
+   (`Change Password refused ... also linked to service #...`), because that record points at
+   the same panel. It still blocks when ISPC-NEGATIVE's Hostname is changed to the panel's IP
+   and both services store the same username.
 
 ### Step 18: Change Password
 
@@ -421,7 +451,9 @@ the login URL. (b) and (c): no button, and the direct URL shows only
 `Single sign-on is not available for this service right now...`; the Module Log detail reads
 `Single sign-on is only available while the service is active; this service is Suspended.`
 If (b) logs you in, WHMCS is not passing the service status as `$params['status']`: record
-what it sends and report it.
+what it sends and report it. (d) As admin, open S2's service page (still Suspended, website
+only) and press its login button: the admin IS logged in. On S1 (locked) the admin gets the
+panel's `The client account is locked; single sign-on is refused.`
 
 ### Step 20: Usage import and the monthly bandwidth reset
 
@@ -450,8 +482,8 @@ carry no email address, name, password or autoresponder text; no `ssl_key` anywh
 Load Configuration > System Settings > Servers. Then open ISPC-TEST's edit page and a
 server-group page, and view each page's source.
 
-**Expected**: under ISPC-TEST: ISPConfig version, pending jobs, clients, nodes, last updated
-and a single sign-on line. The Accounts cell shows the live client count; if it shows 0 next to
+**Expected**: under ISPC-TEST's name, in the first column (not in the edit-icon column):
+ISPConfig version, pending jobs, clients, nodes, last updated and a single sign-on line. The Accounts cell shows the live client count; if it shows 0 next to
 a correct Clients figure, the row was matched by hostname text only, so report it. ISPC-NEGATIVE
 shows its probe errors and the page still renders. The edit and group pages carry no ISPConfig
 block or script. One successful login per ISPConfig server per page render.
@@ -466,6 +498,15 @@ for the job queue, then Terminate S3 in WHMCS. (c) Optionally set S2's `ispconfi
 for S1 on every product is blank. (b) `Terminate refused` with the stale text
 (`the stored ISPConfig client id #<N> no longer exists`); nothing deleted. (c) The same stale
 refusal, and no `client_get` with an id of 0 or less in the Module Log.
+
+### Step 23b: Product addons are refused
+
+Create a product addon with Module = ISPConfig Connect, add it to S2 and press its Create
+button (Clients > C2 > S2 > Addons; verify path). Set the addon's module back to none
+afterwards.
+
+**Expected**: `... ISPConfig Connect cannot run on a product addon. ... Nothing has been changed.`
+No panel call in the Module Log, and S2 and its ISPConfig client are unchanged.
 
 ### Step 24: Server Sync (read-only)
 

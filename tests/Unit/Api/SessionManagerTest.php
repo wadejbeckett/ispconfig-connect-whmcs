@@ -289,7 +289,7 @@ final class SessionManagerTest extends TestCase
 
     // ---- transport-failure circuit (fail fast, per instance) ----------------
 
-    private static function managerOver(FlakyTransport $transport, FakeIspconfigServer $fake): SessionManager
+    private static function managerOver(HttpTransportInterface $transport, FakeIspconfigServer $fake): SessionManager
     {
         return new SessionManager(new RestClient($transport), 'remote', 'secret', static fn (): int => $fake->clock);
     }
@@ -360,6 +360,45 @@ final class SessionManagerTest extends TestCase
             ['login', 'server_get_all', 'login', 'monitor_jobqueue_count', 'monitor_jobqueue_count'],
             self::methodSequence($fake)
         );
+    }
+
+    public function testASuccessfulLoginBetweenTransportFailuresResetsTheCount(): void
+    {
+        // Two unreadable tenants next to each other in a sweep: each read
+        // times out, but the re-login between them SUCCEEDS - the panel is up,
+        // so the tenants after them must still be read.
+        $fake = new FakeIspconfigServer();
+        $fake->jobqueueCount = 4;
+        $transport = new class ($fake) implements HttpTransportInterface {
+            /** @var list<string> */
+            public array $failing = ['quota_get_by_user'];
+
+            public function __construct(private readonly FakeIspconfigServer $fake)
+            {
+            }
+
+            public function post(string $method, string $jsonBody): string
+            {
+                if (in_array($method, $this->failing, true)) {
+                    throw new TransportException('curl error 28: Operation timed out while calling ' . $method);
+                }
+
+                return $this->fake->post($method, $jsonBody);
+            }
+        };
+        $manager = self::managerOver($transport, $fake);
+
+        foreach ([1, 2] as $tenant) {
+            try {
+                $manager->call('quota_get_by_user', ['client_id' => $tenant]);
+                self::fail('Expected TransportException for tenant ' . $tenant);
+            } catch (TransportException) {
+            }
+        }
+
+        // Not latched: the next tenant is read.
+        self::assertSame('4', $manager->call('monitor_jobqueue_count', ['server_id' => 0]));
+        self::assertSame(['login', 'login', 'login', 'monitor_jobqueue_count'], self::methodSequence($fake));
     }
 
     public function testASuccessBetweenTransportFailuresResetsTheCount(): void

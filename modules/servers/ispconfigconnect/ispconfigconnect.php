@@ -482,6 +482,13 @@ function ispconfigconnect_SuspendAccount(array $params): string
 
         $product = Params::productConfig($params);
         $domainId = $properties->domainId();
+        $recorded = $properties->suspendedAs();
+
+        // Already suspended under the whole-client lock (the product may have
+        // changed since): stay in that mode. The lock covers this service's
+        // website too, and Recipe::suspend() re-locks only a client that is not
+        // locked any more, so the lock's record of what to restore is kept.
+        $entireClient = $recorded === ServiceProperties::SUSPENDED_AS_CLIENT || $product->suspendEntireClient;
 
         // Website-only mode acts on this service's website and nothing else,
         // so without the website's id there is nothing it can safely do. It
@@ -490,7 +497,7 @@ function ispconfigconnect_SuspendAccount(array $params): string
         // whole-client lock the admin deliberately did not choose (which would
         // take down mail, FTP and databases - and every other service on a
         // shared client). Recipe::suspend() refuses the same case as a backstop.
-        if (!$product->suspendEntireClient && $domainId === null) {
+        if (!$entireClient && $domainId === null) {
             return ispconfigconnect_noWebsiteIdRefusal('Suspend', 'suspend');
         }
 
@@ -498,7 +505,7 @@ function ispconfigconnect_SuspendAccount(array $params): string
         // live service shares it. Website-only mode touches just this service's
         // own site and is allowed even on a shared client. A guard that could
         // not run (null) has already logged why; suspension still proceeds.
-        if ($product->suspendEntireClient) {
+        if ($entireClient) {
             $shared = ispconfigconnect_sharedClientRefusal(
                 'Suspend',
                 $clientId,
@@ -511,14 +518,23 @@ function ispconfigconnect_SuspendAccount(array $params): string
 
         $session = Factory::sessionManager($params);
         try {
-            (new Recipe($session))->suspend(
-                $clientId,
-                $domainId,
-                $product->suspendEntireClient
-            );
+            $recipe = new Recipe($session);
+            // Suspended website-only before, whole-client now (the product
+            // changed in between): put the website back first, so the lock's
+            // snapshot records it as active and the unlock brings it back.
+            if ($entireClient && $recorded === ServiceProperties::SUSPENDED_AS_WEBSITE && $domainId !== null) {
+                $recipe->unsuspend($clientId, $domainId, false);
+            }
+            $recipe->suspend($clientId, $domainId, $entireClient);
         } finally {
             $session->close();
         }
+
+        ispconfigconnect_recordSuspension(
+            $properties,
+            $params,
+            $entireClient ? ServiceProperties::SUSPENDED_AS_CLIENT : ServiceProperties::SUSPENDED_AS_WEBSITE
+        );
 
         return 'success';
     } catch (\Throwable $failure) {
@@ -544,9 +560,22 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         $product = Params::productConfig($params);
         $domainId = $properties->domainId();
 
+        // REVERSE WHAT WAS DONE, NOT WHAT THE PRODUCT SAYS NOW. The "Suspend
+        // Entire Client" box can change, and the service can move to another
+        // product, while it is suspended. Unsuspending in the product's current
+        // mode then undoes the wrong thing: a whole-client lock would stay on
+        // (mail, FTP and databases down while WHMCS shows Active), or a
+        // website-only suspension would stay in place behind a no-op unlock.
+        // The mode Suspend recorded decides; the product's setting only stands
+        // in for suspensions made before the mode was recorded.
+        $recorded = $properties->suspendedAs();
+        $entireClient = $recorded !== null
+            ? $recorded === ServiceProperties::SUSPENDED_AS_CLIENT
+            : $product->suspendEntireClient;
+
         // Symmetric with Suspend: website-only mode without the website's id
         // has nothing safe to act on.
-        if (!$product->suspendEntireClient && $domainId === null) {
+        if (!$entireClient && $domainId === null) {
             return ispconfigconnect_noWebsiteIdRefusal('Unsuspend', 'unsuspend');
         }
 
@@ -558,7 +587,7 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         // DIFFERENT service that WHMCS still has suspended - so that, and only
         // that, is refused. When every other sharer is live, unlocking takes
         // nobody anywhere they are not entitled to be.
-        if ($product->suspendEntireClient) {
+        if ($entireClient) {
             $serviceId = (int) ($params['serviceid'] ?? 0);
             // null = the guard could not run and has logged why; proceed.
             $others = ispconfigconnect_otherServicesLinkedToClient($serviceId, $clientId) ?? [];
@@ -587,18 +616,72 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
 
         $session = Factory::sessionManager($params);
         try {
-            (new Recipe($session))->unsuspend(
-                $clientId,
-                $domainId,
-                $product->suspendEntireClient
-            );
+            $recipe = new Recipe($session);
+            $unlocked = $recipe->unsuspend($clientId, $domainId, $entireClient);
+
+            // No recorded mode, a whole-client product, and no lock to lift:
+            // the one suspension that can still be in place is a website-only
+            // one made before the product switched to the whole-client lock.
+            // Reactivate that website - and only if it is actually off.
+            if ($entireClient && !$unlocked && $recorded === null && $domainId !== null) {
+                // Best effort on top of an unsuspend that has already done its
+                // job: a panel refusal here (a missing grant, say) is logged,
+                // not turned into a failed Unsuspend that keeps a paying
+                // customer suspended in WHMCS. Connection-level failures still
+                // propagate like everywhere else.
+                try {
+                    $reactivated = $recipe->reactivateWebsiteIfInactive($domainId);
+                    $decision = $reactivated
+                        ? 'the ISPConfig client was not locked, but this service\'s website was inactive - a'
+                            . ' website-only suspension from before the product switched to "Suspend Entire'
+                            . ' Client" - so the website was set active again'
+                        : null;
+                } catch (IspconfigException $failure) {
+                    if (ispconfigconnect_isConnectionLevel($failure)) {
+                        throw $failure;
+                    }
+                    $decision = 'could not check whether this service\'s website is still inactive: '
+                        . ispconfigconnect_failureText($failure);
+                }
+                if ($decision !== null) {
+                    ispconfigconnect_logModuleCall(
+                        'UnsuspendAccount',
+                        ['serviceid' => (int) ($params['serviceid'] ?? 0), 'ispconfig_domain_id' => $domainId],
+                        ['decision' => $decision]
+                    );
+                }
+            }
         } finally {
             $session->close();
         }
 
+        ispconfigconnect_recordSuspension($properties, $params, null);
+
         return 'success';
     } catch (\Throwable $failure) {
         return ispconfigconnect_errorString('Unsuspend', $failure);
+    }
+}
+
+/**
+ * Record how the service is suspended on the panel (or that it no longer is),
+ * for Unsuspend to reverse. The panel change it describes has already been
+ * made, so a failure to store it must not turn that into an error: it is
+ * logged, and Unsuspend falls back to the product's setting.
+ *
+ * @param array<string, mixed> $params
+ * @param ServiceProperties::SUSPENDED_AS_*|null $mode
+ */
+function ispconfigconnect_recordSuspension(ServiceProperties $properties, array $params, ?string $mode): void
+{
+    try {
+        $properties->setSuspendedAs($mode);
+    } catch (\Throwable $failure) {
+        ispconfigconnect_logModuleCall(
+            'RecordSuspension',
+            ['serviceid' => (int) ($params['serviceid'] ?? 0), 'suspended_as' => $mode ?? ''],
+            ['error' => ispconfigconnect_failureText($failure)]
+        );
     }
 }
 
@@ -775,6 +858,7 @@ function ispconfigconnect_ChangePackage(array $params): string
         $reapplyWebsite = $suspended && !$product->suspendEntireClient && $domainId !== null;
 
         $reSuspendFailure = null;
+        $reSuspendedAs = null;
         $session = Factory::sessionManager($params);
         try {
             // Addon reconciliation needs the template list only when at least
@@ -801,7 +885,8 @@ function ispconfigconnect_ChangePackage(array $params): string
                 return 'Change Package refused: this service\'s ISPConfig client is locked (suspended).'
                     . ' Changing its template now would make ISPConfig re-take the lock snapshot, and a'
                     . ' later unsuspend could no longer restore the client\'s websites, mail and databases.'
-                    . ' Unsuspend the service first, then change the package. Nothing has been changed.';
+                    . ' Unsuspend the service first (or, if the lock was set by hand in ISPConfig, remove it'
+                    . ' there), then change the package. Nothing has been changed.';
             }
 
             // WHY THE WEBSITE IS SUSPENDED AGAIN. client_update merges the
@@ -821,6 +906,9 @@ function ispconfigconnect_ChangePackage(array $params): string
             if ($reapplyWebsite || $reapplyEntireClient) {
                 try {
                     $recipe->suspend($clientId, $domainId, $reapplyEntireClient);
+                    $reSuspendedAs = $reapplyEntireClient
+                        ? ServiceProperties::SUSPENDED_AS_CLIENT
+                        : ServiceProperties::SUSPENDED_AS_WEBSITE;
                 } catch (\Throwable $failure) {
                     $reSuspendFailure = $failure;
                 }
@@ -833,6 +921,9 @@ function ispconfigconnect_ChangePackage(array $params): string
         // re-save migrates every stored id onto the NEW product's fields so
         // later operations read them without the fallback.
         $properties->resaveAll();
+        if ($reSuspendedAs !== null) {
+            ispconfigconnect_recordSuspension($properties, $params, $reSuspendedAs);
+        }
 
         if ($reSuspendFailure !== null) {
             // The package DID change, so this is not a plain failure - but the
@@ -1658,9 +1749,23 @@ function ispconfigconnect_GetRemoteMetaData(array $params): array
  *        the per-server tblservers_remote lookup; WHMCS passes $params alone
  * @return array{success: bool, redirectTo?: string, errorMsg?: string}
  */
-function ispconfigconnect_ServiceSingleSignOn(array $params, ?callable $ssoStateReader = null): array
-{
-    return ispconfigconnect_singleSignOn($params, 'ServiceSingleSignOn', $ssoStateReader);
+function ispconfigconnect_ServiceSingleSignOn(
+    array $params,
+    ?callable $ssoStateReader = null,
+    ?bool $adminArea = null
+): array {
+    // WHMCS runs this for the customer's button in the client area AND for
+    // the login button on the admin's service page. Only the first is
+    // customer-facing: an admin supporting a suspended customer may still log
+    // in (ISPConfig itself refuses a LOCKED client), and gets the operator's
+    // diagnosis instead of "please contact support". $adminArea is a test seam.
+    $adminArea ??= defined('ADMINAREA');
+
+    return ispconfigconnect_singleSignOn(
+        $params,
+        $adminArea ? 'AdminSingleSignOn' : 'ServiceSingleSignOn',
+        $ssoStateReader
+    );
 }
 
 /**
@@ -1729,6 +1834,22 @@ function ispconfigconnect_AdminSingleSignOn(array $params): array
  */
 function ispconfigconnect_serviceProperties(array $params): \WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties
 {
+    // PRODUCT ADDONS ARE NOT SUPPORTED. For an addon, WHMCS passes the PARENT
+    // service's id as serviceid (and the addon's own id as addonId), so every
+    // lookup keyed on serviceid below - the property reader, the cross-product
+    // clearer, the shared-client check - would read and act on the PARENT
+    // service's ISPConfig client: an addon Terminate would delete the parent's
+    // hosting. Every lifecycle, button and page path reads properties through
+    // here first, so refusing here stops all of them before any panel call.
+    if ((int) ($params['addonId'] ?? 0) > 0) {
+        throw new \DomainException(
+            'ISPConfig Connect cannot run on a product addon. For an addon, WHMCS passes the parent'
+            . ' service\'s id, so every operation would act on the parent service\'s ISPConfig client.'
+            . ' Set this addon\'s module to none, and use ISPConfig Connect on products only. Nothing has'
+            . ' been changed.'
+        );
+    }
+
     $properties = Params::serviceProperties($params);
     $serviceId = (int) ($params['serviceid'] ?? 0);
     if ($serviceId > 0 && class_exists('\\WHMCS\\Database\\Capsule')) {
@@ -2728,7 +2849,7 @@ function ispconfigconnect_serviceRefs(int $serverId, ?callable $rowProvider = nu
 
 /**
  * tblhosting rows for one server, each carrying the two ispconfig_* service
- * properties the usage code needs. Two queries, regardless of service count.
+ * properties the usage code needs. Three queries, regardless of service count.
  *
  * @return list<array<string, mixed>>
  */
@@ -2752,13 +2873,10 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
             // so it can tell this month's accumulated total from a stale peak
             // left over after a month rollover (see
             // Usage\ServiceUsage::toHostingColumnsGiven()); domain is the key
-            // automatic adoption matches an unlinked service on; packageid is
-            // the CURRENT product, which decides between property rows below.
-            ->get(['id', 'username', 'domain', 'bwusage', 'lastupdate', 'packageid']);
+            // automatic adoption matches an unlinked service on.
+            ->get(['id', 'username', 'domain', 'bwusage', 'lastupdate']);
 
         $rows = [];
-        /** @var array<int, int> $packageIds WHMCS service id => current product id */
-        $packageIds = [];
         foreach (is_iterable($services) ? $services : [] as $service) {
             $columns = (array) $service;
             $id = (int) ($columns['id'] ?? 0);
@@ -2772,9 +2890,6 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
                         : null,
                     'lastupdate' => isset($columns['lastupdate']) ? (string) $columns['lastupdate'] : null,
                 ];
-                $packageIds[$id] = isset($columns['packageid']) && is_numeric($columns['packageid'])
-                    ? (int) $columns['packageid']
-                    : 0;
             }
         }
         if ($rows === []) {
@@ -2782,67 +2897,18 @@ function ispconfigconnect_serverServiceRows(int $serverId): array
         }
 
         // Service properties are ordinary product custom fields, scoped to the
-        // service's CURRENT product - so they are looked up by field NAME and
-        // service id, exactly like the entry file's fallback reader.
-        $properties = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
-            ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
-            ->where('tblcustomfields.type', 'product')
-            ->whereIn('tblcustomfields.fieldname', [
-                ServiceProperties::KEY_CLIENT_ID,
-                ServiceProperties::KEY_CLIENT_USERNAME,
-            ])
-            ->whereIn('tblcustomfieldsvalues.relid', array_keys($rows))
-            // Oldest first, so among equally ranked rows the newest one wins.
-            ->orderBy('tblcustomfieldsvalues.id')
-            ->get([
-                'tblcustomfieldsvalues.relid as relid',
-                'tblcustomfields.fieldname as fieldname',
-                'tblcustomfields.relid as productid',
-                'tblcustomfieldsvalues.value as value',
-            ]);
-
-        // ONE SERVICE CAN HAVE ROWS ON SEVERAL PRODUCTS. A package change
-        // leaves the old product's rows behind, and Unlink/Terminate/Replace
-        // blank EVERY product's rows while a re-link writes only the current
-        // product's. Taking whichever row the database returns last would let
-        // an old product's blank erase a live client id - the service would
-        // then read as unlinked and go unbilled. So, per service and key, the
-        // same rule as the fallback reader in ispconfigconnect_serviceProperties():
-        // a non-empty value always beats an empty one, the current product's
-        // row beats any other product's, and the newest row breaks a tie.
-        /** @var array<int, array<string, bool>> $fromCurrentProduct */
-        $fromCurrentProduct = [];
-        foreach (is_iterable($properties) ? $properties : [] as $property) {
-            $columns = (array) $property;
-            $relid = (int) ($columns['relid'] ?? 0);
-            $field = (string) ($columns['fieldname'] ?? '');
-            if (!isset($rows[$relid]) || $field === '') {
-                continue;
-            }
-
-            $value = (string) ($columns['value'] ?? '');
-            $isCurrent = $packageIds[$relid] > 0
-                && is_numeric($columns['productid'] ?? null)
-                && (int) $columns['productid'] === $packageIds[$relid];
-            $held = isset($rows[$relid][$field]) ? (string) $rows[$relid][$field] : null;
-
-            if ($held === null) {
-                // First row seen for this key: taken as is, blank or not, so a
-                // service whose only rows are blank still reads as unlinked.
-                $take = true;
-            } elseif ($value === '') {
-                $take = false; // never let a blank erase anything
-            } elseif ($held === '') {
-                $take = true;  // a value beats a blank
-            } else {
-                // Both non-empty: the current product outranks the rest, and
-                // within the same rank the later (newer) row wins.
-                $take = $isCurrent || !($fromCurrentProduct[$relid][$field] ?? false);
-            }
-
-            if ($take) {
-                $rows[$relid][$field] = $value;
-                $fromCurrentProduct[$relid][$field] = $isCurrent;
+        // service's CURRENT product, and one service can have rows on several
+        // products (a package change leaves the old product's behind). The
+        // sweep must read a service as linked exactly when every other surface
+        // does - otherwise it bills an old client's usage to a service the
+        // admin tab calls unlinked - so it uses the SAME resolver as the
+        // shared-client guard, which mirrors the property reader in
+        // ispconfigconnect_serviceProperties().
+        foreach ([ServiceProperties::KEY_CLIENT_ID, ServiceProperties::KEY_CLIENT_USERNAME] as $key) {
+            foreach (ispconfigconnect_effectivePropertyValues($key, array_keys($rows)) as $id => $value) {
+                if (isset($rows[$id])) {
+                    $rows[$id][$key] = $value;
+                }
             }
         }
 
@@ -3380,7 +3446,11 @@ function ispconfigconnect_link(array $params, string $context, bool $replace): s
                 $shared = ispconfigconnect_sharedClientRefusal(
                     $label,
                     $resolvedId,
-                    ispconfigconnect_otherServicesLinkedToClient($serviceId, $resolvedId) ?? []
+                    ispconfigconnect_otherServicesLinkedToClient(
+                        $serviceId,
+                        $resolvedId,
+                        (string) ($record['username'] ?? $name)
+                    ) ?? []
                 );
                 if ($shared !== null) {
                     return $shared;
@@ -3428,6 +3498,23 @@ function ispconfigconnect_link(array $params, string $context, bool $replace): s
                     'panel_touched' => false,
                 ]
             );
+
+            if ($website['domainid'] === null && !Params::productConfig($params)->suspendEntireClient) {
+                // On a website-only product, filling the website id was the
+                // only thing this press could do, and it did not happen.
+                // 'success' would send the admin straight back to a Suspend
+                // refusal that tells them to press this button again.
+                $reason = (string) preg_replace('/^website id not stored:\s*/', '', $website['note']);
+
+                return sprintf(
+                    '%s kept the existing link to ISPConfig client #%d, but could not store the website id this'
+                    . ' product needs to suspend: %s. The service domain must match exactly one website of'
+                    . ' this client. Nothing has been changed.',
+                    $label,
+                    $resolvedId,
+                    rtrim($reason !== '' ? $reason : 'no matching website was found', '.')
+                );
+            }
 
             return 'success';
         }
@@ -3757,7 +3844,11 @@ function ispconfigconnect_adoptUnlinked(
         // Never adopt a client another live service already holds: matching on
         // a customer-controlled domain plus a shared client is the cross-tenant
         // takeover path. Leave it unmanaged with the reason on the record.
-        $holders = ispconfigconnect_otherServicesLinkedToClient($serviceId, $outcome['clientid']);
+        $holders = ispconfigconnect_otherServicesLinkedToClient(
+            $serviceId,
+            $outcome['clientid'],
+            $outcome['clientusername']
+        );
         if ($holders === null) {
             // Rule 1 again: a check that could not run is not a clean match.
             // Nobody asked for this link, so an unverified one is not made.
@@ -3907,7 +3998,7 @@ function ispconfigconnect_serviceLinkState(
     // Never adopt a client another live service already holds (cross-tenant
     // takeover via a customer-controlled domain) - nor one the check could not
     // clear (rule 1: an unverified match is not a match).
-    $holders = ispconfigconnect_otherServicesLinkedToClient($serviceId, $outcome['clientid']);
+    $holders = ispconfigconnect_otherServicesLinkedToClient($serviceId, $outcome['clientid'], $outcome['clientusername']);
     if ($holders === null) {
         return 'Not linked: ' . ispconfigconnect_unverifiedAdoptionReason($outcome['clientid'])
             . ' Use "Link to ISPConfig Account" to link it by name instead.';
@@ -4211,12 +4302,18 @@ function ispconfigconnect_clientExists(SessionManager $session, int $clientId): 
  * ## Only services on the same ISPConfig panel count
  *
  * ISPConfig client ids are per-panel auto-increments: client #1 on panel A and
- * client #1 on panel B are different customers. A service on a WHMCS server
- * record that is DEFINITELY another panel (ispconfigconnect_otherPanelServerIds)
- * is therefore not a sharer. Everything else still counts - the same record,
- * another record for the same panel, a service with no server, a server record
- * that no longer exists - because missing a real sharer deletes someone's
- * hosting, while a false match only refuses.
+ * client #1 on panel B are different customers. But two WHMCS server records
+ * can also reach ONE panel under different strings (an alias host name, a host
+ * name on one and the IP on the other, IPv4 and IPv6), so addresses alone never
+ * prove two panels differ. A candidate is dropped only on two independent
+ * pieces of evidence: its server record shares no address with this service's
+ * (ispconfigconnect_otherPanelServerIds), AND both services store an ISPConfig
+ * client username and the two differ - the same client on one panel has one
+ * username. Everything else still counts (the same record, no server, a server
+ * record that no longer exists, a username missing on either side), because
+ * missing a real sharer deletes someone's hosting, while a false match only
+ * refuses. The one gap: a client RENAMED in ISPConfig between two links, on
+ * alias server records, stores two usernames for one client.
  *
  * ## The id each candidate is judged by is the one the module would read
  *
@@ -4224,11 +4321,13 @@ function ispconfigconnect_clientExists(SessionManager $session, int $clientId): 
  * custom-field row holding a client id the service no longer uses. Matching on
  * any row made that stale value a false "shared" refusal. Each candidate is
  * now judged by the same rule as the property reader in
- * ispconfigconnect_serviceProperties() (ispconfigconnect_effectiveClientIds).
+ * ispconfigconnect_serviceProperties() (ispconfigconnect_effectivePropertyValues).
  *
+ * @param string|null $clientUsername the ISPConfig username of $clientId when the
+ *        caller knows it (Link, adoption); otherwise this service's stored one is read
  * @return list<array{serviceid: int, userid: int, domain: string, status: string}>|null
  */
-function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clientId): ?array
+function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clientId, ?string $clientUsername = null): ?array
 {
     // No positive id names no real client, and with no Capsule class at all
     // there is no WHMCS database and so no other service to find - both are
@@ -4250,18 +4349,16 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
                 ispconfigconnect_serviceStatus('CANCELLED', 'Cancelled'),
                 ispconfigconnect_serviceStatus('FRAUD', 'Fraud'),
             ]);
-        $otherPanels = ispconfigconnect_otherPanelServerIds($serviceId);
-        if ($otherPanels !== []) {
-            $query->whereNotIn('tblhosting.server', $otherPanels);
-        }
         $rows = $query->get([
             'tblhosting.id as id',
             'tblhosting.userid as userid',
             'tblhosting.domain as domain',
             'tblhosting.domainstatus as status',
+            'tblhosting.server as server',
         ]);
 
         $candidates = [];
+        $servers = [];
         foreach (is_iterable($rows) ? $rows : [] as $row) {
             $columns = (array) $row;
             $otherId = (int) ($columns['id'] ?? 0);
@@ -4272,21 +4369,43 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
                     'domain' => (string) ($columns['domain'] ?? ''),
                     'status' => (string) ($columns['status'] ?? ''),
                 ];
+                $servers[$otherId] = (int) ($columns['server'] ?? 0);
             }
         }
         if ($candidates === []) {
             return [];
         }
 
-        $effective = ispconfigconnect_effectiveClientIds(array_keys($candidates));
-        $result = [];
+        $effective = ispconfigconnect_effectivePropertyValues(ServiceProperties::KEY_CLIENT_ID, array_keys($candidates));
+        $sharers = [];
         foreach ($candidates as $otherId => $candidate) {
             if (($effective[$otherId] ?? null) === (string) $clientId) {
-                $result[] = $candidate;
+                $sharers[$otherId] = $candidate;
             }
         }
 
-        return $result;
+        // Candidates on a server record with no address in common: dropped
+        // only when the stored usernames prove a different client too.
+        $otherPanels = $sharers === [] ? [] : ispconfigconnect_otherPanelServerIds($serviceId);
+        $onOtherPanels = array_values(array_filter(
+            array_keys($sharers),
+            static fn (int $otherId): bool => in_array($servers[$otherId] ?? 0, $otherPanels, true)
+        ));
+        if ($onOtherPanels !== []) {
+            $names = ispconfigconnect_effectivePropertyValues(
+                ServiceProperties::KEY_CLIENT_USERNAME,
+                $clientUsername === null ? array_merge([$serviceId], $onOtherPanels) : $onOtherPanels
+            );
+            $own = strtolower(trim($clientUsername ?? ($names[$serviceId] ?? '')));
+            foreach ($onOtherPanels as $otherId) {
+                $theirs = strtolower(trim($names[$otherId] ?? ''));
+                if ($own !== '' && $theirs !== '' && $own !== $theirs) {
+                    unset($sharers[$otherId]);
+                }
+            }
+        }
+
+        return array_values($sharers);
     } catch (\Throwable $failure) {
         // Not [] - see the docblock. The line is what lets an operator tell
         // "the guard ran and found nobody" from "the guard never ran".
@@ -4307,18 +4426,17 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
 }
 
 /**
- * WHMCS server ids that are DEFINITELY a different ISPConfig panel from the one
- * $serviceId's server record points at - the services on them cannot share its
- * ISPConfig client, whose id is only unique per panel.
+ * WHMCS server ids whose Hostname/IP Address has nothing in common with the
+ * record $serviceId's server points at. That alone does NOT make them another
+ * panel - two records can reach one panel under different strings - so
+ * ispconfigconnect_otherServicesLinkedToClient() also needs the stored client
+ * usernames to differ before it drops a service on one of these records.
  *
- * Two server records are the same panel when any address matches (host name
- * against host name or IP, IP against either), and are only called different
- * when at least one address can be compared on both sides and none matches.
- * A record with too little to compare is kept as a possible sharer. Anything
+ * Two server records share an address when any one matches (host name against
+ * host name or IP, IP against either); a record with too little to compare
+ * (at least one address comparable on both sides is required) is kept. Anything
  * unreadable - no server on the service, a missing record, a query failure -
- * returns [], so the guard falls back to comparing every server, which can only
- * over-refuse. Operators with two server records for one panel should give
- * both the same Hostname or IP Address.
+ * returns [], so nothing is dropped.
  *
  * @return list<int>
  */
@@ -4382,15 +4500,15 @@ function ispconfigconnect_panelAddress(string $address): string
 }
 
 /**
- * The ispconfig_client_id each service would be read as, by the same rule as
- * the property reader in ispconfigconnect_serviceProperties(): the newest row
- * of the service's current product when it is not blank, otherwise the newest
- * row of any product when that is not blank, otherwise none.
+ * The value of property $key each service would be read as, by the same rule
+ * as the property reader in ispconfigconnect_serviceProperties(): the newest
+ * row of the service's current product when it is not blank, otherwise the
+ * newest row of any product when that is not blank, otherwise none.
  *
  * @param list<int> $serviceIds
- * @return array<int, string> service id => client id; services with none are absent
+ * @return array<int, string> service id => value; services with none are absent
  */
-function ispconfigconnect_effectiveClientIds(array $serviceIds): array
+function ispconfigconnect_effectivePropertyValues(string $key, array $serviceIds): array
 {
     if ($serviceIds === []) {
         return [];
@@ -4400,7 +4518,7 @@ function ispconfigconnect_effectiveClientIds(array $serviceIds): array
         ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
         ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
         ->where('tblcustomfields.type', 'product')
-        ->where('tblcustomfields.fieldname', ServiceProperties::KEY_CLIENT_ID)
+        ->where('tblcustomfields.fieldname', $key)
         ->whereIn('tblcustomfieldsvalues.relid', $serviceIds)
         ->orderByDesc('tblcustomfieldsvalues.id')
         ->get([

@@ -2,7 +2,7 @@
 
 **Live verification:** 2026-08-25, against WHMCS 9.0.6, ISPConfig 3.3.1p1, PHP 8.2 — one live
 production install, running the `build/phase-0-1` line (head `1ed05b3`)
-**Code state (this branch, checked 2026-09-28):** 1012 automated tests pass, static analysis
+**Code state (this branch, checked 2026-09-28):** 1033 automated tests pass, static analysis
 (PHPStan level 6) reports no errors. This branch adds a review-and-fix round on top of
 `build/phase-0-1` and **has not been run live yet**; the live re-verification is pending
 (`docs/LIVE-TEST-PLAN.md`).

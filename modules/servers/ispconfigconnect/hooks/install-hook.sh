@@ -141,6 +141,9 @@ as_writer() {
         (cd / && exec su -s /bin/sh -c "$_cmd" "$writer_user")
         return
     fi
+    if [ "$writer_user" = "$writer_uid" ]; then
+        fail "refusing to change $hook_dir as root - it is owned by uid $writer_uid, which has no account name, so runuser and su cannot switch to it and setpriv is not installed; install setpriv (util-linux), chown the directory to a named user, or run this script as that uid (e.g. sudo -u '#$writer_uid')"
+    fi
     fail "refusing to change $hook_dir as root - it is owned by $writer_user and no privilege-drop tool (runuser/setpriv/su) is available; re-run this script as $writer_user"
 }
 
@@ -206,7 +209,10 @@ fi
 [ -d "$whmcs_root" ] || fail "not a directory: $whmcs_root"
 
 # Absolute from here on, so no derived path can start with a dash.
-whmcs_root=$(CDPATH='' cd -- "$whmcs_root" && pwd)
+# Physical path (-P): every path is later handed to the dropped writer, and
+# a logical path through a root-only symlink (/root/whmcs -> /var/www/whmcs)
+# is one the owner of includes/hooks cannot traverse.
+whmcs_root=$(CDPATH='' cd -P -- "$whmcs_root" && pwd -P)
 
 # Two independent signals that this really is a WHMCS root, so a typo cannot
 # scatter a hook file into an unrelated tree.

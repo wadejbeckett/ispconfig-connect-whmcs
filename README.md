@@ -102,7 +102,7 @@ as Plesk operators manage service plans — selected per WHMCS product from a li
 | **Usage-billing metrics** | Publishes nine metrics — disk, bandwidth, mail and database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones | — | Definitions **confirmed live** (all nine render on the product's Module Settings tab with working *Configure Pricing* links); **values and the resulting invoices are unverified** |
 | **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services. A client that owns no website is listed under a reserved `.invalid` placeholder, so it is reported as an unknown account rather than matched to the wrong service | — | **Proven live** (analyse step). The step that imports or terminates services has deliberately not been run on production |
 | **Servers page: Services count** | The number of ISPConfig clients on the panel — one per WHMCS service — which WHMCS renders itself as *Services: N* | — | **Proven live** |
-| **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's hostname; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) | **Proven live** |
+| **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's name; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) | **Proven live** |
 | **Single sign-on** | A password-free *Log in to ISPConfig* button for customers of **Active** services, using a single-use, short-lived token | The separate **`ispconfig-sso`** project installed on the panel (optional; not shipped here) | **Proven live** with that project installed on the panel; not yet walked through by a real customer |
 | **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — | **Proven live** |
 
@@ -190,7 +190,7 @@ detail (which grant checkbox to tick) and the troubleshooting for it.
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (1012 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (1033 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. (The `ispconfig-sso` project carries
 its own separate harness in its own repository.) The suite and the static analysis are currently run
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5

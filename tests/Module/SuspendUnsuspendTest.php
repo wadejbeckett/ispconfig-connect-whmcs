@@ -122,9 +122,12 @@ final class SuspendUnsuspendTest extends ModuleTestCase
         // ISPConfig treats ANY truthy 'locked' as a func_client_lock trigger
         // ('n' included, client.inc.php client_update) - unlocking a
         // not-locked client would re-enable objects an admin disabled on
-        // purpose, so the module must skip the update entirely.
+        // purpose, so the module must skip the update entirely. With no
+        // recorded suspension it only READS the website (an unrecorded
+        // website-only suspension would have left it off); it is active, so
+        // nothing is written.
         $mark = $this->wireMark();
         self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params()));
-        self::assertSame(['login', 'client_get', 'logout'], $this->methodsSince($mark));
+        self::assertSame(['login', 'client_get', 'sites_web_domain_get', 'logout'], $this->methodsSince($mark));
     }
 }

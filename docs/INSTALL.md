@@ -79,7 +79,9 @@ the comparison with the installed copy) and then makes the change to
 `setpriv` with the directory's group, else `su` — handing it the content on
 stdin. The installed file therefore belongs to that owner, exactly as if they
 had copied it. The file is written to a temp file in the same directory and
-renamed into place, and a symlink at the target is refused. A refusal or
+renamed into place, and a symlink at the target is refused. The WHMCS path is
+resolved physically first, so reaching WHMCS through a symlink in a root-only
+directory (for example `/root/whmcs -> /var/www/whmcs`) works too. A refusal or
 failure exits with status 1 and leaves the previously installed file as it was.
 
 Confirm the result with `--status`, which should print
@@ -187,6 +189,11 @@ success tick.
 Hosting* (or similar), Module Settings tab → Module Name **ISPConfig
 Connect**, then work through the options (their order is fixed):
 
+> **Products only, not product addons.** For a product addon, WHMCS passes the
+> *parent* service's id, so every operation would act on the parent's
+> ISPConfig client. The module refuses every operation on an addon and changes
+> nothing; leave the module of your product addons set to none.
+
 1. **Client Template** — dropdown loaded live from the panel: the ISPConfig
    *master* client template that defines the account's limits. Create your
    templates in ISPConfig first (**Client > Client Templates**, type
@@ -288,7 +295,7 @@ from it — so none of them can damage a customer's hosting.
 | Button | What it does |
 |---|---|
 | **Link to ISPConfig Account** | Links this service to the ISPConfig account named in the service's **Username** field, after checking with the panel that the account exists and is a client account (not a panel administrator login). It also stores the service's **website id** when it can pin one down (below). Refuses if the service already carries a *different* id, or if another live WHMCS service on the same panel is already linked to that client (§6). Naming the account the service is already linked to re-points nothing; it only fills in a missing website id. |
-| **Replace ISPConfig Link** | The same checks, but it deliberately overwrites an existing link; the other ids stored for the old account (website, FTP, mail, DNS, database) are cleared with it. Both the old and the new id go to the module log. Pressed on a service that is already linked to the named account, it too only fills in a missing website id — it never overwrites a stored one. |
+| **Replace ISPConfig Link** | The same checks, but it deliberately overwrites an existing link; the other ids stored for the old account (website, FTP, mail, DNS, database) are cleared with it. Both the old and the new id go to the module log. Pressed on a service that is already linked to the named account, it too only fills in a missing website id — it never overwrites a stored one. On a website-only product, if no website of that client matches the service domain, it says so (and why) instead of reporting success. |
 | **Unlink from ISPConfig** | Clears the stored ids so a wrong link is reversible without hand-editing custom fields. The panel account is untouched. |
 
 **How the website id is found.** Website-only suspension acts on the service's
@@ -393,6 +400,19 @@ ISPConfig's restore bookkeeping or re-enable deliberately disabled objects).
 If you manage extra objects under the same client by hand, prefer the
 website-only mode — it needs the service's website id (§4, item 13).
 
+**Unsuspend reverses what Suspend did, not what the product says now.**
+Suspend records the mode it used in the service property
+`ispconfig_suspended_as` (`client` or `website`; WHMCS creates the admin-only
+field on first use), and Unsuspend reverses that mode and blanks the record.
+So ticking or unticking *Suspend Entire Client*, or moving a suspended service
+to another product, no longer strands it: a client locked under the old
+setting is unlocked, and a website suspended under the old setting is set
+active again. A client lock you set **by hand** in ISPConfig on a service the
+module suspended website-only is left alone. Suspensions made by an earlier
+build carry no record; for those Unsuspend follows the product's current
+setting and, when the product locks the whole client but the client is not
+locked, sets the service's website active if it is off.
+
 ### One WHMCS service per ISPConfig client
 
 The module maps one WHMCS service to one ISPConfig client, and it now
@@ -417,16 +437,22 @@ status). Resolve it by giving each service its own ISPConfig client, or press
 **Unlink from ISPConfig** on the services that should not point there.
 
 **Only the same panel counts.** ISPConfig numbers clients per panel, so client
-#7 on one panel and client #7 on another are different customers. A service on
-a WHMCS server record that is definitely another panel — no Hostname or IP
-Address in common with this service's server record, and at least one of the
-two comparable on both records — is ignored. Anything less certain (no server
-set, a deleted server record, too little to compare) still counts, so the check
-can refuse too much but not too little. **If you keep two WHMCS server records
-for one panel, give both the same Hostname or IP Address.** Each service is
-judged by the client id the module would actually read for it (its current
-product's custom field first, then its newest row), so a value an old product
-left behind does not count.
+#7 on one panel and client #7 on another are different customers. But two
+WHMCS server records can also reach one panel under different addresses (an
+alias host name, a host name on one and the IP on the other, IPv4 and IPv6), so
+addresses alone never decide it. A service on another server record is ignored
+only when **both** hold: its record shares no Hostname or IP Address with this
+service's, **and** the two services store different ISPConfig client usernames
+(the same client on one panel has one username). Anything less certain — no
+server set, a deleted server record, a username missing on either side — still
+counts, so the check refuses rather than risks deleting another customer's
+hosting. The one case it cannot see: the same client renamed in ISPConfig
+between two links, on two server records with different addresses. **If you
+keep two WHMCS server records for one panel, give both the same Hostname or IP
+Address.** Each service is judged by the client id the module would actually
+read for it (its current product's custom field first, then its newest row),
+so a value an old product left behind does not count. The nightly usage import
+reads a service's link by the same rule.
 
 **When the check cannot run** (a WHMCS database error), the module writes a
 `SharedClientGuard` entry to the module log. Terminate and automatic adoption
@@ -832,7 +858,7 @@ The message names the cause:
 | the panel **does not have** `ispconfig-sso` | **A mixed fleet.** WHMCS asks the module whether it supports SSO with **no server in scope**, so the *label* is unavoidably module-global. The module's own client-area panel no longer acts on it blindly — it offers the button only for a service whose **own** server was probed as having the add-on — but any button WHMCS itself renders from that global label is outside the module's reach | Nothing is broken: such a click fails safely with the one customer sentence, and the reason lands in the module log. Install the add-on on that panel too if you want the button to work there |
 | the remote user **may not call** `connect_sso_token_create` | The add-on is installed but not granted to this server's remote user | Tick the grant — §7.5 |
 | `Single sign-on requires an encrypted (https) connection to the panel.` | The panel's own TLS gate. Detection cannot see it, so the button is advertised and the click is what fails | Serve the panel over HTTPS, or declare the reverse proxy (`reverse_proxy_panel_allowed`) — [`ispconfig-sso` README, top box](https://github.com/wadejbeckett/ispconfig-sso#-the-panel-must-be-served-over-https) |
-| single sign-on is **only available while the service is active**, naming its status | The service is Suspended, Cancelled, Terminated or Fraud in WHMCS | Working as intended; the customer sees the one fixed sentence. Reactivate the service if it should have access |
+| single sign-on is **only available while the service is active**, naming its status | The service is Suspended, Cancelled, Terminated or Fraud in WHMCS | Working as intended; the customer sees the one fixed sentence. Reactivate the service if it should have access. The login button on the **admin's** service page is not gated on the status (a locked client is still refused by ISPConfig), and shows the admin the diagnosis |
 | `The client account is locked; single sign-on is refused.` | The ISPConfig client is locked — normally because the service is suspended with *Suspend Entire Client* | Working as intended: a suspension cannot be walked around by clicking the login button |
 | the service has **no stored `ispconfig_client_id`** | An imported or hand-made WHMCS service with no link to a panel client | Nothing to fix in SSO — the service needs provisioning (or its `ispconfig_client_id` property set) first |
 | ISPConfig has **no administrator single sign-on** | You pressed a server-level login button with no service in scope | By design; sign in at the panel URL the message quotes, or use the button on a customer's service |

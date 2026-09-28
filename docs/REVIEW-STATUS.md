@@ -8,11 +8,11 @@ stand, so the work can be picked up later without the original session. It belon
 
 - **Branch:** `claude/zen-franklin-z7oak2`. Its head is this commit: the readiness fixes (up to
   `742be68`), the live test plan (`45847a8`) and these documentation updates. It is
-  `build/phase-0-1` plus the two fix rounds below.
+  `build/phase-0-1` plus the fix rounds below.
 - **PR:** wadejbeckett/ispconfig-connect-whmcs#1, draft. Its description holds the first round's
   "Fixed" table.
-- **Verification (this commit):** 1012 tests and 4217 assertions pass, also in random order.
-  The same suite passes on real PHP 8.2.34 and 8.3.35 builds (there, the two installer tests that
+- **Verification (this commit):** 1033 tests and 4341 assertions pass, also in random order.
+  The same suite passes on real PHP 8.2.34 and 8.3.35 builds (there, the three installer tests that
   need root were skipped). PHPStan 2.2.9 at level 6 reports no errors. `sh -n`, `dash -n` and
   `bash -n` are clean on the hook installer.
 - **Not verified live:** nothing on this branch has been run against a live WHMCS or ISPConfig
@@ -74,6 +74,31 @@ stand, so the work can be picked up later without the original session. It belon
      anchor a row.
    - **Usage import:** `lastupdate` is stamped with PHP's clock, and the property lookup prefers
      the current product's row and never lets a blank hide a live id.
+3b. **Second review round** (five reviewers over the whole change set, each finding
+   independently verified; 13 of 15 findings confirmed, all fixed with regression tests):
+   - **Suspension mode is recorded.** Suspend stores `ispconfig_suspended_as` (`client` or
+     `website`) and Unsuspend reverses that mode, so changing *Suspend Entire Client*, or moving
+     a suspended service to another product, no longer leaves a client locked or a website off
+     behind a "success". A hand-set ISPConfig lock is left alone. Suspensions from earlier
+     builds fall back to the product setting, plus reactivating an inactive website under a
+     whole-client product whose client is not locked.
+   - **Per-panel scope needs two pieces of evidence.** A service on another server record is
+     ignored only when the records share no address AND the stored client usernames differ, so
+     two server records for one panel under different addresses no longer hide a real sharer.
+   - **One link rule everywhere.** The nightly usage import reads a service's link by the same
+     rule as the property reader and the shared-client check, so it no longer bills an old
+     client's usage to a service every other screen calls unlinked.
+   - **Product addons are refused.** WHMCS passes the parent service's id for an addon, so every
+     operation on an addon now refuses before any panel call.
+   - **Servers-page block** goes back under the server name (the row's first cell), where the
+     live-verified build put it; the edit link still identifies the row.
+   - **Transport circuit:** a successful re-login between two failures resets the count.
+   - **Admin SSO:** the login button on the admin's service page is not gated on the service
+     status and shows the admin the diagnosis.
+   - **Replace ISPConfig Link** on a website-only product says why no website id was stored,
+     instead of "success".
+   - **Installer:** the WHMCS path is resolved physically (a symlink in a root-only directory
+     works), and a nameless owner uid without setpriv gets an accurate message.
 4. **Test infrastructure.** `tests/stubs/CapsuleDouble.php` is an in-memory stand-in for
    `WHMCS\Database\Capsule`. It is disabled by default, and tests opt in with
    `Capsule::seed()`. The guards are covered in `tests/Module/OwnershipAndSafetyTest.php` and
@@ -101,11 +126,9 @@ Line numbers below are approximate, because the fixes above moved code.
 | Sites always get unlimited `hd_quota`/`traffic_quota` | `lib/Provision/Mapper.php` (~136-137) | Read the template's `limit_web_quota` and `limit_traffic_quota` after `client_add`, and apply them again on ChangePackage. |
 | A blank or deleted Client Template is not refused | `lib/Support/Params.php`, `Mapper.php` | Refuse `clientTemplateId <= 0`, and `webServerId <= 0` when any stage is on. |
 | Stale client id is checked only by Terminate | entry file: Suspend, Unsuspend, ChangePassword, ChangePackage | Call `ispconfigconnect_clientExists()` and return `ispconfigconnect_staleRefusal()` the same way Terminate does. |
-| Suspension mode is not recorded (F10) | `lib/Provision/Recipe.php` `suspend()`/`unsuspend()` | Store the mode used at Suspend and reverse that mode at Unsuspend, in case "Suspend Entire Client" changes in between. |
 | The monthly bandwidth metric can be erased by suspension or ISPConfig's over-traffic lock (U3) | `lib/Metrics/Provider.php` | This needs the stored period value from WHMCS. Pass it in from the entry file and apply the same month high-water mark as `bwusage`. |
 | The last day of each month's traffic is never read (U4) | `lib/Usage/UsageParser.php` `sumBandwidth()` | Also read the previous month's final day, or document the one-day lag. |
 | The SSO button is unthrottled | entry file `ispconfigconnect_singleSignOn()` | Rate-limit per service. |
-| Admins never see the SSO diagnosis in the UI | entry file `ispconfigconnect_singleSignOn()` | Choose operator detail with `defined('ADMINAREA')`. |
 | The "login not allowed from IP" advice misses the Remote Access checkbox (F7) | entry file `ispconfigconnect_connectionAdvice()` | Name both causes in the advice. |
 | The shared-client guard matches the stored text exactly | entry file `ispconfigconnect_otherServicesLinkedToClient()` | A hand-edited value such as `07` or ` 7` is read as client 7 by the property reader but is not matched by the guard's query. Normalise the value, or compare numerically. |
 | Nothing in WHMCS identifies the deployed build | `whmcs.json` (still `0.2.0`) | Bump the version for each build; until then, identify a deployment by the file digest in `docs/LIVE-TEST-PLAN.md` §0. |

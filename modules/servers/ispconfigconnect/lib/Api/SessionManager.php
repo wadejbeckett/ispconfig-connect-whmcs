@@ -67,8 +67,9 @@ final class SessionManager
     private ?IspconfigException $circuit = null;
 
     /**
-     * TransportExceptions since the panel last ANSWERED - a successful call or
-     * any other IspconfigException, both of which prove the wire works. Only an
+     * TransportExceptions since the panel last ANSWERED - a successful call, a
+     * successful login, or any other IspconfigException, all of which prove
+     * the wire works. Only an
      * unbroken run of transport failures opens the circuit. Instance state,
      * for the same reason as $circuit.
      */
@@ -191,6 +192,12 @@ final class SessionManager
         ) {
             $this->sessionId = $this->client->login($this->username, $this->password);
             $this->sessionIssuedAt = $now;
+            // A login that succeeds is an answer too: the panel is up, so a
+            // transport failure before it and one after it are not "in a row".
+            // Without this, two unreadable tenants next to each other in a
+            // sweep latched the circuit although the re-login between them
+            // proved the wire works, and every later tenant went unread.
+            $this->consecutiveTransportFailures = 0;
         }
 
         return $this->sessionId;

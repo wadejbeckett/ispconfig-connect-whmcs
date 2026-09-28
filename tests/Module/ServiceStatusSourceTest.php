@@ -75,6 +75,20 @@ final class ServiceStatusSourceTest extends ModuleTestCase
         self::assertSame([], $this->methodsSince($mark));
     }
 
+    public function testTheAdminsServicePageLoginIsNotGatedOnTheServiceStatus(): void
+    {
+        // WHMCS runs ServiceSingleSignOn for the admin's service-page button
+        // too. An admin supporting a suspended customer may still log in; the
+        // status gate is for the customer's own button only.
+        $this->fake->installCompanion();
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+
+        $result = ispconfigconnect_ServiceSingleSignOn($this->params(['status' => 'Suspended']), null, true);
+
+        self::assertTrue($result['success'], (string) ($result['errorMsg'] ?? ''));
+        self::assertFalse(ispconfigconnect_ServiceSingleSignOn($this->params(['status' => 'Suspended']), null, false)['success']);
+    }
+
     // ---- the service model as the last resort ------------------------------
 
     public function testTheServiceModelIsReadWhenNoParameterCarriesTheStatus(): void

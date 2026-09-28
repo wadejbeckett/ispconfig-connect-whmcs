@@ -620,6 +620,14 @@ final class HooksTest extends TestCase
             );
         }
 
+        // With core's real row shape the block still lands under the server
+        // name, not in the edit-icon column the link lives in.
+        $whmcs = $results['whmcsMarkup'] ?? null;
+        self::assertIsArray($whmcs);
+        self::assertSame(['server'], $whmcs['blockIn'] ?? null, 'the block goes in the row\'s first (name) cell');
+        self::assertSame('Accounts: 9Services: 9', $whmcs['accounts'] ?? null);
+        self::assertSame('Accounts: 0Services: 9', $whmcs['groupAccounts'] ?? null);
+
         $groupOnly = $results['groupLinkOnly'] ?? null;
         self::assertIsArray($groupOnly);
         self::assertSame(['host'], $groupOnly['blockIn'] ?? null, 'a group link never anchors a row');
@@ -833,6 +841,19 @@ final class HooksTest extends TestCase
             h('td', { id: 'server' }, h('a', { href: href }, 'ISPConfig 1'), h('br', {}), 'panel.example.net'),
             usage('usage')));
         const hostnameRow = () => h('table', {}, h('tr', {}, h('td', { id: 'host' }, 'panel.example.net'), usage('usage')));
+        // Core's real row (configservers.php, WHMCS 7.10 to 8.12): the name
+        // cell carries the makedefault link, and the edit link sits alone in
+        // its own icon column near the end.
+        const whmcsServerRow = () => h('table', {}, h('tr', {},
+            h('td', { id: 'server' }, h('a', { href: '?action=makedefault&id=3&token=abc' }, 'ISPConfig 1')),
+            h('td', {}, '203.0.113.10'),
+            h('td', {}, '9/200'),
+            usage('usage'),
+            h('td', {}, ''),
+            h('td', {}, ''),
+            h('td', {}, h('a', { href: '?action=toggle&id=3' }, 'disable')),
+            h('td', { id: 'edit' }, h('a', { href: '?action=manage&id=3' }, h('img', { src: 'images/edit.gif' }))),
+            h('td', {}, h('a', { href: '#' }, 'delete'))));
 
         process.stdout.write(JSON.stringify({
             relative: render(PAGE,
@@ -847,6 +868,7 @@ final class HooksTest extends TestCase
             servedUnderAnotherUrl: render('https://billing.example.com/admin/servers',
                 groupRow('?action=managegroup&id=3'), serverRow('?action=manage&id=3')),
             groupLinkOnly: render(PAGE, groupRow('?action=managegroup&id=3'), hostnameRow()),
+            whmcsMarkup: render(PAGE, whmcsServerRow(), groupRow('?action=managegroup&id=3')),
         }));
         JS;
 
@@ -1161,6 +1183,40 @@ final class HooksTest extends TestCase
 
         // The removal is the owner's too, and needs nothing from the checkout.
         [$code, $output] = $this->runInstaller($checkout . '/install-hook.sh', ['--uninstall', $box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertFileDoesNotExist($installed);
+    }
+
+    /**
+     * Root often reaches WHMCS through a convenience symlink in a root-only
+     * directory (/root/whmcs -> /var/www/whmcs). The dropped writer cannot
+     * traverse that path, so the installer must hand it the PHYSICAL one.
+     *
+     * Needs root and a "nobody" account; skipped elsewhere.
+     */
+    public function testARootInstallThroughASymlinkInARootOnlyDirectoryWritesThroughThePhysicalPath(): void
+    {
+        $nobody = $this->requireRootAndNobody();
+        if ($this->which('runuser') === null && $this->which('setpriv') === null && $this->which('su') === null) {
+            self::markTestSkipped('no privilege-drop tool (runuser/setpriv/su) on this host');
+        }
+
+        $box = $this->fakeWhmcs();
+        $this->requireWorldReachable($box['hooks']);
+        $checkout = $this->checkout($box['base'] . '/checkout');
+        self::assertTrue(chown($box['hooks'], $nobody['uid']));
+        self::assertTrue(chgrp($box['hooks'], $nobody['gid']));
+        self::assertTrue(mkdir($box['base'] . '/rootonly', 0700));
+        self::assertTrue(symlink($box['root'], $box['base'] . '/rootonly/whmcs'));
+
+        [$code, $output] = $this->runInstaller($checkout . '/install-hook.sh', [$box['base'] . '/rootonly/whmcs']);
+
+        self::assertSame(0, $code, $output);
+        $installed = $box['hooks'] . '/ispconfigconnect.php';
+        self::assertFileEquals(self::HOOKS_DIR . '/ispconfigconnect.php', $installed);
+        self::assertSame($nobody['uid'], fileowner($installed));
+
+        [$code, $output] = $this->runInstaller($checkout . '/install-hook.sh', ['--uninstall', $box['base'] . '/rootonly/whmcs']);
         self::assertSame(0, $code, $output);
         self::assertFileDoesNotExist($installed);
     }

@@ -663,6 +663,17 @@ final class FakeIspconfigServer implements HttpTransportInterface
         return $this->clientTmpData[$clientId] ?? [];
     }
 
+    /**
+     * An admin ticking "Locked" on the client in the ISPConfig UI: the client
+     * form saves locked='y' and runs func_client_lock('y'), as client_update
+     * does - the module is not involved.
+     */
+    public function lockClient(int $clientId): void
+    {
+        $this->clients[$clientId]['locked'] = 'y';
+        $this->funcClientLock($clientId, 'y');
+    }
+
     public function activeSessionCount(): int
     {
         $count = 0;
