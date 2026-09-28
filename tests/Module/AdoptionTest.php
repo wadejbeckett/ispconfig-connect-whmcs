@@ -6,6 +6,7 @@ namespace Ispconfigconnect\Tests\Module;
 
 use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
 use PHPUnit\Framework\Attributes\DataProvider;
+use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
 
 /**
@@ -54,6 +55,14 @@ final class AdoptionTest extends ModuleTestCase
         $this->writes = [];
         $this->properties = [];
         $this->resolverCalls = [];
+
+        // A WHMCS database that answers, with no other service in it. Adoption
+        // and Terminate both consult the one-service-per-client guard, and a
+        // guard that cannot run (the double's disabled state) now makes both
+        // refuse instead of reading as "no conflict" - which is exactly what
+        // OwnershipAndSafetyTest pins. These tests are about everything else,
+        // so they give the guard a database to find nobody in.
+        Capsule::enable();
     }
 
     // ---- seams -----------------------------------------------------------

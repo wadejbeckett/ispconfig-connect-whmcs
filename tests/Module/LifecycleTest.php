@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ispconfigconnect\Tests\Module;
 
 use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
+use WHMCS\Database\Capsule;
 
 /**
  * End-to-end lifecycle over the full real stack (entry file -> Factory ->
@@ -19,6 +20,12 @@ final class LifecycleTest extends ModuleTestCase
 
     public function testFullLifecycle(): void
     {
+        // A WHMCS database that answers and holds no other service: Terminate
+        // refuses when the one-service-per-client guard cannot run at all
+        // (OwnershipAndSafetyTest pins that), and this run is about the happy
+        // path, where the guard runs and finds nobody.
+        Capsule::enable();
+
         // -- create (every optional stage enabled) --------------------------
         $result = ispconfigconnect_CreateAccount($this->params([
             'configoption5' => 'on',  // Create Mail Domain

@@ -97,6 +97,10 @@ final class MetaDataAndConfigTest extends ModuleTestCase
         foreach (['websites', 'mail', 'FTP', 'databases', 'website-only'] as $fragment) {
             self::assertStringContainsStringIgnoringCase($fragment, $description);
         }
+        // ...and what website-only needs: without the website id it refuses,
+        // and it never widens to the whole-client lock behind the admin's back.
+        self::assertStringContainsString('website id', $description);
+        self::assertStringContainsString('never falls back to locking the whole client', $description);
 
         self::assertSame('text', $options['DNS Template ID']['Type']);
         self::assertSame('1', $options['DNS Template ID']['Default']);
