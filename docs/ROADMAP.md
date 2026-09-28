@@ -1,9 +1,11 @@
 # Roadmap and current state — ISPConfig Connect for WHMCS
 
-**As at:** 2026-08-25
-**Against:** WHMCS 9.0.6, ISPConfig 3.3.1p1, PHP 8.2 — one live production install
-**Code state (checked while writing this page):** 912 automated tests pass, static analysis
-(PHPStan level 6) reports no errors.
+**Live verification:** 2026-08-25, against WHMCS 9.0.6, ISPConfig 3.3.1p1, PHP 8.2 — one live
+production install, running the `build/phase-0-1` line (head `1ed05b3`)
+**Code state (this branch, checked 2026-09-28):** 1012 automated tests pass, static analysis
+(PHPStan level 6) reports no errors. This branch adds a review-and-fix round on top of
+`build/phase-0-1` and **has not been run live yet**; the live re-verification is pending
+(`docs/LIVE-TEST-PLAN.md`).
 
 This is the honest answer to "where does the plan stand?". It is written to be readable without
 knowing the code. Three further documents sit behind it: the original scope and design
@@ -39,11 +41,20 @@ change and terminate real hosting accounts, and after the short list in section 
 thing to sell fixed-price hosting through — but usage-based billing should stay switched off until
 section 3 is closed out, and we are not yet in a state to publish this to the world.
 
-**Added since that assessment: adoption of pre-existing accounts.** The module used to recognise a
-service only if it had created it, which made every migrated customer permanently unmanaged. It now
-links such services itself — the admin's whole job is to point a service at the ISPConfig server and
-give it an ISPConfig product (`docs/INSTALL.md` §5). The wiring and the admin surfaces are built and
-tested; the matching itself lives in `lib/Adopt` and is tracked separately in section 3.
+**Since that assessment: a review-and-fix round.** Eight independent reviews and a readiness review
+of this branch found and fixed defects in paths that section 2 lists as proven — suspension,
+package changes, termination, the link buttons, single sign-on gating, the hook installer, the
+servers-page script and the API transport. The fixes are unit-tested but not yet live-tested, so
+section 2 describes the `build/phase-0-1` build, and the rows marked *changed since* need the live
+re-verification before they count as proven for this branch (section 3).
+
+**Also added since that assessment: linking pre-existing accounts.** The module used to recognise a
+service only if it had created it, which made every migrated customer permanently unmanaged. An
+admin can now link such a service to its panel account by name with one button, which also stores
+the service's website id when the domain pins one down (`docs/INSTALL.md` §5). *Automatic* adoption
+— matching by domain with no admin action — is wired in and its safety rules are tested, but the
+matcher itself (`lib/Adopt`) is not in the tree, so in this build every link is made by hand
+(section 4.3).
 
 ---
 
@@ -51,19 +62,20 @@ tested; the matching itself lives in `lib/Adopt` and is tracked separately in se
 
 Each row states how it was verified. Section numbers of the form **§1.5** or **§6.2**, here and
 throughout this page, refer to `docs/IMPLEMENTATION-NOTES.md`, where the evidence for that finding
-is written up in full.
+is written up in full. Everything here was verified on the `build/phase-0-1` build; a row marked
+*changed since* was altered by this branch's review round and must be re-run live.
 
 | Capability | What it does | How it was verified |
 |---|---|---|
 | **Create account** | Creates the ISPConfig client and, per product settings, the website, FTP user, mail domain, DNS zone and database. All-or-nothing: a partial failure rolls the whole thing back rather than leaving a half-built account. | Run end to end against the production panel; the accounts appeared, with the ids stored back onto the WHMCS service. Two rounds of live testing found and fixed real-world gaps the panel only reveals when you ask it (extra mandatory fields on `client_add`; missing-template resilience) — commits `2efb402`, `401abb9`. |
-| **Suspend / unsuspend** | Locks or unlocks the customer's panel account and its services (or just the website, if the product is configured that way). | Run live, both directions, with the panel state checked afterwards. The safety rule that makes this non-destructive — never lock an already-locked client, or unlocking later restores nothing — is documented at §1.5 and was designed from the panel's own source. |
-| **Change password** | Rotates the panel password and the FTP and database passwords the module itself created, together. | Run live. |
-| **Change package** | Moves the customer onto a different ISPConfig plan template in a single atomic update. | Run live. |
-| **Terminate** | Deletes only *this* service's ISPConfig client — never a customer's other accounts. | Run live. This is the defect that sank the abandoned predecessor module; the one-service-to-one-client design (§3.3 of the design doc) is what prevents it. |
-| **Test Connection / Verify Permissions** | Tells the operator whether WHMCS can reach the panel, and names any missing permission tick-box by name. | Run live, including against a deliberately wrong TLS setup, which produced targeted advice rather than a generic error (commit `ae01f6f`). |
+| **Suspend / unsuspend** | Locks or unlocks the customer's panel account and its services (or just the website, if the product is configured that way). | Run live, both directions, with the panel state checked afterwards. The safety rule that makes this non-destructive — never lock an already-locked client, or unlocking later restores nothing — is documented at §1.5 and was designed from the panel's own source. *Changed since:* website-only mode now needs the service's stored website id and refuses without one, and entire-client mode refuses a client another service shares. |
+| **Change password** | Rotates the panel password and the FTP and database passwords the module itself created, together. | Run live. *Changed since:* refuses a client another service shares. |
+| **Change package** | Moves the customer onto a different ISPConfig plan template in a single atomic update. Refused while the client is locked by a suspension (unsuspend first); a suspended service is suspended again straight afterwards, in the new product's mode. | Run live. *Changed since:* the locked-client refusal and the re-suspension are new. |
+| **Terminate** | Deletes only *this* service's ISPConfig client — never a customer's other accounts. | Run live. This is the defect that sank the abandoned predecessor module; the one-service-to-one-client design (§3.3 of the design doc) is what prevents it. *Changed since:* it now also refuses a client that another live service on the same panel is linked to, and refuses when that check cannot run. |
+| **Test Connection / Verify Permissions** | Tells the operator whether WHMCS can reach the panel, and names any missing permission tick-box by name. | Run live, including against a deliberately wrong TLS setup, which produced targeted advice rather than a generic error (commit `ae01f6f`). *Changed since:* only a real panel answer now counts as a grant being present, and the server Hostname must be a bare host name or IP. |
 | **Sync Accounts** | Lists every client on the panel so WHMCS can reconcile them against its own records. | Run live: WHMCS listed all five panel accounts and matched one to two existing services. Establishing this cost real effort — WHMCS silently rejects any identifier field except `domain` (§5.2, §6.6), and it validates nothing else, so uniqueness is entirely the module's job. |
-| **Single sign-on** | A password-free *Log in to ISPConfig* button, using a single-use, short-lived token. No password is ever stored or replayed. | The separate `ispconfig-sso` project is installed on the production panel and sign-on works. A live security pass recorded 20 of 20 checks passing (run by the session that owns the production install). That project keeps its own harness, in its own repository. |
-| **Servers page panel health** | Under each ISPConfig server on WHMCS's Servers page: panel version, pending job count, client count, node count, sign-on availability, and the reason when a probe fails. It also corrects WHMCS's own *Accounts* figure on our rows, which would otherwise read `0` forever (see §5). | Rendered live on the production Servers page. Getting there produced the five settled findings in §6 — including proof that WHMCS will not let a third-party module use its own styled block, and that WHMCS does not load a server module's own hook file at all. |
+| **Single sign-on** | A password-free *Log in to ISPConfig* button, using a single-use, short-lived token. No password is ever stored or replayed. | The separate `ispconfig-sso` project is installed on the production panel and sign-on works. A live security pass recorded 20 of 20 checks passing (run by the session that owns the production install). That project keeps its own harness, in its own repository. *Changed since:* offered only to Active services, reading the status WHMCS actually passes (`$params['status']`). |
+| **Servers page panel health** | Under each ISPConfig server on WHMCS's Servers page: panel version, pending job count, client count, node count, sign-on availability, and the reason when a probe fails. It also corrects WHMCS's own *Accounts* figure on our rows, which would otherwise read `0` forever (see §5). | Rendered live on the production Servers page. Getting there produced the five settled findings in §6 — including proof that WHMCS will not let a third-party module use its own styled block, and that WHMCS does not load a server module's own hook file at all. *Changed since:* rows are matched by their resolved edit link, the *Accounts* cell is rewritten only on a row matched that way, and the hook installer now writes as the owner of `includes/hooks`. |
 | **Usage metric definitions** | Nine billable measures — disk, bandwidth, mailbox storage, database storage, and counts of websites, mailboxes, databases, FTP users and DNS zones — offered to WHMCS's usage-billing feature. | Confirmed live: WHMCS's product *Module Settings* tab renders all nine, each with a working *Configure Pricing* link. That proves the definitions reach WHMCS correctly. It does **not** prove the numbers are right — see section 3. |
 | **Security posture** | Least-privilege API user rather than the panel admin account; TLS checking on by default; no credential ever rendered into a page; every API call logged with passwords, session ids and sign-on tokens scrubbed. | Enforced by dedicated tests in the suite, and the least-privilege user is what the production install actually authenticates as. |
 
@@ -82,7 +94,8 @@ in a billing module "the tests pass" is not the same claim as "the number is rig
 | **Usage-billing arithmetic** | That a metrics collection stores readings against the right service, and that a full billing cycle turns those readings into the invoice we expect. | Definitions are proven registered; readings and pricing are not. This is the only part of the module that can generate a wrong charge. | Incorrect invoices — the most expensive class of bug in a billing system. |
 | **Single sign-on as a real customer experiences it** | An actual end customer clicking the button in the client area (as opposed to admin-side testing), and the refusal cases as they appear to that customer. | There is one operator step the design forces on us: after installing `ispconfig-sso` on the panel, the operator must open *Configuration > Servers* once, or the button never appears. That path has not been walked as a customer. | A support ticket on the first day of real use. |
 | **The Servers-page hook across an upgrade** | That re-running the install script after a module update replaces the hook file correctly on a live install. | The hook file must be copied into WHMCS's own `includes/hooks/` directory, because WHMCS will not load it from inside the module (§6.1). Upgrades therefore need a repeat step. | The health block silently disappears after an update. |
-| **Adoption of pre-existing accounts** | That a real migrated service — WHMCS service pointed at the ISPConfig server, ISPConfig account already there — is linked by the nightly sweep without anyone touching it, and that the module log's `adopted` list names the right account for the right service. The refusals and the manual buttons are unit-tested; the end-to-end path on real data is not. | This is the feature that decides whether migrating a customer is a two-field change or a per-service manual chore, and a wrong link would point suspend, terminate and usage at somebody else's hosting. Every safety rule is written to make a wrong link *impossible rather than unlikely* (link only on an exact single match, never inside a destructive action, never overwrite a stored id, never re-point a stale one), so the live check is about whether it links *at all* on real data as much as whether it links correctly. | Services that stay unmanaged, and the manual workaround comes back. A *wrong* link is the guarded-against case, not the expected one. |
+| **This branch's review fixes** | Every path the review round changed, on a real WHMCS and panel: single sign-on refused for a Suspended service; website-only Suspend on a created and on a linked service; Change Package on an active, a locked and a website-only suspended client; Link / Replace storing the website id and refusing a shared client; the shared-client check ignoring a second panel; the hook installer run as root from a private checkout; the *Accounts* cell rewrite; the nightly import surviving one transport failure. `docs/LIVE-TEST-PLAN.md` is the step-by-step plan. | The suite proves these against a fake panel and an in-memory stand-in for the WHMCS database. The fixes exist because the earlier, live-proven code got several of them wrong (the SSO status key, for one, never matched what WHMCS passes), so the offline evidence is not enough on its own. | A fixed path that still misbehaves on the real system — most expensively in suspension or package changes. |
+| **Linking pre-existing accounts** | That *Link to ISPConfig Account* links a real migrated service to the right account, stores the right website id from the domain match, and that its refusals read correctly to an admin. *Automatic* adoption is not in this build at all: the matcher (`lib/Adopt`) is not in the tree (section 4.3), so the nightly sweep and the *Module* tab report unlinked services rather than link them. The refusals and the buttons are unit-tested; the path on real data is not. | This is the feature that decides whether migrating a customer is a quick per-service step or a chore, and a wrong link would point suspend, terminate and usage at somebody else's hosting. Every safety rule is written to make a wrong link *impossible rather than unlikely* (link only a named, existing client account, never inside a destructive action, never over a stored id without *Replace*, never a client another service holds, never re-point a stale one). | Services that stay unmanaged until someone links them. A *wrong* link is the guarded-against case, not the expected one. |
 | **What fills WHMCS's own "Accounts" figure** | Whether the second half of Sync Accounts (the step that imports and terminates services) is what populates that count. | Deliberately not tested: that step mutates real billing records, and running it out of curiosity on a production install is not a trade worth making (§6.3). | None. The module no longer depends on the answer — it puts its own freshly probed client count in that cell instead. Worth settling one day on a throwaway WHMCS. |
 
 ---
@@ -98,7 +111,7 @@ in a billing module "the tests pass" is not the same claim as "the number is rig
 | **Keep DNS zone on terminate** | A product toggle to preserve a customer's DNS records when their service ends. cPanel-parity nicety; the *decision* about our own default matters sooner than the code (section 6). |
 | **Contact sync** | Pushing WHMCS contact edits through to the panel automatically. |
 | **Marketplace listing and launch** | Free to list, content-only moderation, one to three weeks. Includes coordinating with the ISPConfig project first, which is both courtesy and our best marketing channel. |
-| **Docs site** | Currently the documentation is the three files in `docs/`. |
+| **Docs site** | Currently the documentation is the Markdown files in `docs/`. |
 
 ### 4.2 Design Phase 4 — customer-facing management screens (open-ended, demand-driven)
 
@@ -141,7 +154,10 @@ These are settled. They are recorded here so nobody spends a day rediscovering t
 
 **Technical constraints we cannot change**
 
-- **One WHMCS service = one ISPConfig client.** Deliberate: it is what makes termination safe.
+- **One WHMCS service = one ISPConfig client.** Deliberate: it is what makes termination safe. The
+  module enforces it: linking and the whole-client operations refuse a client another live service on
+  the same panel is linked to (entire-client Unsuspend only while that other service is itself
+  suspended) — `docs/INSTALL.md` §6.
 - **Plans live in ISPConfig**, as client templates, chosen per WHMCS product from a live dropdown —
   the same shape Plesk operators already know.
 - **No administrator auto-login, by design.** A customer sign-on token is safe; an *admin* token would
@@ -183,15 +199,16 @@ not commitments.
 
 | # | Step | Why now | Est. |
 |---|---|---|---|
+| 0 | **Run the live test plan for this branch** (`docs/LIVE-TEST-PLAN.md`) on a test WHMCS and a test panel, then upgrade production following `docs/INSTALL.md` §2, *Upgrading from an earlier build*. | Section 2's live proof is of the earlier build; this branch changed several of those paths, and nothing of it has run live yet. | 1 day |
 | 1 | **Check the usage numbers against one real service.** Compare what the module reports for disk, bandwidth, mailbox and database usage against what the panel shows for the same account, including an unlimited case and a limited one. | The highest-value item on the page: it is the shortest path to ruling out a wrong number appearing in front of a customer. | 1 day |
 | 2 | **Watch one real nightly run.** Let WHMCS's own scheduler trigger the import; then read the module log for `updated` / `skipped`, and confirm no lockout. | Proves the design that exists specifically to avoid locking ourselves out of our own panel. | 0.5 day |
-| 3 | **Rehearse one order end to end** on a dummy client: cart → paid invoice → account provisioned → welcome email → suspend → unsuspend → terminate. | The individual steps are proven; the sequence WHMCS drives them in is not. Also the only way to check the welcome email actually says something useful. | 0.5 day |
+| 3 | **Rehearse one order end to end** on a dummy client: cart → paid invoice → account provisioned → welcome email → suspend → unsuspend → terminate. | The individual steps are proven (step 0 re-proves them for this branch); the sequence WHMCS drives them in is not. Also the only way to check the welcome email actually says something useful. | 0.5 day |
 | 4 | **Walk single sign-on as a customer**, from the client area, on an account that is not an administrator — including the "open Configuration > Servers once after installing `ispconfig-sso`" step. | The first customer to click that button should not be the test. | 0.5 day |
-| 4a | **Migrate one real customer and watch the module link it.** Point one already-migrated service at the ISPConfig server and an ISPConfig product, change nothing else, and check the *Module* tab's **ISPConfig Link** row and the next `UsageUpdate` log entry. | This is the feature the owner is actually blocked on — every Plesk migration is unmanaged until it works. One service proves it before the rest are moved. | 0.5 day |
+| 4a | **Migrate one real customer and link it.** Point one already-migrated service at the ISPConfig server and an ISPConfig product, set its Username to the ISPConfig account name, press *Link to ISPConfig Account*, and check the *Module* tab's **ISPConfig Link** and **ISPConfig Domain ID** rows. | This is the feature the owner is actually blocked on — every Plesk migration is unmanaged until it is linked. One service proves it before the rest are moved. | 0.5 day |
 | 5 | **Decide the terminate policy** — specifically whether a terminated customer's DNS zone is kept. Document the decision even though the toggle itself is Phase 3. | Cheaper to decide before the first real termination than after. | 0.5 day |
 | 6 | **Only then**: enable usage-based billing, on one product, and let it run a full billing cycle before selling it. Compare the resulting invoice against the panel by hand. | The arithmetic is the last unproven money path. A cycle takes calendar time, so start it early even if nothing else waits on it. | 1 day + one billing cycle |
 
-Steps 1–5 are roughly **three days of work**, and after them we can sell fixed-price hosting through
+Steps 0–5 are roughly **four days of work**, and after them we can sell fixed-price hosting through
 this module with a clear conscience. Step 6 gates usage-based billing only.
 
 ### Before public release
@@ -200,8 +217,8 @@ this module with a clear conscience. Step 6 gates usage-based billing only.
 |---|---|---|---|
 | 7 | **Continuous integration**: run the test suite and static analysis automatically on every change. | Right now "the tests pass" depends on somebody remembering to run them. A public module needs a gate that does not. | 1–2 days |
 | 8 | **A WHMCS developer licence and a second instance.** | Unblocks WHMCS 8.13 compatibility testing, and lets us safely run the destructive half of Sync Accounts to settle the last open question — neither of which we will ever do on production. | 0.5 day + cost |
-| 9 | **Release engineering**: real version number in `whmcs.json`, accurate feature list, changelog, tagged build, and a documented upgrade path (including re-copying the hook file). | This is what an installer downloads. It is currently `0.2.0` with no changelog. | 1 day |
-| 10 | **Security and silent-failure review pass** before v1.0.0, as the design's review gates require. | This module holds panel credentials and writes to a live billing system. It should get the same bar the rest of the portfolio got — and reviewing is a separate pass from authoring. | 1–2 days |
+| 9 | **Release engineering**: real version number in `whmcs.json`, accurate feature list, changelog, tagged build, and an upgrade path (a first version is `docs/INSTALL.md` §2, *Upgrading from an earlier build*). | This is what an installer downloads. It is currently `0.2.0` with no changelog, so two builds cannot be told apart by version. | 1 day |
+| 10 | **Security and silent-failure review pass** before v1.0.0, as the design's review gates require. A first multi-reviewer pass, security included, has been done on this branch (`docs/REVIEW-STATUS.md`). | This module holds panel credentials and writes to a live billing system. It should get the same bar the rest of the portfolio got — and reviewing is a separate pass from authoring. | 1–2 days |
 | 11 | **Resolve the two unused internal classes** — keep them with a test that pins them to the live hook file's field list, or delete them. | Small, but it is the one thing in the tree a reviewer will legitimately question. | 0.5 day |
 | 12 | **Coordinate with the ISPConfig project, then list.** Contact upstream, agree naming and framing, submit the marketplace listing, and settle the free-versus-paid listing shape. | Moderation takes one to three weeks, so submit early. The upstream conversation is a decision for the owner, not a task for a build agent. | 1 day + lead time |
 | 13 | **Optionally, the throwaway-panel test job**: CI that installs a real ISPConfig and runs the whole lifecycle against it. | This is what would turn section 3 from "unproven" into "proven continuously", and would catch ISPConfig version drift before customers do. | 2–3 days |

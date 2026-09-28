@@ -34,7 +34,9 @@ php vendor/bin/phpunit --testsuite module  # the WHMCS entry points, end to end
 php vendor/bin/phpunit --filter UsageParser
 ```
 
-Last full run (2026-09-24): **912 tests, 3572 assertions, OK**.
+Last full run (2026-09-28, this branch): **1012 tests, 4217 assertions, OK**. The same suite also
+passes on real PHP 8.2.34 and 8.3.35 builds (there, the two installer tests that need root were
+skipped).
 
 Two suites, deliberately separated:
 
@@ -116,7 +118,10 @@ php vendor/bin/phpstan analyse -c phpstan.neon.dist --no-progress --memory-limit
 
 Level 6 over `modules/servers/ispconfigconnect` and `tests`, with
 `tests/stubs/whmcs-functions.php` as a bootstrap file so WHMCS's global functions resolve. Last run
-(2026-08-25): **no errors**.
+(2026-09-28, this branch, PHPStan 2.2.9): **no errors**.
+
+The hook installer is a POSIX `sh` script; check its syntax with `sh -n`, `dash -n` and `bash -n`
+(all clean on this branch).
 
 ---
 
@@ -173,7 +178,9 @@ Active, printing how to reset.
 Terminate is a separate script on purpose: the main harness leaves the account **live** so a human
 can inspect it in both UIs before it is torn down.
 
-Verified end to end on WHMCS 9.0.6 + ISPConfig 3.3.1p1.
+Verified end to end on WHMCS 9.0.6 + ISPConfig 3.3.1p1 against the earlier `build/phase-0-1` build.
+This branch changed Suspend/Unsuspend, Change Password, Change Package and Terminate, and has not
+been run through this harness yet — see §7.
 
 ### 5.2 Sync harness
 
@@ -431,12 +438,19 @@ the module refuses that case rather than over-bill, and a harness should flag it
 
 ## 7. What is still unproven
 
-Verified live on WHMCS 9.0.6 + ISPConfig 3.3.1p1: provisioning lifecycle, suspend/unsuspend,
-password rotation, package change, terminate, Sync Accounts, single sign-on (20/20 security checks),
-the servers-page panel block, and the metric **definitions** reaching WHMCS.
+Verified live on WHMCS 9.0.6 + ISPConfig 3.3.1p1, on the earlier `build/phase-0-1` build:
+provisioning lifecycle, suspend/unsuspend, password rotation, package change, terminate, Sync
+Accounts, single sign-on (20/20 security checks), the servers-page panel block, and the metric
+**definitions** reaching WHMCS.
 
 Not yet proven, in rough order of risk:
 
+- **This branch, live.** Its review fixes changed several of the paths above — the single sign-on
+  status gate, website-only suspension (now refused without a stored website id), Change Package
+  (refused on a locked client, re-suspends a suspended service), the one-service-per-client refusals,
+  the link buttons' website-id lookup, the hook installer, the servers-page row matching and the
+  transport circuit. None of it has run on a real WHMCS and panel yet; `docs/LIVE-TEST-PLAN.md` is
+  the plan that closes this.
 - **Invoicing.** The metrics harness proves the values and the units. It does not prove that WHMCS
   turns a collected metric into the right line on the right invoice — that needs a billing cycle to
   actually run.

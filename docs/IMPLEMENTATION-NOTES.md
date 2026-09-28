@@ -68,7 +68,8 @@ The full taxonomy is already implemented in `lib/Api/Exception/` — use it, don
 the whole batch, proactively re-login if the session is older than **25 minutes**, retry **once** on
 `SessionExpiredException` with a fresh login, **never** call again after `LockoutException` (circuit
 stays open for the rest of the request), logout in a `finally`-equivalent path (best-effort, swallow
-transport errors on logout only).
+transport errors on logout only). §2.3 records the circuit as built, which also latches a rejected
+login and two consecutive transport failures.
 
 ### 1.5 Function signatures the module calls (all verified in `remote.d/*.inc.php`)
 
@@ -135,8 +136,9 @@ All other called functions check their own name.
 
 **`get_function_list` returns the full registered method list, not per-user grants** — a granted-vs-not
 check can only be made by calling a function and catching `PermissionDeniedException`. TestConnection
-therefore login-checks + read-probes only (`server_get_all`, `client_templates_get_all`,
-`monitor_jobqueue_count`); the full required grant list ships as documentation.
+therefore login-checks + read-probes only (`Permissions::readProbes()`: `server_get_all`,
+`client_templates_get_all`, `monitor_jobqueue_count` and ten more reads); the write grants cannot be
+probed and ship as documentation.
 
 When exact `$params` field requirements matter, read the form definitions in the ISPConfig source
 (`interface/web/<module>/form/*.tform.php`) rather than guessing. Validation failures surface as
@@ -158,7 +160,12 @@ When exact `$params` field requirements matter, read the form definitions in the
 
 Namespace root `WHMCS\Module\Server\Ispconfigconnect` (autoloaded by WHMCS from
 `modules/servers/ispconfigconnect/lib/`; mirrored in composer autoload for tests).
-PHP ≥ 8.2, `declare(strict_types=1)` everywhere, PSR-12, no runtime dependencies outside PHP + ext-curl.
+PHP ≥ 8.2, `declare(strict_types=1)` everywhere, PSR-12, no runtime dependencies outside PHP + ext-curl
+and ext-ctype (standard; `ctype_digit` is called unguarded). ext-intl is optional and guarded
+(`function_exists('idn_to_ascii')`): with it, IDN server hosts and customer domains are converted to
+punycode; without it, an IDN server host is refused with advice to enter the `xn--` form, and an IDN
+customer domain is passed through lower-cased. ext-mbstring is optional too: `RestClient`'s body
+excerpt uses `mb_scrub`/`mb_strcut` when both exist and a byte-safe fallback otherwise.
 Never `echo`/`print` from lib code. No WHMCS function calls from lib code (only the entry file and
 Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-connect-core.
 
@@ -218,9 +225,19 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
   — `$clock` returns int unix time (default `time()`); injectable for TTL tests.
 - `call(string $method, array $params): mixed` — ensures a session (login on first use or when older
   than 1500 s), merges `['session_id' => $sid]` **under** the given params (caller never passes
-  session_id), one retry on `SessionExpiredException` (fresh login), zero retries on anything else,
-  permanent open-circuit after `LockoutException` (subsequent calls rethrow a stored LockoutException
-  without any network I/O).
+  session_id), one retry on `SessionExpiredException` (fresh login), zero retries on anything else.
+- **The circuit.** Once open, every further `call()` rethrows the stored exception without any
+  network I/O, for the life of that instance (instance state, never static — every entry point
+  builds a fresh manager). It opens:
+  - at once on `LockoutException` (any further request extends the lockout window);
+  - at once on `LoginFailedException` (wrong credentials or an IP-allowlist rejection cannot turn
+    valid mid-batch, and each retry spends the 10-failures budget);
+  - on `TransportException` only after **two consecutive** ones. Any panel answer — a success or any
+    other `IspconfigException` — resets the count. One transient timeout or proxy 5xx therefore
+    costs one call, not the rest of a usage/metrics sweep that shares the manager across a server's
+    services; two in a row stop the rest of that server's sweep, each remaining service failing
+    with the stored exception. Every transport failure also forgets the session id, so `close()`
+    never spends a second timeout on a logout over a dead link.
 - `close(): void` — best-effort logout, swallow only transport-level errors, clear state. Safe to call
   twice or before any call.
 - Never logs, never echoes; holds credentials in private props.
@@ -233,7 +250,8 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
   encode the mapping. Include `get_function_list`, `login`/`logout` need no grant.
 - `grantFor(string $function): string` — checkPerm name for a callable function.
 - `readProbes(): array<string, array>` — the safe read-only calls TestConnection makes:
-  `server_get_all` (no extra params), `client_templates_get_all`, `monitor_jobqueue_count`.
+  `server_get_all` (no extra params), `client_templates_get_all`, `monitor_jobqueue_count`, plus (as
+  built) ten more reads covering the client, sites, FTP, DNS and quota grants — 13 in all.
 - Unit tests assert the alias mapping against a fixture extracted from source: grep `checkPerm` in
   the ISPConfig tree and hard-code the expected function → grant pairs in the test, so a change in
   either direction fails loudly.
@@ -243,7 +261,10 @@ Support\Logging touch WHMCS APIs) — lib must stay extractable into ispconfig-c
 Turns the raw WHMCS `$params` array into typed objects. WHMCS provisioning `$params` reference:
 https://developers.whmcs.com/provisioning-modules/module-parameters/
 
-- `serverConfig(array $params): ServerConfig` — `serverhostname` (fall back `serverip`), `serverport`
+- `serverConfig(array $params): ServerConfig` — `serverhostname` (fall back `serverip`; `ServerConfig`
+  accepts only a bare DNS name, IPv4 or IPv6 literal — scheme, port, path, userinfo or whitespace
+  throw `InvalidArgumentException` naming the problem, and an IDN name is converted to punycode with
+  ext-intl and re-validated), `serverport`
   (default 8080), `serversecure` truthy → secure, `serverusername`, `serverpassword`,
   `serveraccesshash` trim → empty = null; literal `insecure` sentinel is NOT a thing — TLS opt-out is
   the dedicated WHMCS "Disable TLS verification" checkbox we DON'T have, so: Access Hash starting with
@@ -309,7 +330,11 @@ Pure functions (static or instance, no I/O): WHMCS data → ISPConfig call param
 - `suspend` — entire-client mode: `client_get` first (skip when already locked — tmp_data
   poisoning, §1.6), then protective `client_update` with `locked='y'`, `_ispconfig_pw_crypted=1`,
   and the current bare addon ids in `template_additional`; website-only mode: no `client_update`
-  at all, just `sites_web_domain_set_status(domainId, 'inactive')`.
+  at all, just `sites_web_domain_set_status(domainId, 'inactive')`. Website-only mode with no
+  website id throws `InvalidArgumentException` and changes nothing — it **never** falls back to the
+  whole-client lock (which would take down mail, FTP and databases, and any other service on a shared
+  client). The entry file refuses that case with operator advice before opening a session; the
+  exception is the backstop.
 - `unsuspend` — symmetric inverse with the same guards.
 - `terminate(int $clientId): void` — `client_delete_everything`.
 - `changePassword(int $clientId, string $newPassword, ?int $ftpUserId, ?int $databaseUserId)` —
@@ -320,6 +345,16 @@ Pure functions (static or instance, no I/O): WHMCS data → ISPConfig call param
   '/'-joined DESIRED bare addon template ids (+ `_ispconfig_pw_crypted=1`): the server-side
   `update_client_templates` resync applies the delta atomically (§1.5 hazard #2 turned into the
   mechanism). No separate `client_template_additional_add/delete` calls.
+  **A locked client is refused** with `Provision\ClientLockedException` and no `client_update` at
+  all: `client_update` re-runs `func_client_lock` on the merged `locked` value (§1.5 hazard #3), so on
+  a locked client it would re-take the `tmp_data` snapshot and a later unsuspend could restore
+  nothing. (Bracketing the update with unlock/re-lock was rejected: every object flaps, and a failure
+  between the two calls strands the client.) On an unlocked client the merged `locked='n'` makes
+  `client_update` re-activate the client's objects, so the entry file re-applies the suspension of a
+  WHMCS-Suspended service right after the update, in the NEW product's mode (website-only: the
+  stored website; entire-client: the client lock) and reports a failure of that step as a non-success
+  that says the site or client is live. Objects an admin disabled by hand on an active client are
+  re-enabled by any `client_update` — ISPConfig behaviour the module does not try to undo.
 - `jobqueueCount(?int $serverId): int` — monitor_jobqueue_count.
 - `ProvisioningException extends IspconfigException` lives in `Provision\` (carries `stage`,
   `rollbackSucceeded`).
@@ -339,20 +374,39 @@ return `'success'` or error string). Functions (MVP):
   SessionManager from $params, calls the API, returns `[id => name]`, and MUST logout; on exception
   rethrow — WHMCS displays loader errors inline). Loader-backed fields also need
   `'SimpleMode' => true` or WHMCS never invokes the loader (developers.whmcs.com loader-functions).
-- `ispconfigconnect_TestConnection(array $params)` — login + the three read-probes + jobqueue count;
+- `ispconfigconnect_TestConnection(array $params)` — login + the read-probes of
+  `Permissions::readProbes()` (13 read-only calls, the jobqueue count included);
   returns `['success' => bool, 'error' => string]`; error strings must be actionable (which probe
   failed, which grant to add, IP to allowlist on IpNotAllowedException, backoff advice on Lockout).
+  Only a panel answer is a grant verdict: a probe's grant counts as present when the call returned or
+  failed with an `IspconfigException` that is neither permission-denied nor connection-level. Any
+  other `Throwable` (a missing PHP function, a TypeError) propagates, so the test fails rather than
+  reporting "Connected". Verify Permissions uses the same check.
 - `ispconfigconnect_CreateAccount` — Recipe::create; store every id via ServiceProperties; set
   service username if empty. Existing non-empty `ispconfig_client_id` property → refuse with error
   (double-provision guard).
 - `ispconfigconnect_SuspendAccount` / `_UnsuspendAccount` / `_TerminateAccount` (clears the stored
   properties afterwards) / `_ChangePassword` / `_ChangePackage`.
+- **One service per client, enforced** (`ispconfigconnect_otherServicesLinkedToClient()`): Link,
+  Replace, adoption, Terminate, entire-client Suspend, Change Password and Change Package refuse a
+  client that another live (not Terminated/Cancelled/Fraud) service holds; entire-client Unsuspend
+  refuses only while another sharer is Suspended. Client ids are per panel, so services on a WHMCS
+  server record that is definitely another panel (no host name or IP in common, at least one address
+  comparable on both sides) are ignored, and each candidate is judged by the client id the property
+  reader would return for it (current product's row first, then the newest). A failing query logs
+  `SharedClientGuard` and returns null: Terminate and adoption refuse, the other operations proceed.
 - `ispconfigconnect_AdminServicesTabFields(array $params): array` — read-only panel: client id,
   username, domain id, job-queue depth (live call, exception-safe → 'n/a'), panel link.
 - `ispconfigconnect_AdminCustomButtonArray()` — `['Verify Permissions' => 'VerifyPermissions']`;
   `ispconfigconnect_VerifyPermissions($params)` runs the read-probes and reports missing grants.
 - `ispconfigconnect_ClientArea(array $params)` — template `templates/overview.tpl`: panel URL link +
-  ISPConfig username + friendly note; NEVER a password anywhere in HTML (design §3.6.3).
+  ISPConfig username + friendly note; NEVER a password anywhere in HTML (design §3.6.3). It never
+  throws: with an unusable server Hostname/IP and no Panel URL Override the page renders without the
+  panel button and without the SSO button (the admin tab likewise keeps its other rows and explains
+  the server record in its panel row). The SSO button, and the customer SSO path, are offered only to
+  an Active service; the status comes from `ispconfigconnect_serviceStatusOf()` — `$params['status']`
+  (what core's parameter builder sets), then `domainstatus`, then the service model; no status at
+  all means the gate is not applied.
 - Every API call logged via `Support\Logging::wire($moduleName)` → returns the RestClient logger
   callback that calls `logModuleCall('ispconfigconnect', $action, $request, $response, '', $sensitiveValues)`.
 
@@ -516,7 +570,10 @@ passes the real constants when WHMCS is in scope.
 developers.whmcs.com/provisioning-modules/usage-update/ — "a daily import of the disk and bandwidth
 usage for accounts of a server", triggered by WHMCS's cron, **per server, not per product**, and only
 for an active/enabled server. It writes `tblhosting.diskusage / disklimit / bwusage / bwlimit` plus
-`lastupdate => Capsule::raw('now()')`.
+`lastupdate` — stamped with PHP's clock (`date('Y-m-d H:i:s')`), not MySQL's `now()`, because
+`Usage\ServiceUsage` compares it with PHP's clock to decide whether a stored `bwusage` is this
+month's (keep the higher reading) or an earlier month's (reset). Two clocks in different time zones
+would let the last run of a month be stamped into the next one, and the reset would never fire.
 
 Units are **megabytes** — not stated on the UsageUpdate page itself; the UpdateClientProduct API
 reference documents the same four columns as "in megabytes"
@@ -527,7 +584,10 @@ Entry-file design:
 - The service list is one query on `tblhosting` (server id, status Active/Suspended) plus one query
   for the two `ispconfig_*` service properties by field NAME + service id — the same
   product-independent lookup as the `ServiceProperties` fallback reader, because custom fields are
-  scoped to the service's current product (§ live fact from Phase 1).
+  scoped to the service's current product (§ live fact from Phase 1). One service can have rows on
+  several products (a package change leaves the old rows; Unlink/Terminate/Replace blank them all),
+  so per key a non-empty value beats a blank, the current product's row (`tblhosting.packageid`)
+  beats any other, and the newest row breaks a tie — a blank never erases a live id.
 - **One reachability probe** (`monitor_jobqueue_count`) runs before the sweep. Without it, an
   unreachable or mis-credentialed panel would be retried once per service, and ten failed logins lock
   the WHMCS server's IP out of the panel for five minutes (§1.4) — a nightly cron that locks itself
@@ -535,7 +595,12 @@ Entry-file design:
 - A per-service failure is data, not an exception: it lands in the module log entry (`action =
   UsageUpdate`) as `skipped[serviceId] => reason`, alongside `updated` and, when the sweep aborted,
   `error`. Nothing in this function throws — an exception would abort WHMCS's cron for every other
-  server too.
+  server too. A single transport failure is one service's skip reason; two in a row open the
+  `SessionManager` circuit (§2.3) and every remaining service is skipped with the stored reason. A
+  lockout aborts the server's run (`error`) and nothing is written for it.
+- Adoption runs first (`adoption` / `adopted` / `unlinked` in the log entry), but only when an
+  `Adopt\Resolver` is installed. This build ships none, so the entry carries
+  `adoption: unavailable: …` and the unlinked services appear under `skipped`.
 
 ### 5.4 `MetricProvider`
 

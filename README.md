@@ -5,11 +5,16 @@ An open-source (GPLv3) **WHMCS provisioning module for [ISPConfig](https://www.i
 cPanel and Plesk to ISPConfig hosting servers.
 
 > **Status:** the full provisioning lifecycle, account sync, single sign-on and the servers-page
-> health block are built **and proven on a live ISPConfig 3.3.1p1 + WHMCS 9.0.6 install**. Usage
-> import and usage-billing metrics are built and their definitions are confirmed registered in
-> WHMCS, but their **values have not yet been checked against a real service**, so usage-based
-> billing is not ready to sell. Reseller products, dedicated IPs and client-area management screens
-> are not started. Licensed under **GPLv3**.
+> health block were built **and proven on a live ISPConfig 3.3.1p1 + WHMCS 9.0.6 install** — as
+> the `build/phase-0-1` line (head `1ed05b3`). This branch adds a round of review fixes that change
+> several of those paths (suspension, Change Package, Terminate, the link buttons, single sign-on
+> gating, the hook installer and the servers-page script). It passes its offline test suite and
+> static analysis, but **has not yet been run live**; a live re-verification is pending
+> ([`docs/LIVE-TEST-PLAN.md`](docs/LIVE-TEST-PLAN.md)). Usage import and usage-billing metrics are
+> built and their definitions are confirmed registered in WHMCS, but their **values have not yet
+> been checked against a real service**, so usage-based billing is not ready to sell. Reseller
+> products, dedicated IPs and client-area management screens are not started. Licensed under
+> **GPLv3**.
 >
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) is the full current-state account: what is proven and how it
 > was verified, what is built but unproven, what is not built, and what happens next.
@@ -66,20 +71,24 @@ the button only where it is present.
 
 One WHMCS service maps to one ISPConfig client (mirroring how the cPanel module maps one service to
 one account), so terminating a service only ever removes that service's own ISPConfig client — never
-a customer's other accounts.
+a customer's other accounts. The module enforces the mapping: linking, Terminate, Change Password,
+Change Package and whole-client Suspend refuse a client that another live service on the same panel
+is linked to ([`docs/INSTALL.md`](docs/INSTALL.md) §6).
 
 ### Provisioning lifecycle
 
-Every action below has been run end to end against a live ISPConfig 3.3.1p1 panel from a live
-WHMCS 9.0.6 install.
+Every action below was run end to end against a live ISPConfig 3.3.1p1 panel from a live
+WHMCS 9.0.6 install, on the earlier `build/phase-0-1` build. The review fixes on this branch changed
+several of these actions directly — Suspend/Unsuspend, Change Password, Change Package, Terminate,
+Test Connection — and the API transport under all of them; none of that has been re-run live yet.
 
 | WHMCS action | ISPConfig result |
 |---|---|
 | Create | Creates the ISPConfig client, then (per product config) website, FTP user, mail domain, DNS zone, and database — all-or-nothing, with automatic rollback on partial failure |
-| Suspend / Unsuspend | Locks / unlocks the client (or just the website, configurable) |
+| Suspend / Unsuspend | Locks / unlocks the client, or (configurable) sets just this service's website inactive / active. Website-only mode needs the service's stored website id and refuses without one — it never locks the client instead |
 | Change Password | Rotates the panel **and** the provisioned FTP and database passwords together |
-| Change Package | Re-maps the client's ISPConfig template atomically |
-| Terminate | Deletes only this service's ISPConfig client |
+| Change Package | Re-maps the client's ISPConfig template atomically, in one update. Refused while the client is locked by a suspension (unsuspend first); a suspended service is suspended again straight afterwards |
+| Terminate | Deletes only this service's ISPConfig client; refuses a stale link or a client another service shares |
 | Test Connection / Verify Permissions | Diagnoses connectivity and names any missing API grant |
 
 Provisioning is driven by ISPConfig **client templates** — operators manage plans in ISPConfig exactly
@@ -94,8 +103,11 @@ as Plesk operators manage service plans — selected per WHMCS product from a li
 | **Server Sync** ("Sync Accounts") | Lists every client on the panel with its primary domain, template and lock state, so WHMCS can reconcile them against its own services. A client that owns no website is listed under a reserved `.invalid` placeholder, so it is reported as an unknown account rather than matched to the wrong service | — | **Proven live** (analyse step). The step that imports or terminates services has deliberately not been run on production |
 | **Servers page: Services count** | The number of ISPConfig clients on the panel — one per WHMCS service — which WHMCS renders itself as *Services: N* | — | **Proven live** |
 | **Servers page: panel health** | Panel version, pending job-queue depth, ISPConfig client count, node count and probe errors, rendered under the server's hostname; failures show the reason instead of breaking the page | One copy step: WHMCS only loads hooks from `includes/hooks/` ([INSTALL §2](docs/INSTALL.md)) | **Proven live** |
-| **Single sign-on** | A password-free *Log in to ISPConfig* button for customers, using a single-use, short-lived token | The separate **`ispconfig-sso`** project installed on the panel (optional; not shipped here) | **Proven live** with that project installed on the panel; not yet walked through by a real customer |
+| **Single sign-on** | A password-free *Log in to ISPConfig* button for customers of **Active** services, using a single-use, short-lived token | The separate **`ispconfig-sso`** project installed on the panel (optional; not shipped here) | **Proven live** with that project installed on the panel; not yet walked through by a real customer |
 | **Admin service tab** | Stored ISPConfig ids plus live job-queue depth, current disk and bandwidth usage, and SSO availability | — | **Proven live** |
+
+The *Live status* column describes the earlier `build/phase-0-1` build (see the status note at the
+top); this branch's changes to these surfaces await the live re-verification.
 
 Everything above degrades rather than breaks: a panel that is down costs a placeholder value, never
 an admin page, a failed cron run, or a lost provisioning result.
@@ -103,9 +115,10 @@ an admin page, a failed cron run, or a lost provisioning result.
 Two figures on that page originate with **WHMCS, not the module**, and are easy to misread.
 *Accounts* is printed from a cached column that no module can write — for an ISPConfig server it
 would read `0` forever, so the hook replaces it on our own rows with the client count just probed
-from the panel. *WHMCS Usage Stats* — the `1/200` — is WHMCS counting the services it has assigned
-to the server against that server's *Maximum No. of Accounts* field, and reports nothing about the
-panel at all. [`docs/INSTALL.md`](docs/INSTALL.md) §7.4 breaks down every number on the page.
+from the panel, wherever it can identify the row by the server's own link. *WHMCS Usage Stats* —
+the `1/200` — is WHMCS counting the services it has assigned to the server against that server's
+*Maximum No. of Accounts* field, and reports nothing about the panel at all.
+[`docs/INSTALL.md`](docs/INSTALL.md) §7.4 breaks down every number on the page.
 
 ### Why single sign-on needs something on the panel
 
@@ -137,11 +150,16 @@ higher bar than the abandoned modules it replaces:
   scrubbed; the SSO redirect URL, which carries a token, is never logged at all.
 - Session handling respects ISPConfig's IP-bound sessions and login-failure lockout, and never retries
   into a lockout.
+- The server's Hostname is accepted only as a bare host name or IP address, because it is built
+  straight into the URL that carries the remote-API password.
 
 ## Requirements
 
-- WHMCS 8.13 or 9.x (PHP 8.2 / 8.3). Verified in use on **9.0.6**; 8.13 is expected to work but has
-  not been tested (see [`docs/ROADMAP.md`](docs/ROADMAP.md))
+- WHMCS 8.13 or 9.x. Verified in use on **9.0.6**; 8.13 is expected to work but has not been
+  tested (see [`docs/ROADMAP.md`](docs/ROADMAP.md))
+- PHP ≥ 8.2 (8.2 and 8.3 verified) with **ext-curl** and **ext-ctype**. **ext-intl** is recommended:
+  without it an internationalised server hostname must be entered in punycode (`xn--`) form, and
+  internationalised customer domains are not converted. ext-mbstring is optional
 - ISPConfig **3.2 or newer**, with the remote API enabled. All live verification to date has been
   against **3.3.1p1**; 3.2 support rests on API signatures that have been stable for years, not on
   testing.
@@ -156,7 +174,11 @@ health block on the servers page needs one extra step, because WHMCS loads hook 
 modules/servers/ispconfigconnect/hooks/install-hook.sh /path/to/whmcs
 ```
 
-Re-run it after a module upgrade; `--uninstall` removes the file again.
+Run it as root or as the owner of `includes/hooks`, from any directory; as root it makes the change
+as that directory's owner. Confirm with `--status`, which should say *installed and up to date*.
+`--uninstall` removes the file again. When upgrading, replace the whole module directory and re-run
+the installer — [`docs/INSTALL.md`](docs/INSTALL.md) §2, *Upgrading from an earlier build*, lists
+the behaviour changes to check.
 
 See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walk-through and
 [`docs/REMOTE-USER.md`](docs/REMOTE-USER.md) for creating the least-privilege ISPConfig remote user.
@@ -168,7 +190,7 @@ detail (which grant checkbox to tick) and the troubleshooting for it.
 ## Development
 
 The shipped module is dependency-free plain PHP. The repository additionally carries a PHPUnit test
-suite (912 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
+suite (1012 tests) that runs against a behavioral double of the ISPConfig remote API modeled directly
 on the ISPConfig source, plus PHPStan level 6 static analysis. (The `ispconfig-sso` project carries
 its own separate harness in its own repository.) The suite and the static analysis are currently run
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5
