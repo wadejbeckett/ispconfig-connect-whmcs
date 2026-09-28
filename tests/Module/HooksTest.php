@@ -7,6 +7,8 @@ namespace Ispconfigconnect\Tests\Module;
 use Ispconfigconnect\Tests\Stubs\HookRegistry;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use WHMCS\Module\Server\Ispconfigconnect\Server\MetaDataPanel;
+use WHMCS\Module\Server\Ispconfigconnect\Server\ServerMetaData;
 
 // The hook file is a WHMCS file guarded by `if (!defined('WHMCS')) die;`,
 // exactly like the entry file - the constant must exist BEFORE the require.
@@ -49,6 +51,31 @@ final class HooksTest extends TestCase
         . '"ispconfig_status":"ok","checked_at":"2026-08-24 09:00:00 UTC"}';
 
     private const UPDATED_AT = '2026-08-24 09:00:12';
+
+    /** Where the hook file and its installer ship. */
+    private const HOOKS_DIR = __DIR__ . '/../../modules/servers/ispconfigconnect/hooks';
+
+    /**
+     * Every external command install-hook.sh runs - what a PATH needs to hold
+     * when a test hides one of the privilege-drop tools from it.
+     */
+    private const INSTALLER_TOOLS = [
+        'basename', 'dirname', 'cat', 'sed', 'grep', 'ls', 'awk', 'id', 'cmp',
+        'mktemp', 'chmod', 'mv', 'rm', 'php', 'runuser', 'setpriv', 'su',
+    ];
+
+    /** @var list<string> scratch directories an installer test created */
+    private array $scratch = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->scratch as $dir) {
+            $this->removeTree($dir);
+        }
+        $this->scratch = [];
+
+        parent::tearDown();
+    }
 
     public function testRegistersItselfOnTheDocumentedAdminFooterHook(): void
     {
@@ -512,9 +539,13 @@ final class HooksTest extends TestCase
      * configservers.php?action=managegroup&id=N (server groups) link shares the
      * id namespace and would otherwise decorate a group row for the same id.
      *
-     * PHPUnit cannot run the DOM script, so this locks the guard in at the
-     * source level; the executed jsdom-style behaviour is covered by a manual
-     * verification recorded with the change.
+     * WHMCS writes that edit link RELATIVE - href="?action=manage&id=N", no
+     * script name at all (decoded 8.12.1 configservers.php) - so the filter
+     * must judge the URL the browser would resolve, not the raw attribute: a
+     * substring test for "configservers" on the attribute let every relative
+     * link, group links included, through the unfiltered fallback. These
+     * source-level guards run everywhere; the executed behaviour is
+     * testTheScriptAnchorsTheEditLinkRowForEveryHrefForm below.
      */
     public function testTheScriptAnchorsRowsOnlyOnTheManageActionLink(): void
     {
@@ -522,11 +553,98 @@ final class HooksTest extends TestCase
             $this->render($this->vars('configservers'), [$this->row()])
         );
 
-        self::assertMatchesRegularExpression(
-            '/action=manage\(\?:\[&#\]\|\$\)/',
+        self::assertStringContainsString(
+            'new URL(href, document.baseURI || window.location.href)',
+            $script,
+            'the href must be resolved against the page before it is judged'
+        );
+        self::assertStringContainsString(
+            "target.action === 'manage'",
             $script,
             'the preferred-link filter must require action=manage'
         );
+        self::assertStringContainsString(
+            '/(?:^|\/)configservers\.php$/i.test(path)',
+            $script,
+            'the servers script is recognised by the resolved path'
+        );
+        self::assertStringContainsString('/^\d+$/.test(id)', $script, 'only a purely numeric id anchors');
+        self::assertStringNotContainsString(
+            "href.indexOf('configservers')",
+            $script,
+            'a substring test on the raw attribute misses WHMCS\'s relative links'
+        );
+    }
+
+    /**
+     * The script, executed. Each form WHMCS (or a theme) may write the edit
+     * link in - relative, script-relative, root-relative, absolute, and a
+     * servers page served under another URL - must put the block on the edit
+     * link's row and correct THAT row's Accounts figure, with a server-group
+     * table for the same id placed FIRST in the document, where a leaky filter
+     * picks it up. A page whose only link for the id is a group link must fall
+     * back to the hostname cell and leave core's Accounts figure alone.
+     *
+     * Needs node (any version with a global URL); the DOM is the minimal
+     * stand-in in DOM_HARNESS, so no npm package is involved. Skipped, not
+     * failed, where node is absent - the source guards above still run.
+     */
+    public function testTheScriptAnchorsTheEditLinkRowForEveryHrefForm(): void
+    {
+        $node = $this->which('node');
+        if ($node === null) {
+            self::markTestSkipped('node is not installed, so the servers-page script cannot be executed here');
+        }
+
+        $html = $this->render($this->vars('configservers'), [$this->row()]);
+        $results = $this->runNode($node, self::DOM_HARNESS, (string) json_encode([
+            'script' => $this->behaviourScriptOf($html),
+            'payload' => $this->payloadElementOf($html),
+            'payloadId' => ISPCONFIGCONNECT_METAPANEL_ID,
+            'blockClass' => ISPCONFIGCONNECT_METAPANEL_CLASS,
+        ]));
+
+        foreach (['relative', 'scriptRelative', 'rootRelative', 'absolute', 'servedUnderAnotherUrl'] as $form) {
+            $result = $results[$form] ?? null;
+            self::assertIsArray($result, $form);
+            self::assertSame(['server'], $result['blockIn'] ?? null, $form . ': the block belongs on the edit link\'s row');
+            self::assertSame(
+                'Accounts: 9Services: 9',
+                $result['accounts'] ?? null,
+                $form . ': the linked row\'s Accounts figure is corrected'
+            );
+            self::assertSame(
+                'Accounts: 0Services: 9',
+                $result['groupAccounts'] ?? null,
+                $form . ': the server-group row is never touched'
+            );
+        }
+
+        $groupOnly = $results['groupLinkOnly'] ?? null;
+        self::assertIsArray($groupOnly);
+        self::assertSame(['host'], $groupOnly['blockIn'] ?? null, 'a group link never anchors a row');
+        self::assertSame(
+            'Accounts: 0Services: 9',
+            $groupOnly['accounts'] ?? null,
+            'a hostname-text match must not rewrite core\'s Accounts figure'
+        );
+        self::assertSame('Accounts: 0Services: 9', $groupOnly['groupAccounts'] ?? null);
+    }
+
+    /**
+     * Server\MetaDataPanel carries its own copy of the script (it is the
+     * library statement of this panel, kept for its unit tests). Its row
+     * matcher is held byte-for-byte to the hook file's, so the executed test
+     * above speaks for both and the two cannot drift apart again.
+     */
+    public function testTheLibraryPanelMatchesRowsWithTheHookFilesCode(): void
+    {
+        $hook = $this->behaviourScriptOf($this->render($this->vars('configservers'), [$this->row()]));
+        $library = $this->behaviourScriptOf(MetaDataPanel::render([
+            new ServerMetaData(3, 'ISPConfig 1', 'panel.example.net', ['pending_jobs' => 1], null),
+        ]));
+
+        self::assertSame($this->rowMatcherOf($hook), $this->rowMatcherOf($library));
     }
 
     /**
@@ -559,6 +677,178 @@ final class HooksTest extends TestCase
 
         return substr($html, $start, $end - $start);
     }
+
+    /** serverLinks() and linkTarget(): everything up to cellWithExactText(). */
+    private function rowMatcherOf(string $script): string
+    {
+        $start = strpos($script, 'function serverLinks()');
+        self::assertIsInt($start);
+        $end = strpos($script, 'function cellWithExactText(', $start);
+        self::assertIsInt($end);
+
+        return substr($script, $start, $end - $start);
+    }
+
+    /**
+     * Runs $program under node with $stdin on its standard input and returns
+     * the JSON it prints.
+     *
+     * @return array<string, mixed>
+     */
+    private function runNode(string $node, string $program, string $stdin): array
+    {
+        $process = proc_open(
+            [$node, '-e', $program],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        self::assertIsResource($process);
+
+        fwrite($pipes[0], $stdin);
+        fclose($pipes[0]);
+        $output = (string) stream_get_contents($pipes[1]);
+        $errors = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        self::assertSame(0, proc_close($process), $errors);
+        $decoded = json_decode($output, true);
+        self::assertIsArray($decoded, $output . $errors);
+
+        /** @var array<string, mixed> $decoded */
+        return $decoded;
+    }
+
+    /** The first executable called $tool on PATH, or null. */
+    private function which(string $tool): ?string
+    {
+        foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $dir) {
+            $candidate = $dir . '/' . $tool;
+            if ($dir !== '' && is_file($candidate) && is_executable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The smallest DOM the servers-page script can run in - exactly the
+     * surface it touches, nothing more - so executing it needs node alone.
+     * Reads {script, payload, payloadId, blockClass} on stdin, renders each
+     * page below, and prints where the block landed and what the Accounts
+     * cells read afterwards.
+     *
+     * Every page puts a server-GROUP table for the same id FIRST: a filter
+     * that lets a group link through anchors that row, and correctAccountCount
+     * then rewrites the group row's cell instead of the server's.
+     */
+    private const DOM_HARNESS = <<<'JS'
+        'use strict';
+        const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+
+        class Text {
+            constructor(value) { this.nodeType = 3; this.nodeValue = value; this.parentNode = null; }
+            get textContent() { return this.nodeValue; }
+        }
+
+        class Element {
+            constructor(tag) {
+                this.nodeType = 1;
+                this.tagName = tag.toUpperCase();
+                this.attributes = {};
+                this.childNodes = [];
+                this.parentNode = null;
+            }
+            getAttribute(name) {
+                return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+            }
+            setAttribute(name, value) { this.attributes[name] = String(value); }
+            get className() { return this.getAttribute('class') || ''; }
+            set className(value) { this.setAttribute('class', value); }
+            get id() { return this.getAttribute('id') || ''; }
+            appendChild(node) { node.parentNode = this; this.childNodes.push(node); return node; }
+            get textContent() { return this.childNodes.map((node) => node.textContent).join(''); }
+            set textContent(value) { this.childNodes = []; this.appendChild(new Text(String(value))); }
+            closest(tag) {
+                for (let node = this; node && node.nodeType === 1; node = node.parentNode) {
+                    if (node.tagName === tag.toUpperCase()) { return node; }
+                }
+                return null;
+            }
+            descendants() {
+                const found = [];
+                const walk = (element) => element.childNodes.forEach((node) => {
+                    if (node.nodeType === 1) { found.push(node); walk(node); }
+                });
+                walk(this);
+                return found;
+            }
+            getElementsByTagName(tag) {
+                return this.descendants().filter((element) => element.tagName === tag.toUpperCase());
+            }
+            getElementsByClassName(name) {
+                return this.descendants().filter((element) => (' ' + element.className + ' ').includes(' ' + name + ' '));
+            }
+            querySelector(selector) {
+                if (selector[0] !== '.') { throw new Error('unsupported selector ' + selector); }
+                return this.getElementsByClassName(selector.slice(1))[0] || null;
+            }
+        }
+
+        function h(tag, attributes, ...children) {
+            const element = new Element(tag);
+            Object.keys(attributes).forEach((name) => element.setAttribute(name, attributes[name]));
+            children.forEach((child) => element.appendChild(typeof child === 'string' ? new Text(child) : child));
+            return element;
+        }
+
+        function render(pageUrl, ...content) {
+            const body = h('body', {}, ...content, h('script', { id: input.payloadId }, input.payload));
+            const location = new URL(pageUrl);
+            global.window = { location: { href: location.href, pathname: location.pathname } };
+            global.document = {
+                readyState: 'complete',
+                baseURI: location.href,
+                getElementById: (id) => body.descendants().find((element) => element.id === id) || null,
+                getElementsByTagName: (tag) => body.getElementsByTagName(tag),
+                createElement: (tag) => new Element(tag),
+                createTextNode: (text) => new Text(text),
+                addEventListener: () => {},
+            };
+            new Function(input.script)();
+            const text = (id) => { const element = document.getElementById(id); return element ? element.textContent : null; };
+            return {
+                blockIn: body.getElementsByClassName(input.blockClass).map((block) => block.parentNode.id),
+                accounts: text('usage'),
+                groupAccounts: text('groupusage'),
+            };
+        }
+
+        const PAGE = 'https://billing.example.com/admin/configservers.php';
+        const usage = (id) => h('td', { id: id, class: 'server-usage-count' }, 'Accounts: 0', h('br', {}), 'Services: 9');
+        const groupRow = (href) => h('table', {}, h('tr', {},
+            h('td', { id: 'group' }, h('a', { href: href }, 'Web group')), usage('groupusage')));
+        const serverRow = (href) => h('table', {}, h('tr', {},
+            h('td', { id: 'server' }, h('a', { href: href }, 'ISPConfig 1'), h('br', {}), 'panel.example.net'),
+            usage('usage')));
+        const hostnameRow = () => h('table', {}, h('tr', {}, h('td', { id: 'host' }, 'panel.example.net'), usage('usage')));
+
+        process.stdout.write(JSON.stringify({
+            relative: render(PAGE,
+                groupRow('?action=managegroup&id=3'), serverRow('?action=manage&id=3')),
+            scriptRelative: render(PAGE,
+                groupRow('configservers.php?action=managegroup&id=3'), serverRow('configservers.php?action=manage&id=3')),
+            rootRelative: render(PAGE,
+                groupRow('/admin/configservers.php?action=managegroup&id=3'),
+                serverRow('/admin/configservers.php?action=manage&id=3')),
+            absolute: render(PAGE,
+                groupRow(PAGE + '?action=managegroup&id=3'), serverRow(PAGE + '?action=manage&id=3')),
+            servedUnderAnotherUrl: render('https://billing.example.com/admin/servers',
+                groupRow('?action=managegroup&id=3'), serverRow('?action=manage&id=3')),
+            groupLinkOnly: render(PAGE, groupRow('?action=managegroup&id=3'), hostnameRow()),
+        }));
+        JS;
 
     /**
      * Runs $body with $_SERVER['REQUEST_URI'] set, restoring whatever the
@@ -752,7 +1042,331 @@ final class HooksTest extends TestCase
         self::assertStringContainsString(ISPCONFIGCONNECT_METAPANEL_MARKER, $installer);
     }
 
+    // ---- the installer (install-hook.sh) ---------------------------------
+
+    /**
+     * The whole lifecycle as whoever runs the suite: install, an idempotent
+     * re-run, --status, --uninstall. As root the sandbox is root-owned, so this
+     * is also the "root into a root-owned includes/hooks" path.
+     */
+    public function testTheInstallerInstallsReRunsReportsAndUninstalls(): void
+    {
+        $box = $this->fakeWhmcs();
+        $installer = self::HOOKS_DIR . '/install-hook.sh';
+        $target = $box['hooks'] . '/ispconfigconnect.php';
+
+        [$code, $output] = $this->runInstaller($installer, [$box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertStringContainsString('installed ' . $target, $output);
+        self::assertFileEquals(self::HOOKS_DIR . '/ispconfigconnect.php', $target);
+        self::assertSame(0644, fileperms($target) & 0777, 'the web server must be able to read it');
+
+        [$code, $output] = $this->runInstaller($installer, [$box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertStringContainsString('already up to date', $output);
+
+        [$code, $output] = $this->runInstaller($installer, ['--status', $box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertStringContainsString('installed and up to date', $output);
+
+        [$code, $output] = $this->runInstaller($installer, ['--uninstall', $box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertFileDoesNotExist($target);
+
+        [$code, $output] = $this->runInstaller($installer, ['--status', $box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertStringContainsString('not installed', $output);
+        self::assertSame([], $this->leftoverTemps($box['hooks']));
+    }
+
+    /**
+     * A symlink planted at the well-known target name must be refused, never
+     * written through - here aimed at a file that does not exist yet, which
+     * is exactly what an attacker would point it at.
+     */
+    public function testTheInstallerRefusesASymlinkPlantedAtTheTarget(): void
+    {
+        $box = $this->fakeWhmcs();
+        $target = $box['hooks'] . '/ispconfigconnect.php';
+        self::assertTrue(mkdir($box['base'] . '/elsewhere', 0755));
+        $aim = $box['base'] . '/elsewhere/written-through-the-link';
+        self::assertTrue(symlink($aim, $target));
+
+        [$code, $output] = $this->runInstaller(self::HOOKS_DIR . '/install-hook.sh', [$box['root']]);
+
+        self::assertSame(1, $code, $output);
+        self::assertStringContainsString('is a symlink', $output);
+        self::assertFileDoesNotExist($aim);
+        self::assertTrue(is_link($target), 'the link itself is left for the admin to inspect');
+        self::assertSame([], $this->leftoverTemps($box['hooks']), 'a refused write removes its temp file');
+    }
+
+    /** No marker, no touching - neither overwrite nor delete. */
+    public function testTheInstallerNeverOverwritesOrRemovesAForeignFile(): void
+    {
+        $box = $this->fakeWhmcs();
+        $installer = self::HOOKS_DIR . '/install-hook.sh';
+        $target = $box['hooks'] . '/ispconfigconnect.php';
+        $foreign = "<?php // somebody else's hook\n";
+        file_put_contents($target, $foreign);
+
+        [$code, $output] = $this->runInstaller($installer, [$box['root']]);
+        self::assertSame(1, $code, $output);
+        self::assertStringContainsString('refusing to overwrite', $output);
+
+        [$code, $output] = $this->runInstaller($installer, ['--uninstall', $box['root']]);
+        self::assertSame(1, $code, $output);
+        self::assertStringContainsString('refusing to remove', $output);
+
+        [$code, $output] = $this->runInstaller($installer, ['--status', $box['root']]);
+        self::assertSame(1, $code, $output);
+        self::assertStringContainsString('FOREIGN FILE', $output);
+
+        self::assertSame($foreign, file_get_contents($target));
+    }
+
+    /**
+     * THE regression. INSTALL §2 runs the installer from the checkout or zip
+     * the module arrived in, and as root that is often private (/root/src/...).
+     * When includes/hooks belongs to the web user, the installer used to
+     * re-execute ITSELF as that user, who could not even open the script:
+     * "/bin/sh: 0: cannot open ...: Permission denied", exit 2, old hook left
+     * in place. Root must keep reading the source and hand only the write to
+     * the directory's owner - so the file still ends up owned by that user.
+     *
+     * Needs root and a "nobody" account; skipped elsewhere.
+     */
+    public function testARootInstallFromACheckoutTheHookOwnerCannotReadSucceeds(): void
+    {
+        $nobody = $this->requireRootAndNobody();
+        if ($this->which('runuser') === null && $this->which('setpriv') === null && $this->which('su') === null) {
+            self::markTestSkipped('no privilege-drop tool (runuser/setpriv/su) on this host');
+        }
+
+        $box = $this->fakeWhmcs();
+        $this->requireWorldReachable($box['hooks']);
+        $checkout = $this->checkout($box['base'] . '/private/hooks');
+        self::assertTrue(chmod($box['base'] . '/private', 0700), 'the checkout must be out of nobody\'s reach');
+        self::assertTrue(chown($box['hooks'], $nobody['uid']));
+        self::assertTrue(chgrp($box['hooks'], $nobody['gid']));
+
+        [$code, $output] = $this->runInstaller($checkout . '/install-hook.sh', [$box['root']]);
+
+        self::assertSame(0, $code, $output);
+        $installed = $box['hooks'] . '/ispconfigconnect.php';
+        self::assertFileEquals(self::HOOKS_DIR . '/ispconfigconnect.php', $installed);
+        self::assertSame($nobody['uid'], fileowner($installed), 'written as the directory\'s owner, not as root');
+        self::assertSame(0644, fileperms($installed) & 0777);
+        self::assertSame([], $this->leftoverTemps($box['hooks']));
+
+        // The removal is the owner's too, and needs nothing from the checkout.
+        [$code, $output] = $this->runInstaller($checkout . '/install-hook.sh', ['--uninstall', $box['root']]);
+        self::assertSame(0, $code, $output);
+        self::assertFileDoesNotExist($installed);
+    }
+
+    /**
+     * Where runuser is missing, setpriv does the drop - and must be given the
+     * DIRECTORY's group. It used to be handed the owner's uid as --regid,
+     * which stamps the file with whatever group happens to share that number.
+     * The directory's gid here is deliberately neither nobody's uid nor its
+     * primary group, so only the right source can produce it.
+     *
+     * Needs root, a "nobody" account and setpriv; skipped elsewhere.
+     */
+    public function testTheSetprivFallbackGivesTheFileTheHookDirectorysGroup(): void
+    {
+        $nobody = $this->requireRootAndNobody();
+        if ($this->which('setpriv') === null) {
+            self::markTestSkipped('setpriv is not installed');
+        }
+        $gid = 12345;
+        self::assertNotContains($gid, [$nobody['uid'], $nobody['gid']]);
+
+        $box = $this->fakeWhmcs();
+        $this->requireWorldReachable($box['hooks']);
+        $checkout = $this->checkout($box['base'] . '/checkout');
+        self::assertTrue(chown($box['hooks'], $nobody['uid']));
+        self::assertTrue(chgrp($box['hooks'], $gid));
+
+        [$code, $output] = $this->runInstaller(
+            $checkout . '/install-hook.sh',
+            [$box['root']],
+            $this->pathWithout($box['base'] . '/bin', ['runuser'])
+        );
+
+        self::assertSame(0, $code, $output);
+        $installed = $box['hooks'] . '/ispconfigconnect.php';
+        self::assertSame($nobody['uid'], fileowner($installed));
+        self::assertSame($gid, filegroup($installed), 'setpriv must be given the directory\'s gid, not the owner\'s uid');
+    }
+
+    /**
+     * The same two guarantees at source level, so they hold on hosts where the
+     * root-only tests above are skipped: the content reaches the writer on
+     * stdin, opened by the invoking user, rather than the installer
+     * re-executing itself under another account; and setpriv is handed the
+     * directory's gid.
+     */
+    public function testTheInstallerReadsTheSourceItselfAndDelegatesOnlyTheWrite(): void
+    {
+        $installer = file_get_contents(self::HOOKS_DIR . '/install-hook.sh');
+        self::assertIsString($installer);
+
+        self::assertMatchesRegularExpression(
+            '/as_writer \/bin\/sh -c "\$WRITE_SCRIPT" [^\n]*< "\$SOURCE"/',
+            $installer,
+            'the writer must be fed the source on stdin'
+        );
+        self::assertStringNotContainsString(
+            '$SOURCE_DIR/$SELF',
+            $installer,
+            'the installer must not re-run itself as another user - that user may not be able to read it'
+        );
+        self::assertStringContainsString('--regid="$writer_gid"', $installer);
+    }
+
     // ---- helpers ---------------------------------------------------------
+
+    /**
+     * A throwaway WHMCS root - configuration.php and includes/hooks - under
+     * the system temp dir, every level 0755 so a dropped-to user can reach it.
+     * Removed again in tearDown().
+     *
+     * @return array{base: string, root: string, hooks: string}
+     */
+    private function fakeWhmcs(): array
+    {
+        $base = sys_get_temp_dir() . '/ispcc-installer-' . bin2hex(random_bytes(6));
+        $root = $base . '/whmcs';
+        $hooks = $root . '/includes/hooks';
+        self::assertTrue(mkdir($hooks, 0755, true));
+        $this->scratch[] = $base;
+        foreach ([$base, $root, $root . '/includes', $hooks] as $dir) {
+            chmod($dir, 0755);
+        }
+        file_put_contents($root . '/configuration.php', "<?php\n");
+
+        return ['base' => $base, 'root' => $root, 'hooks' => $hooks];
+    }
+
+    /** A copy of the shipped hooks/ directory at $dir - an operator's checkout. */
+    private function checkout(string $dir): string
+    {
+        self::assertTrue(mkdir($dir, 0755, true));
+        foreach (['install-hook.sh', 'ispconfigconnect.php'] as $file) {
+            self::assertTrue(copy(self::HOOKS_DIR . '/' . $file, $dir . '/' . $file));
+        }
+
+        return $dir;
+    }
+
+    /**
+     * Runs the installer through /bin/sh, as its shebang would.
+     *
+     * @param list<string> $args
+     * @param null|string $path a replacement PATH, to hide tools from it
+     * @return array{int, string} exit code, and stdout followed by stderr
+     */
+    private function runInstaller(string $installer, array $args, ?string $path = null): array
+    {
+        $process = proc_open(
+            array_merge(['/bin/sh', $installer], $args),
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            null,
+            $path === null ? null : ['PATH' => $path]
+        );
+        self::assertIsResource($process);
+        // The installer prints a few lines at most, far below a pipe buffer, so
+        // draining one stream before the other cannot deadlock.
+        $output = (string) stream_get_contents($pipes[1]) . (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        return [proc_close($process), $output];
+    }
+
+    /**
+     * The installer's hidden temp files still in $hooks.
+     *
+     * @return list<string>
+     */
+    private function leftoverTemps(string $hooks): array
+    {
+        return glob($hooks . '/.ispconfigconnect.php.*') ?: [];
+    }
+
+    /**
+     * A PATH directory holding every tool the installer runs except $hidden.
+     *
+     * @param list<string> $hidden
+     */
+    private function pathWithout(string $dir, array $hidden): string
+    {
+        self::assertTrue(mkdir($dir, 0755, true));
+        foreach (self::INSTALLER_TOOLS as $tool) {
+            $real = in_array($tool, $hidden, true) ? null : $this->which($tool);
+            if ($real !== null) {
+                self::assertTrue(symlink($real, $dir . '/' . $tool));
+            }
+        }
+
+        return $dir;
+    }
+
+    /**
+     * Root, plus an unprivileged account to hand includes/hooks to: the setup
+     * the privilege drop exists for. Skips - never fails - anywhere else.
+     *
+     * @return array{uid: int, gid: int}
+     */
+    private function requireRootAndNobody(): array
+    {
+        if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+            self::markTestSkipped('needs root: only a root install drops privileges');
+        }
+        $nobody = function_exists('posix_getpwnam') ? posix_getpwnam('nobody') : false;
+        if (!is_array($nobody)) {
+            self::markTestSkipped('no "nobody" account to drop to');
+        }
+
+        return ['uid' => (int) $nobody['uid'], 'gid' => (int) $nobody['gid']];
+    }
+
+    /**
+     * Skips unless every directory above $dir is world-searchable - otherwise
+     * no dropped-to user could reach the sandbox at all (a TMPDIR inside a
+     * 0700 home, say), and the test would fail for a reason of its own.
+     */
+    private function requireWorldReachable(string $dir): void
+    {
+        for ($path = dirname($dir); ; $path = dirname($path)) {
+            $perms = fileperms($path);
+            if ($perms === false || ($perms & 0001) === 0) {
+                self::markTestSkipped($path . ' is not world-searchable, so no dropped-to user could reach the sandbox');
+            }
+            if ($path === dirname($path)) {
+                return;
+            }
+        }
+    }
+
+    /** rm -rf that never follows a symlink out of the tree. */
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || !is_dir($path)) {
+            @unlink($path);
+
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                $this->removeTree($path . '/' . $entry);
+            }
+        }
+        @rmdir($path);
+    }
 
     /**
      * A fluent stand-in for the Capsule query builder that records what it was

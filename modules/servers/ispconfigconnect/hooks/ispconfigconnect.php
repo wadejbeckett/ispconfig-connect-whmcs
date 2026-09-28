@@ -545,10 +545,15 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
      * null-checked, and placing the block is skipped rather than guessed when the
      * row cannot be identified.
      *
-     * Rows are matched on the numeric `id` query parameter of a link inside a table
-     * - that is how the servers list links each row to its edit page - and fall
-     * back to a cell whose text is exactly the hostname. Insertion is idempotent
-     * per cell, so a second run cannot duplicate the block.
+     * Rows are matched on the server's own edit link - configservers.php with
+     * action=manage and a numeric `id` - read from the RESOLVED URL, because
+     * WHMCS writes that link relative ("?action=manage&id=N") and only
+     * resolution says which script it points at. Any other configservers.php
+     * link (a server group's action=managegroup shares the id namespace) never
+     * anchors a row; a ?id=N link to some other script counts only inside a
+     * table; the last resort is a cell whose text is exactly the hostname.
+     * Insertion is idempotent per cell, so a second run cannot duplicate the
+     * block.
      */
     function ispconfigconnect_metaPanelScript(): string
     {
@@ -557,11 +562,9 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                 function serverLinks() {
                     var preferred = {}, fallback = {}, links = document.getElementsByTagName('a');
                     for (var i = 0; i < links.length; i++) {
-                        var link = links[i], href = link.getAttribute('href');
-                        if (!href) { continue; }
-                        var match = /[?&]id=(\d+)(?:&|#|$)/.exec(href);
-                        if (!match) { continue; }
-                        if (href.indexOf('configservers') !== -1) {
+                        var link = links[i], target = linkTarget(link);
+                        if (!target) { continue; }
+                        if (target.serversScript) {
                             // Only the per-server EDIT link (action=manage) is an
                             // unambiguous anchor for a server row, and it exists
                             // wherever the row is, so a redesigned (non-table)
@@ -570,20 +573,61 @@ if (!function_exists('ispconfigconnect_metaPanelFooterOutput')) {
                             // namespace, so any configservers link that is NOT
                             // action=manage is ignored outright - never taken as a
                             // row anchor and never used as a fallback either.
-                            if (/[?&]action=manage(?:[&#]|$)/.test(href) && !preferred[match[1]]) {
-                                preferred[match[1]] = link;
+                            if (target.action === 'manage' && !preferred[target.id]) {
+                                preferred[target.id] = link;
                             }
-                        } else if (!fallback[match[1]] && link.closest && link.closest('table')) {
+                        } else if (!fallback[target.id] && link.closest && link.closest('table')) {
                             // Some other ?id=N link, accepted only inside a table -
                             // sidebar and breadcrumb links must never be mistaken
                             // for a server row.
-                            fallback[match[1]] = link;
+                            fallback[target.id] = link;
                         }
                     }
                     for (var key in fallback) {
                         if (!preferred[key]) { preferred[key] = fallback[key]; }
                     }
                     return preferred;
+                }
+
+                /**
+                 * Where a link really goes, resolved exactly as the browser
+                 * resolves it on a click. WHMCS writes the per-row edit link
+                 * RELATIVE - href="?action=manage&id=N", with no script name at
+                 * all - so the raw attribute cannot say which script it targets
+                 * (and a substring test on it silently sent every relative link,
+                 * group links included, down the unfiltered fallback path).
+                 * Resolving it answers that for the relative, root-relative and
+                 * absolute forms alike.
+                 *
+                 * A link counts as the servers script when it names
+                 * configservers.php, or points back at this very page under
+                 * whatever URL the page was served (the PHP side only emits this
+                 * script on the servers list).
+                 *
+                 * null - never a guess - when the href is missing or unparsable,
+                 * carries no purely numeric id, or the browser has no URL
+                 * parser; the row then falls back to the hostname-text match,
+                 * which places the block but never rewrites core's Accounts cell.
+                 */
+                function linkTarget(link) {
+                    var href = link.getAttribute('href');
+                    if (!href || typeof URL !== 'function') { return null; }
+                    var url;
+                    try {
+                        url = new URL(href, document.baseURI || window.location.href);
+                    } catch (err) {
+                        return null;
+                    }
+                    if (!url.searchParams) { return null; }
+                    var id = url.searchParams.get('id');
+                    if (!id || !/^\d+$/.test(id)) { return null; }
+                    var path = url.pathname || '';
+                    return {
+                        id: id,
+                        action: url.searchParams.get('action'),
+                        serversScript: /(?:^|\/)configservers\.php$/i.test(path)
+                            || path === window.location.pathname
+                    };
                 }
 
                 function cellWithExactText(text) {
