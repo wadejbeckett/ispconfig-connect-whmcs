@@ -1,0 +1,626 @@
+[
+    {
+        "id": "19.0-md",
+        "ok": true,
+        "what": "MetaData: no ServiceSingleSignOnLabel/AdminSingleSignOnLabel with a cold cache",
+        "evidence": {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1"
+        }
+    },
+    {
+        "id": "19.0-ca",
+        "ok": true,
+        "what": "ClientArea(S1 Active, cold cache): ssoAvailable=false (unknown never renders a button)",
+        "evidence": {
+            "panelUrl": "http://127.0.0.1:8086/",
+            "ispconfigUsername": "testone1",
+            "ssoAvailable": false,
+            "ssoServiceId": 1,
+            "ssoLabel": "Log in to ISPConfig"
+        }
+    },
+    {
+        "id": "19.0-sso-msg",
+        "ok": true,
+        "what": "cold cache: customer gets only the customer sentence",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+        }
+    },
+    {
+        "id": "19.0-sso-asked",
+        "ok": true,
+        "what": "cold cache: the panel IS asked once (an unprobed server is never refused from the cache)",
+        "evidence": [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?connect_sso_token_create",
+            "[200] POST /remote/json.php?logout"
+        ]
+    },
+    {
+        "id": "19.0-sso-log",
+        "ok": true,
+        "what": "cold cache: Module Log records sso_state=absent with the operator \"Not installed\" detail",
+        "evidence": [
+            {
+                "id": 42,
+                "date": "2026-09-28 17:33:05",
+                "module": "ispconfigconnect",
+                "action": "login",
+                "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                "response": "***",
+                "arrdata": ""
+            },
+            {
+                "id": 43,
+                "date": "2026-09-28 17:33:05",
+                "module": "ispconfigconnect",
+                "action": "connect_sso_token_create",
+                "request": "{\"client_id\":1,\"bind_ip\":\"\",\"session_id\":\"***\"}",
+                "response": "Method connect_sso_token_create does not exist",
+                "arrdata": ""
+            },
+            {
+                "id": 44,
+                "date": "2026-09-28 17:33:05",
+                "module": "ispconfigconnect",
+                "action": "logout",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "1",
+                "arrdata": ""
+            },
+            {
+                "id": 45,
+                "date": "2026-09-28 17:33:05",
+                "module": "ispconfigconnect",
+                "action": "ServiceSingleSignOn",
+                "request": "{\"serviceid\":1,\"ispconfig_client_id\":1}",
+                "response": "{\"success\":false,\"sso_state\":\"absent\",\"detail\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                "arrdata": ""
+            }
+        ]
+    },
+    {
+        "id": "19.1-meta",
+        "ok": true,
+        "what": "GetRemoteMetaData caches sso_state=absent, sso_available=false",
+        "evidence": {
+            "ispconfig_version": "3.2dev",
+            "pending_jobs": 25,
+            "client_count": 4,
+            "service_count": 4,
+            "server_count": 1,
+            "checked_at": "2026-09-28 17:33:05 UTC",
+            "ispconfig_status": "ok",
+            "sso_state": "absent",
+            "sso_available": false
+        }
+    },
+    {
+        "id": "19.1-login",
+        "ok": true,
+        "what": "one login for the metadata render",
+        "evidence": [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?server_get_app_version",
+            "[200] POST /remote/json.php?monitor_jobqueue_count",
+            "[200] POST /remote/json.php?client_get_all",
+            "[200] POST /remote/json.php?server_get_all",
+            "[200] POST /remote/json.php?get_function_list",
+            "[200] POST /remote/json.php?logout"
+        ]
+    },
+    {
+        "id": "19.1-md",
+        "ok": true,
+        "what": "MetaData: no ServiceSingleSignOnLabel (no server has the add-on)",
+        "evidence": {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1"
+        }
+    },
+    {
+        "id": "19.1-md-admin",
+        "ok": true,
+        "what": "MetaData: AdminSingleSignOnLabel never advertised",
+        "evidence": {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1"
+        }
+    },
+    {
+        "id": "19.2-tab",
+        "ok": true,
+        "what": "admin tab single sign-on row says \"Not installed - this panel does not have the ispconfig-sso add-on ...\"",
+        "evidence": "Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+    },
+    {
+        "id": "19.3-ca",
+        "ok": true,
+        "what": "ClientArea(S1 Active): ssoAvailable=false because the panel reported the add-on absent"
+    },
+    {
+        "id": "19.3-html",
+        "ok": true,
+        "what": "rendered overview.tpl: no \"Log in to ISPConfig\" button, \"Open Control Panel\" still shown"
+    },
+    {
+        "id": "19a-msg",
+        "ok": true,
+        "what": "(a) customer sees only the customer sentence (the add-on is absent here, so no landing in ISPConfig)",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+        }
+    },
+    {
+        "id": "19a-nocall",
+        "ok": true,
+        "what": "(a) cached \"absent\" answers without opening a panel session (0 requests)",
+        "evidence": []
+    },
+    {
+        "id": "19a-log",
+        "ok": true,
+        "what": "(a) Module Log: ServiceSingleSignOn sso_state=absent, operator detail, no URL/token",
+        "evidence": [
+            {
+                "id": 60,
+                "date": "2026-09-28 17:33:05",
+                "module": "ispconfigconnect",
+                "action": "ServiceSingleSignOn",
+                "request": "{\"serviceid\":1,\"ispconfig_client_id\":1}",
+                "response": "{\"success\":false,\"sso_state\":\"absent\",\"detail\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                "arrdata": ""
+            }
+        ]
+    },
+    {
+        "id": "19b-susp",
+        "ok": true,
+        "what": "(b) S2 Suspended, website-only: client NOT locked",
+        "evidence": [
+            "Suspended",
+            {
+                "client_id": "2",
+                "username": "testtwo2",
+                "locked": "n",
+                "template_master": "1"
+            }
+        ]
+    },
+    {
+        "id": "19b-button",
+        "ok": true,
+        "what": "(b) no button for suspended S2"
+    },
+    {
+        "id": "19b-msg",
+        "ok": true,
+        "what": "(b) direct URL shows only \"Single sign-on is not available for this service right now...\"",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+        }
+    },
+    {
+        "id": "19b-log",
+        "ok": true,
+        "what": "(b) Module Log detail: \"Single sign-on is only available while the service is active; this service is Suspended.\"",
+        "evidence": [
+            {
+                "id": 64,
+                "date": "2026-09-28 17:33:06",
+                "module": "ispconfigconnect",
+                "action": "ServiceSingleSignOn",
+                "request": "{\"serviceid\":2,\"ispconfig_client_id\":2}",
+                "response": "{\"success\":false,\"sso_state\":\"error\",\"detail\":\"Single sign-on is only available while the service is active; this service is Suspended.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                "arrdata": ""
+            }
+        ]
+    },
+    {
+        "id": "19b-nocall",
+        "ok": true,
+        "what": "(b) refused before any panel request",
+        "evidence": []
+    },
+    {
+        "id": "19c-susp",
+        "ok": true,
+        "what": "(c) S1 Suspended, client locked=y",
+        "evidence": {
+            "client_id": "1",
+            "username": "testone1",
+            "locked": "y",
+            "template_master": "1"
+        }
+    },
+    {
+        "id": "19c-button",
+        "ok": true,
+        "what": "(c) no button for suspended S1"
+    },
+    {
+        "id": "19c-msg",
+        "ok": true,
+        "what": "(c) direct URL: customer sentence only",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+        }
+    },
+    {
+        "id": "19c-log",
+        "ok": true,
+        "what": "(c) Module Log detail names the Suspended status",
+        "evidence": [
+            {
+                "id": 70,
+                "date": "2026-09-28 17:33:06",
+                "module": "ispconfigconnect",
+                "action": "ServiceSingleSignOn",
+                "request": "{\"serviceid\":1,\"ispconfig_client_id\":1}",
+                "response": "{\"success\":false,\"sso_state\":\"error\",\"detail\":\"Single sign-on is only available while the service is active; this service is Suspended.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                "arrdata": ""
+            }
+        ]
+    },
+    {
+        "id": "19c-nocall",
+        "ok": true,
+        "what": "(c) refused before any panel request",
+        "evidence": []
+    },
+    {
+        "id": "19g-md",
+        "ok": true,
+        "what": "cache says installed: MetaData advertises ServiceSingleSignOnLabel \"Log in to ISPConfig\"",
+        "evidence": {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1",
+            "ServiceSingleSignOnLabel": "Log in to ISPConfig"
+        }
+    },
+    {
+        "id": "19g-md-admin",
+        "ok": true,
+        "what": "AdminSingleSignOnLabel still not advertised"
+    },
+    {
+        "id": "19g-unsusp",
+        "ok": true,
+        "what": "Unsuspend S1 (for the Active comparison)",
+        "evidence": "success"
+    },
+    {
+        "id": "19g-ca-active",
+        "ok": true,
+        "what": "Active S1 on an \"installed\" server: button rendered, pointing at WHMCS's dosinglesignon URL",
+        "evidence": {
+            "panelUrl": "http://127.0.0.1:8086/",
+            "ispconfigUsername": "testone1",
+            "ssoAvailable": true,
+            "ssoServiceId": 1,
+            "ssoLabel": "Log in to ISPConfig"
+        }
+    },
+    {
+        "id": "19g-ca-susp",
+        "ok": true,
+        "what": "Suspended S2 on the same server: no button (status gate)",
+        "evidence": {
+            "panelUrl": "http://127.0.0.1:8086/",
+            "ispconfigUsername": "testtwo2",
+            "ssoAvailable": false,
+            "ssoServiceId": 2,
+            "ssoLabel": "Log in to ISPConfig"
+        }
+    },
+    {
+        "id": "19g-susp",
+        "ok": true,
+        "what": "Suspended S2: status gate refuses first, no panel request",
+        "evidence": {
+            "result": {
+                "success": false,
+                "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+            },
+            "reqs": [],
+            "log": [
+                {
+                    "id": 76,
+                    "date": "2026-09-28 17:33:06",
+                    "module": "ispconfigconnect",
+                    "action": "ServiceSingleSignOn",
+                    "request": "{\"serviceid\":2,\"ispconfig_client_id\":2}",
+                    "response": "{\"success\":false,\"sso_state\":\"error\",\"detail\":\"Single sign-on is only available while the service is active; this service is Suspended.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                    "arrdata": ""
+                }
+            ]
+        }
+    },
+    {
+        "id": "19g-active",
+        "ok": true,
+        "what": "Active S1: passes the gate, reaches the panel (1 login), panel answers invalid_method -> not installed",
+        "evidence": {
+            "result": {
+                "success": false,
+                "errorMsg": "Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support."
+            },
+            "reqs": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?connect_sso_token_create",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "log": [
+                {
+                    "id": 77,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "login",
+                    "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "***",
+                    "arrdata": ""
+                },
+                {
+                    "id": 78,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "connect_sso_token_create",
+                    "request": "{\"client_id\":1,\"bind_ip\":\"\",\"session_id\":\"***\"}",
+                    "response": "Method connect_sso_token_create does not exist",
+                    "arrdata": ""
+                },
+                {
+                    "id": 79,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "logout",
+                    "request": "{\"session_id\":\"***\"}",
+                    "response": "1",
+                    "arrdata": ""
+                },
+                {
+                    "id": 80,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "ServiceSingleSignOn",
+                    "request": "{\"serviceid\":1,\"ispconfig_client_id\":1}",
+                    "response": "{\"success\":false,\"sso_state\":\"absent\",\"detail\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                    "arrdata": ""
+                }
+            ]
+        }
+    },
+    {
+        "id": "19g-model",
+        "ok": true,
+        "what": "without $params[status] the model's domainstatus still gates",
+        "evidence": [
+            {
+                "id": 81,
+                "date": "2026-09-28 17:33:07",
+                "module": "ispconfigconnect",
+                "action": "ServiceSingleSignOn",
+                "request": "{\"serviceid\":2,\"ispconfig_client_id\":2}",
+                "response": "{\"success\":false,\"sso_state\":\"error\",\"detail\":\"Single sign-on is only available while the service is active; this service is Suspended.\",\"errorMsg\":\"Single sign-on is not available for this service right now. Open the control panel with the button on this page and sign in with your control panel login name; if that does not work, please contact support.\"}",
+                "arrdata": ""
+            }
+        ]
+    },
+    {
+        "id": "19g-model-ca",
+        "ok": true,
+        "what": "ClientArea without $params[status]: model fallback still hides the button"
+    },
+    {
+        "id": "19d-nogate",
+        "ok": true,
+        "what": "(d) admin path is NOT status-gated: it reaches the panel (1 login) for a Suspended service",
+        "evidence": {
+            "result": {
+                "success": false,
+                "errorMsg": "Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+            },
+            "reqs": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?connect_sso_token_create",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "log": [
+                {
+                    "id": 89,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "login",
+                    "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "***",
+                    "arrdata": ""
+                },
+                {
+                    "id": 90,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "connect_sso_token_create",
+                    "request": "{\"client_id\":2,\"bind_ip\":\"\",\"session_id\":\"***\"}",
+                    "response": "Method connect_sso_token_create does not exist",
+                    "arrdata": ""
+                },
+                {
+                    "id": 91,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "logout",
+                    "request": "{\"session_id\":\"***\"}",
+                    "response": "1",
+                    "arrdata": ""
+                },
+                {
+                    "id": 92,
+                    "date": "2026-09-28 17:33:07",
+                    "module": "ispconfigconnect",
+                    "action": "AdminSingleSignOn",
+                    "request": "{\"serviceid\":2,\"ispconfig_client_id\":2}",
+                    "response": "{\"success\":false,\"sso_state\":\"absent\",\"detail\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\",\"errorMsg\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+                    "arrdata": ""
+                }
+            ]
+        }
+    },
+    {
+        "id": "19d-msg",
+        "ok": true,
+        "what": "(d) admin gets the operator diagnosis (\"Not installed ...\") instead of the customer sentence",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    },
+    {
+        "id": "19d-adminarea",
+        "ok": true,
+        "what": "(d) with ADMINAREA defined and no test seam, the admin context is detected",
+        "evidence": {
+            "success": false,
+            "errorMsg": "Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    },
+    {
+        "id": "19d-lock",
+        "ok": true,
+        "what": "S1 suspended again (locked) for the admin check",
+        "evidence": {
+            "client_id": "1",
+            "username": "testone1",
+            "locked": "y",
+            "template_master": "1"
+        }
+    },
+    {
+        "id": "19d-locked",
+        "ok": true,
+        "what": "(d) S1 locked, admin: reaches the panel; this panel answers \"not installed\" (the add-on's locked-client refusal cannot be exercised here)",
+        "evidence": {
+            "result": {
+                "success": false,
+                "errorMsg": "Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+            },
+            "reqs": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?connect_sso_token_create",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "log": [
+                {
+                    "id": 102,
+                    "date": "2026-09-28 17:33:08",
+                    "module": "ispconfigconnect",
+                    "action": "login",
+                    "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "***",
+                    "arrdata": ""
+                },
+                {
+                    "id": 103,
+                    "date": "2026-09-28 17:33:08",
+                    "module": "ispconfigconnect",
+                    "action": "connect_sso_token_create",
+                    "request": "{\"client_id\":1,\"bind_ip\":\"\",\"session_id\":\"***\"}",
+                    "response": "Method connect_sso_token_create does not exist",
+                    "arrdata": ""
+                },
+                {
+                    "id": 104,
+                    "date": "2026-09-28 17:33:08",
+                    "module": "ispconfigconnect",
+                    "action": "logout",
+                    "request": "{\"session_id\":\"***\"}",
+                    "response": "1",
+                    "arrdata": ""
+                },
+                {
+                    "id": 105,
+                    "date": "2026-09-28 17:33:08",
+                    "module": "ispconfigconnect",
+                    "action": "AdminSingleSignOn",
+                    "request": "{\"serviceid\":1,\"ispconfig_client_id\":1}",
+                    "response": "{\"success\":false,\"sso_state\":\"absent\",\"detail\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\",\"errorMsg\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+                    "arrdata": ""
+                }
+            ]
+        }
+    },
+    {
+        "id": "19s-server",
+        "ok": true,
+        "what": "server-level AdminSingleSignOn hands the admin the panel login page, no API call",
+        "evidence": {
+            "success": true,
+            "redirectTo": "http://127.0.0.1:8086/"
+        }
+    },
+    {
+        "id": "19s-noreq",
+        "ok": true,
+        "what": "server-level AdminSingleSignOn made no panel request and no log entry"
+    },
+    {
+        "id": "19s-service",
+        "ok": true,
+        "what": "service-scoped AdminSingleSignOn: SSO not installed -> falls back to the panel login page",
+        "evidence": [
+            {
+                "success": true,
+                "redirectTo": "http://127.0.0.1:8086/"
+            },
+            [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?connect_sso_token_create",
+                "[200] POST /remote/json.php?logout"
+            ]
+        ]
+    },
+    {
+        "id": "19r-1",
+        "ok": true,
+        "what": "Unsuspend S1"
+    },
+    {
+        "id": "19r-2",
+        "ok": true,
+        "what": "Unsuspend S2"
+    },
+    {
+        "id": "19-nourl",
+        "ok": true,
+        "what": "no module-log row carries an SSO login URL"
+    }
+]

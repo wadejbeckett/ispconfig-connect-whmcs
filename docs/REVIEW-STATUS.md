@@ -15,6 +15,10 @@ stand, so the work can be picked up later without the original session. It belon
   The same suite passes on real PHP 8.2.34 and 8.3.35 builds (there, the three installer tests that
   need root were skipped). PHPStan 2.2.9 at level 6 reports no errors. `sh -n`, `dash -n` and
   `bash -n` are clean on the hook installer.
+- **Live test (in-session, 2026-09-28):** the plan was run against a real ISPConfig 3.3-line
+  panel and real WHMCS-shaped MySQL tables (no real WHMCS): 191 of 229 checks pass; 12 module
+  defects were confirmed (2 medium, 10 low) and 14 findings await verification. None is fixed
+  yet. See `docs/LIVE-TEST-RESULTS.md` (the checkpoint) and `tools/live-harness/`.
 - **Not verified live:** nothing on this branch has been run against a live WHMCS or ISPConfig
   panel. The last live verification was of `build/phase-0-1` (head `1ed05b3`) on WHMCS 9.0.6 and
   ISPConfig 3.3.1p1, and this branch changes several of the paths it covered. Panel behaviour was

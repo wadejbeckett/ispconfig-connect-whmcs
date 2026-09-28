@@ -1,0 +1,344 @@
+[
+    {
+        "id": "21-mailbox",
+        "ok": true,
+        "what": "mailbox created in S1's client group",
+        "evidence": [
+            {
+                "mailuser_id": "1",
+                "email": "info@test-one.example",
+                "name": "Sekret Mailbox Owner Name",
+                "quota": "1073741824",
+                "sys_groupid": "2",
+                "postfix": "y",
+                "autoresponder": "y",
+                "pwprefix": "$6$r"
+            }
+        ]
+    },
+    {
+        "id": "21-cat",
+        "ok": true,
+        "what": "metric catalogue: Disk Usage, Bandwidth, Mailbox Storage, Database Storage, Websites, Mailboxes, Databases, FTP Users, DNS Zones",
+        "evidence": [
+            "Disk Usage",
+            "Bandwidth",
+            "Mailbox Storage",
+            "Database Storage",
+            "Websites",
+            "Mailboxes",
+            "Databases",
+            "FTP Users",
+            "DNS Zones"
+        ]
+    },
+    {
+        "id": "21-cat-types",
+        "ok": true,
+        "what": "Bandwidth is TYPE_PERIOD_MONTH, the rest TYPE_SNAPSHOT"
+    },
+    {
+        "id": "21-cat-units",
+        "ok": true,
+        "what": "units: MB x4, Accounts x4, Domains",
+        "evidence": [
+            "MegaBytes",
+            "MegaBytes",
+            "MegaBytes",
+            "MegaBytes",
+            "Accounts",
+            "Accounts",
+            "Accounts",
+            "Accounts",
+            "Domains"
+        ]
+    },
+    {
+        "id": "21-s1",
+        "ok": true,
+        "what": "S1 (testone1): Disk 200, Bandwidth 500, Mailbox Storage 50, Database Storage 30, Websites=1, Mailboxes=1, Databases=1, FTP Users=1, DNS Zones=1",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-s2",
+        "ok": true,
+        "what": "S2 (website-only) values",
+        "evidence": {
+            "diskusage": 50,
+            "bandwidth": 100,
+            "mailquota": 0,
+            "databasequota": 0,
+            "websites": 1,
+            "mailboxes": 0,
+            "databases": 0,
+            "ftpusers": 1,
+            "dnszones": 0
+        }
+    },
+    {
+        "id": "21-s3",
+        "ok": true,
+        "what": "S3 (mail-domain only, no website) all zeros, reported (not skipped)",
+        "evidence": {
+            "diskusage": 0,
+            "bandwidth": 0,
+            "mailquota": 0,
+            "databasequota": 0,
+            "websites": 0,
+            "mailboxes": 0,
+            "databases": 0,
+            "ftpusers": 0,
+            "dnszones": 0
+        }
+    },
+    {
+        "id": "21-keys",
+        "ok": true,
+        "what": "usage() keyed by tenant username; each key equals that service's tblhosting.username",
+        "evidence": [
+            "testone1",
+            "testtwo2",
+            "mailonly3"
+        ]
+    },
+    {
+        "id": "21-login",
+        "ok": true,
+        "what": "usage(): one login for all tenants",
+        "evidence": [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?mailquota_get_by_user",
+            "[200] POST /remote/json.php?databasequota_get_by_user",
+            "[200] POST /remote/json.php?sites_ftp_user_get",
+            "[200] POST /remote/json.php?dns_zone_get",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?mailquota_get_by_user",
+            "[200] POST /remote/json.php?databasequota_get_by_user",
+            "[200] POST /remote/json.php?sites_ftp_user_get",
+            "[200] POST /remote/json.php?dns_zone_get",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?mailquota_get_by_user",
+            "[200] POST /remote/json.php?databasequota_get_by_user",
+            "[200] POST /remote/json.php?client_get",
+            "[200] POST /remote/json.php?client_get_by_username",
+            "[200] POST /remote/json.php?sites_ftp_user_get",
+            "[200] POST /remote/json.php?dns_zone_get",
+            "[200] POST /remote/json.php?logout"
+        ]
+    },
+    {
+        "id": "21-tenant-username-string",
+        "ok": true,
+        "what": "tenantUsage(username string) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-service-id-int",
+        "ok": true,
+        "what": "tenantUsage(service id int) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-numeric-string-id",
+        "ok": true,
+        "what": "tenantUsage(numeric string id) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-object-id+username",
+        "ok": true,
+        "what": "tenantUsage(object id+username) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-object-id-only",
+        "ok": true,
+        "what": "tenantUsage(object id only) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-HarnessServiceModel",
+        "ok": true,
+        "what": "tenantUsage(HarnessServiceModel) resolves S1 with the same figures",
+        "evidence": {
+            "diskusage": 200,
+            "bandwidth": 500,
+            "mailquota": 50,
+            "databasequota": 30,
+            "websites": 1,
+            "mailboxes": 1,
+            "databases": 1,
+            "ftpusers": 1,
+            "dnszones": 1
+        }
+    },
+    {
+        "id": "21-tenant-unknown",
+        "ok": true,
+        "what": "tenantUsage(unknown) -> catalogue without usage, no exception",
+        "evidence": {
+            "diskusage": null,
+            "bandwidth": null,
+            "mailquota": null,
+            "databasequota": null,
+            "websites": null,
+            "mailboxes": null,
+            "databases": null,
+            "ftpusers": null,
+            "dnszones": null
+        }
+    },
+    {
+        "id": "21-log-email-address",
+        "ok": true,
+        "what": "metrics Module Log rows carry no email address",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-mailbox-name",
+        "ok": true,
+        "what": "metrics Module Log rows carry no mailbox name",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-mailbox-password",
+        "ok": true,
+        "what": "metrics Module Log rows carry no mailbox password",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-password-hash",
+        "ok": true,
+        "what": "metrics Module Log rows carry no password hash",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-autoresponder-text",
+        "ok": true,
+        "what": "metrics Module Log rows carry no autoresponder text",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-cc-address",
+        "ok": true,
+        "what": "metrics Module Log rows carry no cc address",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-ssl_key-value",
+        "ok": true,
+        "what": "metrics Module Log rows carry no ssl_key value",
+        "evidence": 0
+    },
+    {
+        "id": "21-log-mailrow",
+        "ok": true,
+        "what": "the mailbox row IS logged (projected to ids and numbers)",
+        "evidence": 7
+    },
+    {
+        "id": "21-log-ssl_key-key",
+        "ok": false,
+        "what": "literal plan text: no \"ssl_key\" anywhere in the metrics Module Log rows (key name included)",
+        "evidence": 8
+    },
+    {
+        "id": "21-log-ssl_key-masked",
+        "ok": true,
+        "what": "every logged ssl_key value is \"***\" (S1, which has a key) or \"\" (no key): the private key itself never appears"
+    },
+    {
+        "id": "21-log-anywhere",
+        "ok": true,
+        "what": "no ssl_key / autoresponder / mailbox password anywhere in tblmodulelog"
+    },
+    {
+        "id": "21-log-pem-harness",
+        "ok": false,
+        "what": "multi-line PEM ssl_key absent from tblmodulelog (harness logModuleCall = json_encode then str_replace)",
+        "evidence": [
+            [
+                344,
+                "quota_get_by_user"
+            ]
+        ]
+    },
+    {
+        "id": "21-log-pem-printr",
+        "ok": true,
+        "what": "same payload serialised with print_r (what WHMCS logModuleCall is believed to do for arrays) then str_replace: PEM masked"
+    },
+    {
+        "id": "21-agree",
+        "ok": true,
+        "what": "UsageUpdate disk/bandwidth agree with the metrics",
+        "evidence": {
+            "diskusage": 200,
+            "bwusage": 500
+        }
+    }
+]

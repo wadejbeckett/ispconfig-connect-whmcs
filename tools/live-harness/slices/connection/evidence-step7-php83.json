@@ -1,0 +1,282 @@
+[
+    [
+        "A1 TestConnection (wrong password)",
+        {
+            "result": {
+                "success": false,
+                "error": "ISPConfig rejected the login. Check the Username and Password fields of this WHMCS server: they must hold an ISPConfig REMOTE user (System > Remote Users), not a panel administrator login. (The login failed. Username or password wrong.)"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                {
+                    "id": 445,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "The login failed. Username or password wrong.",
+                    "response_bytes": 45
+                }
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "1",
+                    "login_time": "2026-09-28 17:11:26"
+                }
+            ]
+        }
+    ],
+    [
+        "A2 GetRemoteMetaData ISPC-NEGATIVE",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:56 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                {
+                    "id": 446,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "The login failed. Username or password wrong.",
+                    "response_bytes": 45
+                }
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "2",
+                    "login_time": "2026-09-28 17:11:56"
+                }
+            ]
+        }
+    ],
+    [
+        "A2 GetRemoteMetaData ISPC-TEST",
+        {
+            "meta": {
+                "ispconfig_version": "3.2dev",
+                "pending_jobs": 0,
+                "client_count": 0,
+                "service_count": 0,
+                "server_count": 1,
+                "checked_at": "2026-09-28 17:11:56 UTC",
+                "ispconfig_status": "ok",
+                "sso_state": "absent",
+                "sso_available": false
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?server_get_app_version",
+                "[200] POST /remote/json.php?monitor_jobqueue_count",
+                "[200] POST /remote/json.php?client_get_all",
+                "[200] POST /remote/json.php?server_get_all",
+                "[200] POST /remote/json.php?get_function_list",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "modulelog": [
+                "login",
+                "server_get_app_version",
+                "monitor_jobqueue_count",
+                "client_get_all",
+                "server_get_all",
+                "get_function_list",
+                "logout"
+            ],
+            "attempts_login_after": []
+        }
+    ],
+    [
+        "NOTE counter after ISPC-TEST success",
+        {
+            "attempts_login": [],
+            "why": "remoting.inc.php login(): DELETE FROM attempts_login WHERE ip=? after any successful login from the same IP"
+        }
+    ],
+    [
+        "A2 Servers page block payload (rendered by hooks/ispconfigconnect.php)",
+        [
+            {
+                "id": 2,
+                "hostname": "127.0.0.1",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:11:56"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            },
+            {
+                "id": 1,
+                "hostname": "127.0.0.1",
+                "lines": [
+                    {
+                        "label": "ISPConfig Version",
+                        "value": "3.2dev"
+                    },
+                    {
+                        "label": "Pending Jobs",
+                        "value": "0"
+                    },
+                    {
+                        "label": "Clients",
+                        "value": "0"
+                    },
+                    {
+                        "label": "ISPConfig Nodes",
+                        "value": "1"
+                    },
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Not installed"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:11:56"
+                    }
+                ],
+                "accounts": 0
+            }
+        ]
+    ],
+    [
+        "A2 tblservers_remote",
+        [
+            {
+                "id": 1,
+                "server_id": 2,
+                "num_accounts": 0,
+                "meta_data": "{\"checked_at\":\"2026-09-28 17:11:56 UTC\",\"ispconfig_status\":\"unavailable\",\"ispconfig_error\":\"panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window\",\"sso_state\":\"unknown\"}",
+                "created_at": "2026-09-28 17:11:56",
+                "updated_at": "2026-09-28 17:11:56"
+            },
+            {
+                "id": 2,
+                "server_id": 1,
+                "num_accounts": 0,
+                "meta_data": "{\"ispconfig_version\":\"3.2dev\",\"pending_jobs\":0,\"client_count\":0,\"service_count\":0,\"server_count\":1,\"checked_at\":\"2026-09-28 17:11:56 UTC\",\"ispconfig_status\":\"ok\",\"sso_state\":\"absent\",\"sso_available\":false}",
+                "created_at": "2026-09-28 17:11:56",
+                "updated_at": "2026-09-28 17:11:56"
+            }
+        ]
+    ],
+    [
+        "RenderRemoteMetaData defined by the module?",
+        "no"
+    ],
+    [
+        "extra Verify Permissions (service params pointing at ISPC-NEGATIVE)",
+        {
+            "result": "Verify Permissions failed: The login failed. Username or password wrong.",
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "1",
+                    "login_time": "2026-09-28 17:11:56"
+                }
+            ]
+        }
+    ],
+    [
+        "extra Server Sync ListAccounts",
+        {
+            "result": {
+                "success": false,
+                "error": "ISPConfig rejected the login. Check the Username and Password fields of this WHMCS server: they must hold an ISPConfig REMOTE user (System > Remote Users), not a panel administrator login. (The login failed. Username or password wrong.)"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "2",
+                    "login_time": "2026-09-28 17:11:56"
+                }
+            ]
+        }
+    ],
+    [
+        "lockout NEGATIVE TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "The panel has locked this IP out (10 failed attempts within 5 minutes, and failed attempts include expired sessions). Wait at least 5 minutes WITHOUT retrying - every further attempt extends the lockout - then correct the credentials and try again. (The login failure limit has been reached.)"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "10",
+                    "login_time": "2026-09-28 17:11:56"
+                }
+            ]
+        }
+    ],
+    [
+        "lockout TEST TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "The panel has locked this IP out (10 failed attempts within 5 minutes, and failed attempts include expired sessions). Wait at least 5 minutes WITHOUT retrying - every further attempt extends the lockout - then correct the credentials and try again. (The login failure limit has been reached.)"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "10",
+                    "login_time": "2026-09-28 17:11:56"
+                }
+            ]
+        }
+    ],
+    [
+        "lockout GetRemoteMetaData TEST",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:56 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: The login failure limit has been reached.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ]
+        }
+    ],
+    [
+        "attempts_login after cleanup",
+        []
+    ],
+    [
+        "summary",
+        {
+            "pass": 14,
+            "fail": 0
+        }
+    ]
+]

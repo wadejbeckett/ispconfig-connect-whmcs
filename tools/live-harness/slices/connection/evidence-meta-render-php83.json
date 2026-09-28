@@ -1,0 +1,429 @@
+[
+    [
+        "core path: ispconfigconnect_RenderRemoteMetaData defined?",
+        "no"
+    ],
+    [
+        "[good] GetRemoteMetaData",
+        {
+            "meta": {
+                "ispconfig_version": "3.2dev",
+                "pending_jobs": 0,
+                "client_count": 0,
+                "service_count": 0,
+                "server_count": 1,
+                "checked_at": "2026-09-28 17:11:57 UTC",
+                "ispconfig_status": "ok",
+                "sso_state": "absent",
+                "sso_available": false
+            },
+            "panel_requests": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?server_get_app_version",
+                "[200] POST /remote/json.php?monitor_jobqueue_count",
+                "[200] POST /remote/json.php?client_get_all",
+                "[200] POST /remote/json.php?server_get_all",
+                "[200] POST /remote/json.php?get_function_list",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "modulelog": [
+                "login => ***",
+                "server_get_app_version => {\"ispc_app_version\":\"3.2dev\"}",
+                "monitor_jobqueue_count => 0",
+                "client_get_all => ",
+                "server_get_all => [{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+                "get_function_list => [\"update_record_permissions\",\"system_config_set\",\"system_config_get\",\"config_value_get\",\"c",
+                "logout => 1"
+            ],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[good] stored tblservers_remote.meta_data",
+        "{\"ispconfig_version\":\"3.2dev\",\"pending_jobs\":0,\"client_count\":0,\"service_count\":0,\"server_count\":1,\"checked_at\":\"2026-09-28 17:11:57 UTC\",\"ispconfig_status\":\"ok\",\"sso_state\":\"absent\",\"sso_available\":false}"
+    ],
+    [
+        "[good] hook block (what the admin sees)",
+        {
+            "id": 1,
+            "hostname": "127.0.0.1",
+            "lines": [
+                {
+                    "label": "ISPConfig Version",
+                    "value": "3.2dev"
+                },
+                {
+                    "label": "Pending Jobs",
+                    "value": "0"
+                },
+                {
+                    "label": "Clients",
+                    "value": "0"
+                },
+                {
+                    "label": "ISPConfig Nodes",
+                    "value": "1"
+                },
+                {
+                    "label": "Single Sign-On",
+                    "value": "Not installed"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:57"
+                }
+            ],
+            "accounts": 0
+        }
+    ],
+    [
+        "[good-minus-Server-functions] GetRemoteMetaData",
+        {
+            "meta": {
+                "pending_jobs": 0,
+                "client_count": 0,
+                "service_count": 0,
+                "checked_at": "2026-09-28 17:11:57 UTC",
+                "ispconfig_status": "degraded",
+                "ispconfig_error": "panel version: You do not have the permissions to access this function.; ISPConfig nodes: You do not have the permissions to access this function.",
+                "sso_state": "unknown"
+            },
+            "panel_requests": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?server_get_app_version",
+                "[200] POST /remote/json.php?monitor_jobqueue_count",
+                "[200] POST /remote/json.php?client_get_all",
+                "[200] POST /remote/json.php?server_get_all",
+                "[200] POST /remote/json.php?get_function_list",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "modulelog": [
+                "login => ***",
+                "server_get_app_version => You do not have the permissions to access this function.",
+                "monitor_jobqueue_count => 0",
+                "client_get_all => ",
+                "server_get_all => You do not have the permissions to access this function.",
+                "get_function_list => You do not have the permissions to access this function.",
+                "logout => 1"
+            ],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[good-minus-Server-functions] stored tblservers_remote.meta_data",
+        "{\"pending_jobs\":0,\"client_count\":0,\"service_count\":0,\"checked_at\":\"2026-09-28 17:11:57 UTC\",\"ispconfig_status\":\"degraded\",\"ispconfig_error\":\"panel version: You do not have the permissions to access this function.; ISPConfig nodes: You do not have the permissions to access this function.\",\"sso_state\":\"unknown\"}"
+    ],
+    [
+        "[good-minus-Server-functions] hook block (what the admin sees)",
+        {
+            "id": 1,
+            "hostname": "127.0.0.1",
+            "lines": [
+                {
+                    "label": "Pending Jobs",
+                    "value": "0"
+                },
+                {
+                    "label": "Clients",
+                    "value": "0"
+                },
+                {
+                    "label": "Single Sign-On",
+                    "value": "Cannot tell - grant get_function_list to this server's remote user"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:57"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "panel version: You do not have the permissions to access this function.; ISPConfig nodes: You do not have the permissions to access this function.",
+                    "warn": true
+                }
+            ],
+            "accounts": 0
+        }
+    ],
+    [
+        "[good-minus-Monitor-functions] GetRemoteMetaData",
+        {
+            "meta": {
+                "ispconfig_version": "3.2dev",
+                "client_count": 0,
+                "service_count": 0,
+                "server_count": 1,
+                "checked_at": "2026-09-28 17:11:58 UTC",
+                "ispconfig_status": "degraded",
+                "ispconfig_error": "pending jobs: You do not have the permissions to access this function.",
+                "sso_state": "absent",
+                "sso_available": false
+            },
+            "panel_requests": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?server_get_app_version",
+                "[200] POST /remote/json.php?monitor_jobqueue_count",
+                "[200] POST /remote/json.php?client_get_all",
+                "[200] POST /remote/json.php?server_get_all",
+                "[200] POST /remote/json.php?get_function_list",
+                "[200] POST /remote/json.php?logout"
+            ],
+            "modulelog": [
+                "login => ***",
+                "server_get_app_version => {\"ispc_app_version\":\"3.2dev\"}",
+                "monitor_jobqueue_count => You do not have the permissions to access this function.",
+                "client_get_all => ",
+                "server_get_all => [{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+                "get_function_list => [\"update_record_permissions\",\"system_config_set\",\"system_config_get\",\"config_value_get\",\"c",
+                "logout => 1"
+            ],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[good-minus-Monitor-functions] stored tblservers_remote.meta_data",
+        "{\"ispconfig_version\":\"3.2dev\",\"client_count\":0,\"service_count\":0,\"server_count\":1,\"checked_at\":\"2026-09-28 17:11:58 UTC\",\"ispconfig_status\":\"degraded\",\"ispconfig_error\":\"pending jobs: You do not have the permissions to access this function.\",\"sso_state\":\"absent\",\"sso_available\":false}"
+    ],
+    [
+        "[good-minus-Monitor-functions] hook block (what the admin sees)",
+        {
+            "id": 1,
+            "hostname": "127.0.0.1",
+            "lines": [
+                {
+                    "label": "ISPConfig Version",
+                    "value": "3.2dev"
+                },
+                {
+                    "label": "Clients",
+                    "value": "0"
+                },
+                {
+                    "label": "ISPConfig Nodes",
+                    "value": "1"
+                },
+                {
+                    "label": "Single Sign-On",
+                    "value": "Not installed"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:58"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "pending jobs: You do not have the permissions to access this function.",
+                    "warn": true
+                }
+            ],
+            "accounts": 0
+        }
+    ],
+    [
+        "[bad-password] GetRemoteMetaData",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:58 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "panel_requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                "login => The login failed. Username or password wrong."
+            ],
+            "attempts_login": [
+                {
+                    "ip": "f528764d624db129b32c21fbca0cb8d6",
+                    "times": "1",
+                    "login_time": "2026-09-28 17:11:58"
+                }
+            ]
+        }
+    ],
+    [
+        "[bad-password] stored tblservers_remote.meta_data",
+        "{\"checked_at\":\"2026-09-28 17:11:58 UTC\",\"ispconfig_status\":\"unavailable\",\"ispconfig_error\":\"panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window\",\"sso_state\":\"unknown\"}"
+    ],
+    [
+        "[bad-password] hook block (what the admin sees)",
+        {
+            "id": 2,
+            "hostname": "127.0.0.1",
+            "lines": [
+                {
+                    "label": "Single Sign-On",
+                    "value": "Cannot tell - grant get_function_list to this server's remote user"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:58"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                    "warn": true
+                }
+            ]
+        }
+    ],
+    [
+        "[bad-password] Single Sign-On line",
+        "Cannot tell - grant get_function_list to this server's remote user"
+    ],
+    [
+        "[bad-hostname] GetRemoteMetaData",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:58 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \"https://panel.test.example\""
+            },
+            "panel_requests": [],
+            "modulelog": [],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[bad-hostname] stored tblservers_remote.meta_data",
+        "{\"checked_at\":\"2026-09-28 17:11:58 UTC\",\"ispconfig_status\":\"unavailable\",\"ispconfig_error\":\"Server Hostname\\/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \\\"https:\\/\\/panel.test.example\\\"\"}"
+    ],
+    [
+        "[bad-hostname] hook block (what the admin sees)",
+        {
+            "id": 2,
+            "hostname": "https://panel.test.example",
+            "lines": [
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:58"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \"https://panel.test.example\"",
+                    "warn": true
+                }
+            ]
+        }
+    ],
+    [
+        "[redirect-302] GetRemoteMetaData",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:58 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: HTTP status 302 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "panel_requests": [],
+            "modulelog": [
+                "login => HTTP status 302 from http://127.0.0.2:80/remote/json.php?login"
+            ],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[redirect-302] stored tblservers_remote.meta_data",
+        "{\"checked_at\":\"2026-09-28 17:11:58 UTC\",\"ispconfig_status\":\"unavailable\",\"ispconfig_error\":\"panel version: HTTP status 302 from http:\\/\\/127.0.0.2:80\\/remote\\/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window\",\"sso_state\":\"unknown\"}"
+    ],
+    [
+        "[redirect-302] hook block (what the admin sees)",
+        {
+            "id": 2,
+            "hostname": "127.0.0.2",
+            "lines": [
+                {
+                    "label": "Single Sign-On",
+                    "value": "Cannot tell - grant get_function_list to this server's remote user"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:58"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "panel version: HTTP status 302 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                    "warn": true
+                }
+            ]
+        }
+    ],
+    [
+        "[redirect-302] Single Sign-On line",
+        "Cannot tell - grant get_function_list to this server's remote user"
+    ],
+    [
+        "[html-200] GetRemoteMetaData",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:58 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "panel_requests": [],
+            "modulelog": [
+                "login => Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOC"
+            ],
+            "attempts_login": []
+        }
+    ],
+    [
+        "[html-200] stored tblservers_remote.meta_data",
+        "{\"checked_at\":\"2026-09-28 17:11:58 UTC\",\"ispconfig_status\":\"unavailable\",\"ispconfig_error\":\"panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\\n<html>\\n<head>\\n<title>Welcome to nginx!<\\/title>\\n<style>html { color-scheme: light dark; } body { width: 3...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window\",\"sso_state\":\"unknown\"}"
+    ],
+    [
+        "[html-200] hook block (what the admin sees)",
+        {
+            "id": 2,
+            "hostname": "127.0.0.3",
+            "lines": [
+                {
+                    "label": "Single Sign-On",
+                    "value": "Cannot tell - grant get_function_list to this server's remote user"
+                },
+                {
+                    "label": "Last Updated",
+                    "value": "just now",
+                    "hint": "2026-09-28 17:11:58"
+                },
+                {
+                    "label": "Probe Errors",
+                    "value": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                    "warn": true
+                }
+            ]
+        }
+    ],
+    [
+        "[html-200] Single Sign-On line",
+        "Cannot tell - grant get_function_list to this server's remote user"
+    ],
+    [
+        "MetaData()",
+        {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1"
+        }
+    ],
+    [
+        "summary",
+        {
+            "pass": 29,
+            "fail": 3
+        }
+    ]
+]

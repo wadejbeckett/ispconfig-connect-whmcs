@@ -1,0 +1,388 @@
+[
+    [
+        "A-all-groups TestConnection",
+        {
+            "success": true,
+            "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    ],
+    [
+        "A-all-groups wire requests",
+        [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?server_get_all",
+            "[200] POST /remote/json.php?client_templates_get_all",
+            "[200] POST /remote/json.php?monitor_jobqueue_count",
+            "[200] POST /remote/json.php?client_get",
+            "[200] POST /remote/json.php?client_get_all",
+            "[200] POST /remote/json.php?client_get_by_username",
+            "[200] POST /remote/json.php?client_get_sites_by_user",
+            "[200] POST /remote/json.php?sites_web_domain_get",
+            "[200] POST /remote/json.php?sites_ftp_user_get",
+            "[200] POST /remote/json.php?dns_zone_get",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?mailquota_get_by_user",
+            "[200] POST /remote/json.php?databasequota_get_by_user",
+            "[200] POST /remote/json.php?get_function_list",
+            "[200] POST /remote/json.php?logout"
+        ]
+    ],
+    [
+        "A-all-groups tblmodulelog",
+        [
+            {
+                "id": 20,
+                "action": "login",
+                "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                "response": "***",
+                "response_bytes": 3
+            },
+            {
+                "id": 21,
+                "action": "server_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+                "response_bytes": 54
+            },
+            {
+                "id": 22,
+                "action": "client_templates_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[{\"template_id\":\"1\",\"sys_userid\":\"1\",\"sys_groupid\":\"1\",\"sys_perm_user\":\"riud\",\"sys_perm_group\":\"riud\",\"sys_perm_other\":\"\",\"template_name\":\"Basic\",\"template_type\":\"m\",\"mail_servers\":\"1\",\"limit_maildomain\":\"1\",\"limit_mailbox\":\"5\",\"limit_mailalias\":\"-1\",\"limit_mailaliasdomain\":\"-1\",\"limit_mailforward\":\"-1\",\"limit_mailcatchall\":\"-1\",\"limit_mailrouting\":\"0\",\"limit_mail_wblist\":\"0\",\"limit_mailfilter\":\"-1\",\"limit_fetchmail\":\"-1\",\"limit_mailquota\":\"-1\",\"limit_spamfilter_wblist\":\"0\",\"limit_spamfilter_user\":\"0\",\"limit_spamfilter_policy\":\"0\",\"limit_mail_backup\":\"y\",\"limit_relayhost\":\"n\",\"default_xmppserv...[+3048B]",
+                "response_bytes": 3648
+            },
+            {
+                "id": 23,
+                "action": "monitor_jobqueue_count",
+                "request": "{\"server_id\":0,\"session_id\":\"***\"}",
+                "response": "0",
+                "response_bytes": 1
+            },
+            {
+                "id": 24,
+                "action": "client_get",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 25,
+                "action": "client_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 26,
+                "action": "client_get_by_username",
+                "request": "{\"username\":\"ispconfigconnect_probe_no_such_user\",\"session_id\":\"***\"}",
+                "response": "There is no user account for this user name.",
+                "response_bytes": 44
+            },
+            {
+                "id": 27,
+                "action": "client_get_sites_by_user",
+                "request": "{\"sys_userid\":0,\"sys_groupid\":\"0\",\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 28,
+                "action": "sites_web_domain_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 29,
+                "action": "sites_ftp_user_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 30,
+                "action": "dns_zone_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 31,
+                "action": "quota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 32,
+                "action": "mailquota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 33,
+                "action": "databasequota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 34,
+                "action": "get_function_list",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[\"update_record_permissions\",\"system_config_set\",\"system_config_get\",\"config_value_get\",\"config_value_add\",\"config_value_update\",\"config_value_replace\",\"config_value_delete\",\"sys_datalog_get_by_tstamp\",\"sys_datalog_get\",\"__construct\",\"login\",\"logout\",\"server_get\",\"server_get_all\",\"get_function_list\",\"sites_aps_update_package_list\",\"sites_aps_available_packages_list\",\"sites_aps_get_package_details\",\"sites_aps_get_package_file\",\"sites_aps_get_package_settings\",\"sites_aps_change_package_status\",\"sites_aps_install_package\",\"sites_aps_instance_get\",\"sites_aps_instance_settings_get\",\"sites_aps_insta...[+6305B]",
+                "response_bytes": 6905
+            },
+            {
+                "id": 35,
+                "action": "logout",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "1",
+                "response_bytes": 1
+            },
+            {
+                "id": 36,
+                "action": "TestConnection",
+                "request": "{\"serverid\":1}",
+                "response": "{\"success\":true,\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+                "response_bytes": 485
+            }
+        ]
+    ],
+    [
+        "A-all-groups probe responses",
+        {
+            "server_get_all": "[{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+            "client_templates_get_all": "[{\"template_id\":\"1\",\"sys_userid\":\"1\",\"sys_groupid\":\"1\",\"sys_perm_user\":\"riud\",\"sys_perm_group\":\"riud\",\"sys_perm_other\":\"\",\"template_name\":\"Basic\",\"template_type...",
+            "monitor_jobqueue_count": "0",
+            "client_get": "",
+            "client_get_all": "",
+            "client_get_by_username": "There is no user account for this user name.",
+            "client_get_sites_by_user": "[]",
+            "sites_web_domain_get": "",
+            "sites_ftp_user_get": "",
+            "dns_zone_get": "",
+            "quota_get_by_user": "[]",
+            "mailquota_get_by_user": "[]",
+            "databasequota_get_by_user": "[]"
+        }
+    ],
+    [
+        "A-all-groups TestConnection module-log line",
+        {
+            "request": "{\"serverid\":1}",
+            "response": "{\"success\":true,\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}"
+        }
+    ],
+    [
+        "B-nine-groups TestConnection",
+        {
+            "success": true,
+            "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    ],
+    [
+        "B-nine-groups wire requests",
+        [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?server_get_all",
+            "[200] POST /remote/json.php?client_templates_get_all",
+            "[200] POST /remote/json.php?monitor_jobqueue_count",
+            "[200] POST /remote/json.php?client_get",
+            "[200] POST /remote/json.php?client_get_all",
+            "[200] POST /remote/json.php?client_get_by_username",
+            "[200] POST /remote/json.php?client_get_sites_by_user",
+            "[200] POST /remote/json.php?sites_web_domain_get",
+            "[200] POST /remote/json.php?sites_ftp_user_get",
+            "[200] POST /remote/json.php?dns_zone_get",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?mailquota_get_by_user",
+            "[200] POST /remote/json.php?databasequota_get_by_user",
+            "[200] POST /remote/json.php?get_function_list",
+            "[200] POST /remote/json.php?logout"
+        ]
+    ],
+    [
+        "B-nine-groups tblmodulelog",
+        [
+            {
+                "id": 37,
+                "action": "login",
+                "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                "response": "***",
+                "response_bytes": 3
+            },
+            {
+                "id": 38,
+                "action": "server_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+                "response_bytes": 54
+            },
+            {
+                "id": 39,
+                "action": "client_templates_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[{\"template_id\":\"1\",\"sys_userid\":\"1\",\"sys_groupid\":\"1\",\"sys_perm_user\":\"riud\",\"sys_perm_group\":\"riud\",\"sys_perm_other\":\"\",\"template_name\":\"Basic\",\"template_type\":\"m\",\"mail_servers\":\"1\",\"limit_maildomain\":\"1\",\"limit_mailbox\":\"5\",\"limit_mailalias\":\"-1\",\"limit_mailaliasdomain\":\"-1\",\"limit_mailforward\":\"-1\",\"limit_mailcatchall\":\"-1\",\"limit_mailrouting\":\"0\",\"limit_mail_wblist\":\"0\",\"limit_mailfilter\":\"-1\",\"limit_fetchmail\":\"-1\",\"limit_mailquota\":\"-1\",\"limit_spamfilter_wblist\":\"0\",\"limit_spamfilter_user\":\"0\",\"limit_spamfilter_policy\":\"0\",\"limit_mail_backup\":\"y\",\"limit_relayhost\":\"n\",\"default_xmppserv...[+3048B]",
+                "response_bytes": 3648
+            },
+            {
+                "id": 40,
+                "action": "monitor_jobqueue_count",
+                "request": "{\"server_id\":0,\"session_id\":\"***\"}",
+                "response": "0",
+                "response_bytes": 1
+            },
+            {
+                "id": 41,
+                "action": "client_get",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 42,
+                "action": "client_get_all",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 43,
+                "action": "client_get_by_username",
+                "request": "{\"username\":\"ispconfigconnect_probe_no_such_user\",\"session_id\":\"***\"}",
+                "response": "There is no user account for this user name.",
+                "response_bytes": 44
+            },
+            {
+                "id": 44,
+                "action": "client_get_sites_by_user",
+                "request": "{\"sys_userid\":0,\"sys_groupid\":\"0\",\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 45,
+                "action": "sites_web_domain_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 46,
+                "action": "sites_ftp_user_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 47,
+                "action": "dns_zone_get",
+                "request": "{\"primary_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "",
+                "response_bytes": 0
+            },
+            {
+                "id": 48,
+                "action": "quota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 49,
+                "action": "mailquota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 50,
+                "action": "databasequota_get_by_user",
+                "request": "{\"client_id\":2147483646,\"session_id\":\"***\"}",
+                "response": "[]",
+                "response_bytes": 2
+            },
+            {
+                "id": 51,
+                "action": "get_function_list",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "[\"update_record_permissions\",\"system_config_set\",\"system_config_get\",\"config_value_get\",\"config_value_add\",\"config_value_update\",\"config_value_replace\",\"config_value_delete\",\"sys_datalog_get_by_tstamp\",\"sys_datalog_get\",\"__construct\",\"login\",\"logout\",\"server_get\",\"server_get_all\",\"get_function_list\",\"sites_aps_update_package_list\",\"sites_aps_available_packages_list\",\"sites_aps_get_package_details\",\"sites_aps_get_package_file\",\"sites_aps_get_package_settings\",\"sites_aps_change_package_status\",\"sites_aps_install_package\",\"sites_aps_instance_get\",\"sites_aps_instance_settings_get\",\"sites_aps_insta...[+6305B]",
+                "response_bytes": 6905
+            },
+            {
+                "id": 52,
+                "action": "logout",
+                "request": "{\"session_id\":\"***\"}",
+                "response": "1",
+                "response_bytes": 1
+            },
+            {
+                "id": 53,
+                "action": "TestConnection",
+                "request": "{\"serverid\":1}",
+                "response": "{\"success\":true,\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+                "response_bytes": 485
+            }
+        ]
+    ],
+    [
+        "B-nine-groups probe responses",
+        {
+            "server_get_all": "[{\"server_id\":\"1\",\"server_name\":\"panel.test.example\"}]",
+            "client_templates_get_all": "[{\"template_id\":\"1\",\"sys_userid\":\"1\",\"sys_groupid\":\"1\",\"sys_perm_user\":\"riud\",\"sys_perm_group\":\"riud\",\"sys_perm_other\":\"\",\"template_name\":\"Basic\",\"template_type...",
+            "monitor_jobqueue_count": "0",
+            "client_get": "",
+            "client_get_all": "",
+            "client_get_by_username": "There is no user account for this user name.",
+            "client_get_sites_by_user": "[]",
+            "sites_web_domain_get": "",
+            "sites_ftp_user_get": "",
+            "dns_zone_get": "",
+            "quota_get_by_user": "[]",
+            "mailquota_get_by_user": "[]",
+            "databasequota_get_by_user": "[]"
+        }
+    ],
+    [
+        "B-nine-groups TestConnection module-log line",
+        {
+            "request": "{\"serverid\":1}",
+            "response": "{\"success\":true,\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}"
+        }
+    ],
+    [
+        "Verify Permissions (nine groups)",
+        {
+            "result": "success",
+            "log": [
+                "login",
+                "server_get_all",
+                "client_templates_get_all",
+                "monitor_jobqueue_count",
+                "client_get",
+                "client_get_all",
+                "client_get_by_username",
+                "client_get_sites_by_user",
+                "sites_web_domain_get",
+                "sites_ftp_user_get",
+                "dns_zone_get",
+                "quota_get_by_user",
+                "mailquota_get_by_user",
+                "databasequota_get_by_user",
+                "get_function_list",
+                "logout",
+                "VerifyPermissions"
+            ]
+        }
+    ],
+    [
+        "summary",
+        {
+            "pass": 19,
+            "fail": 0
+        }
+    ]
+]

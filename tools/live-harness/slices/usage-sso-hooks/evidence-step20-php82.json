@@ -1,0 +1,351 @@
+[
+    {
+        "id": "20a-bw",
+        "ok": true,
+        "what": "(a) bwusage=500 (last month's 99999 peak reset; last month's 999 MB web_traffic row not counted)",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:36"
+        }
+    },
+    {
+        "id": "20a-lastupdate",
+        "ok": true,
+        "what": "(a) lastupdate is now in PHP's clock (2026-09-28 17:33:36 within [2026-09-28 17:33:36, 2026-09-28 17:33:36])",
+        "evidence": "2026-09-28 17:33:36"
+    },
+    {
+        "id": "20a-disk",
+        "ok": true,
+        "what": "(a) diskusage=200 (monitor 204800 KB)",
+        "evidence": 200
+    },
+    {
+        "id": "20a-limits-kept",
+        "ok": true,
+        "what": "(a) unlimited panel quotas leave the WHMCS-configured disklimit/bwlimit untouched",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:36"
+        }
+    },
+    {
+        "id": "20a-log",
+        "ok": true,
+        "what": "(a) Module Log UsageUpdate: updated>=1, no error",
+        "evidence": {
+            "updated": 3
+        }
+    },
+    {
+        "id": "20a-login",
+        "ok": true,
+        "what": "(a) one login for the whole sweep",
+        "evidence": [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?monitor_jobqueue_count",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?quota_get_by_user",
+            "[200] POST /remote/json.php?trafficquota_get_by_user",
+            "[200] POST /remote/json.php?client_get",
+            "[200] POST /remote/json.php?logout"
+        ]
+    },
+    {
+        "id": "20a-s2",
+        "ok": true,
+        "what": "(a) S2 (website-only) bwusage=100, diskusage=50",
+        "evidence": {
+            "id": 2,
+            "userid": 78,
+            "packageid": 2,
+            "server": 1,
+            "domain": "test-two.example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 50,
+            "disklimit": 0,
+            "bwusage": 100,
+            "bwlimit": 0,
+            "lastupdate": "2026-09-28 17:33:36"
+        }
+    },
+    {
+        "id": "20a-s3",
+        "ok": true,
+        "what": "(a) S3 (no website) imported as 0/0, not skipped",
+        "evidence": [
+            {
+                "id": 3,
+                "userid": 78,
+                "packageid": 3,
+                "server": 1,
+                "domain": "mailonly.example",
+                "username": "",
+                "domainstatus": "Active",
+                "diskusage": 0,
+                "disklimit": 0,
+                "bwusage": 0,
+                "bwlimit": 0,
+                "lastupdate": "2026-09-28 17:33:36"
+            },
+            {
+                "updated": 3
+            }
+        ]
+    },
+    {
+        "id": "20a-count",
+        "ok": true,
+        "what": "(a) all 3 linked services updated, none skipped",
+        "evidence": {
+            "updated": 3
+        }
+    },
+    {
+        "id": "20b-bw",
+        "ok": true,
+        "what": "(b) bwusage stays 99999 (this month's high-water mark)",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 99999,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:37"
+        }
+    },
+    {
+        "id": "20b-log",
+        "ok": true,
+        "what": "(b) updated>=1, no error",
+        "evidence": {
+            "updated": 3
+        }
+    },
+    {
+        "id": "20b-lastupdate",
+        "ok": true,
+        "what": "(b) lastupdate refreshed",
+        "evidence": "2026-09-28 17:33:37"
+    },
+    {
+        "id": "20c-bw",
+        "ok": true,
+        "what": "(c) bwusage=500",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:37"
+        }
+    },
+    {
+        "id": "20c-log",
+        "ok": true,
+        "what": "(c) updated>=1, no error",
+        "evidence": {
+            "updated": 3
+        }
+    },
+    {
+        "id": "20x-zero",
+        "ok": true,
+        "what": "lastupdate 0000-00-00 (never updated) with bwusage 99999 -> measured 500",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:37"
+        }
+    },
+    {
+        "id": "20x-lastyear",
+        "ok": true,
+        "what": "lastupdate in the same month LAST YEAR (2025-09-15) -> reset to 500 (year compared too)",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:38"
+        }
+    },
+    {
+        "id": "20x-lower",
+        "ok": true,
+        "what": "stored 120 this month, measured 500 -> 500 (max)",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 500,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:38"
+        }
+    },
+    {
+        "id": "20s-susp",
+        "ok": true,
+        "what": "S1 suspended: web_domain.active=n (panel stops counting its traffic)",
+        "evidence": "success"
+    },
+    {
+        "id": "20s-keep",
+        "ok": true,
+        "what": "suspended, same month: panel reports 0, stored 500 kept",
+        "evidence": [
+            {
+                "id": 1,
+                "userid": 77,
+                "packageid": 1,
+                "server": 1,
+                "domain": "Test-One.Example",
+                "username": "",
+                "domainstatus": "Suspended",
+                "diskusage": 200,
+                "disklimit": 2048,
+                "bwusage": 500,
+                "bwlimit": 10240,
+                "lastupdate": "2026-09-28 17:33:39"
+            },
+            {
+                "updated": 3
+            }
+        ]
+    },
+    {
+        "id": "20s-status",
+        "ok": true,
+        "what": "suspended services are still swept (Active+Suspended)",
+        "evidence": {
+            "updated": 3
+        }
+    },
+    {
+        "id": "20s-reset",
+        "ok": true,
+        "what": "suspended across a month rollover: last month's 500 is reset to this month's 0",
+        "evidence": {
+            "id": 1,
+            "userid": 77,
+            "packageid": 1,
+            "server": 1,
+            "domain": "Test-One.Example",
+            "username": "",
+            "domainstatus": "Suspended",
+            "diskusage": 200,
+            "disklimit": 2048,
+            "bwusage": 0,
+            "bwlimit": 10240,
+            "lastupdate": "2026-09-28 17:33:39"
+        }
+    },
+    {
+        "id": "20s-unsusp",
+        "ok": true,
+        "what": "Unsuspend S1"
+    },
+    {
+        "id": "20l-limits",
+        "ok": true,
+        "what": "S2 website hd_quota=1000/traffic_quota=5000 MB -> disklimit=1000, bwlimit=5000",
+        "evidence": {
+            "id": 2,
+            "userid": 78,
+            "packageid": 2,
+            "server": 1,
+            "domain": "test-two.example",
+            "username": "",
+            "domainstatus": "Active",
+            "diskusage": 50,
+            "disklimit": 1000,
+            "bwusage": 100,
+            "bwlimit": 5000,
+            "lastupdate": "2026-09-28 17:33:40"
+        }
+    },
+    {
+        "id": "20tz",
+        "ok": true,
+        "what": "lastupdate follows PHP's timezone (Pacific/Kiritimati), not MySQL NOW() (UTC)",
+        "evidence": [
+            [
+                "2026-09-29 07:33:40",
+                "2026-09-29 07:33:40",
+                "Pacific/Kiritimati"
+            ],
+            "2026-09-29 07:33:40"
+        ]
+    },
+    {
+        "id": "20u",
+        "ok": true,
+        "what": "unlinked service reported under skipped/unlinked, others updated, no error",
+        "evidence": {
+            "updated": 3,
+            "skipped": {
+                "4": "no ISPConfig client id stored for this service"
+            },
+            "adoption": "unavailable: 1 service(s) on this server carry no ISPConfig client id, and this install has no adoption resolver, so they were left unmanaged. Link them with the \"Link to ISPConfig Account\" button on each service."
+        }
+    }
+]

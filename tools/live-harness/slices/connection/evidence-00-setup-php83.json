@@ -1,0 +1,115 @@
+[
+    [
+        "whmcs servers",
+        [
+            {
+                "id": 1,
+                "name": "ISPC-TEST",
+                "hostname": "127.0.0.1",
+                "ipaddress": "127.0.0.1",
+                "port": 8082,
+                "secure": "",
+                "username": "whmcs"
+            },
+            {
+                "id": 2,
+                "name": "ISPC-NEGATIVE",
+                "hostname": "127.0.0.1",
+                "ipaddress": "127.0.0.1",
+                "port": 8082,
+                "secure": "",
+                "username": "negative"
+            }
+        ]
+    ],
+    [
+        "product/service",
+        {
+            "product": 1,
+            "service": 1
+        }
+    ],
+    [
+        "panel remote users",
+        [
+            {
+                "remote_userid": "1",
+                "remote_username": "whmcs",
+                "remote_access": "y",
+                "remote_ips": "",
+                "fn_len": "1342"
+            },
+            {
+                "remote_userid": "6",
+                "remote_username": "negative",
+                "remote_access": "y",
+                "remote_ips": "",
+                "fn_len": "1342"
+            }
+        ]
+    ],
+    [
+        "groups found in panel remote.conf.php",
+        [
+            "Server functions",
+            "Record permission changes",
+            "Roundcube plugins functions",
+            "ISPConfig module: acme proxy functions",
+            "Client functions",
+            "Domaintool functions",
+            "Quota functions",
+            "DNS zone functions",
+            "DNS a functions",
+            "DNS aaaa functions",
+            "DNS alias functions",
+            "DNS caa functions",
+            "DNS cname functions",
+            "DNS dname functions",
+            "DNS ds functions",
+            "DNS hinfo functions",
+            "DNS loc functions",
+            "DNS mx functions",
+            "DNS naptr functions",
+            "DNS ns functions",
+            "DNS ptr functions",
+            "DNS rp functions",
+            "DNS srv functions",
+            "DNS sshfp functions",
+            "DNS tlsa functions",
+            "DNS txt functions",
+            "Mail domain functions",
+            "Mail domain alias functions",
+            "Mail mailinglist functions",
+            "Mail user functions",
+            "Mail alias functions",
+            "Mail forward functions",
+            "Mail catchall functions",
+            "Mail transport functions",
+            "Mail relay functions",
+            "Mail relay domain functions",
+            "Mail whitelist functions",
+            "Mail blacklist functions",
+            "Mail spamfilter user functions",
+            "Mail spamfilter policy functions",
+            "Mail fetchmail functions",
+            "Mail spamfilter whitelist functions",
+            "Mail spamfilter blacklist functions",
+            "Mail user filter functions",
+            "Mail Backup functions",
+            "Mail filter functions",
+            "Monitor functions",
+            "Sites cron functions",
+            "Sites database functions",
+            "Sites Protected folder functions",
+            "Sites FTP-User functions",
+            "Sites Shell-User functions",
+            "Sites Domain functions",
+            "Sites Backup functions",
+            "Sites Aliasdomain functions",
+            "Sites Subdomain functions",
+            "Sites APS functions",
+            "Sites WebDAV-User functions",
+            "OpenVZ VM functions"
+        ]
+    ]
+]
