@@ -46,12 +46,16 @@
     <div class="col-sm-7">{$ispconfigUsername|escape}</div>
 </div>
 
+{* panelUrl is '' when the server's Hostname/IP is empty or malformed and no
+   Panel URL Override is set - no button rather than a dead href="". *}
+{if $panelUrl}
 <div class="row">
     <div class="col-sm-5">Control panel</div>
     <div class="col-sm-7">
         <a href="{$panelUrl|escape}" target="_blank" class="btn btn-primary btn-sm">Open Control Panel</a>
     </div>
 </div>
+{/if}
 
 {* Single sign-on is OPTIONAL and PER SERVER: it needs the separate ispconfig-sso
    project on the panel this service is hosted on. WHMCS decides the module-wide

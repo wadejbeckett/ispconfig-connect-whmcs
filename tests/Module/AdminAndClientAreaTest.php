@@ -394,6 +394,12 @@ final class AdminAndClientAreaTest extends ModuleTestCase
         $beforeGate = substr($template, 0, (int) strpos($template, '{if $ssoAvailable}'));
         self::assertStringContainsString('$ispconfigUsername', $beforeGate);
         self::assertStringContainsString('$panelUrl', $beforeGate);
+        // ...but the panel button only renders with a URL: ClientArea passes ''
+        // for an unusable server record, and href="" is a dead button.
+        self::assertMatchesRegularExpression(
+            '/\{if \$panelUrl\}\s*<div class="row">\s*<div class="col-sm-5">Control panel<\/div>.*?Open Control Panel.*?\{\/if\}/s',
+            $template
+        );
     }
 
     // ---- an unusable server record never breaks either page ----------------

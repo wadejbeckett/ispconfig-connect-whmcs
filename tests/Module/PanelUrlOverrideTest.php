@@ -218,4 +218,19 @@ final class PanelUrlOverrideTest extends ModuleTestCase
         self::assertStringContainsString(self::DERIVED, $result['errorMsg']);
         self::assertStringNotContainsString('javascript:', $result['errorMsg']);
     }
+    /**
+     * The server-level SSO refusal only QUOTES the panel address; a server row
+     * whose Hostname/IP ServerConfig rejects must not turn it into a throw.
+     */
+    public function testTheSsoRefusalStillAnswersWhenTheServerRecordIsUnusable(): void
+    {
+        $serverOnly = $this->params(['serverhostname' => 'https://panel.example.net', 'serverip' => '']);
+        unset($serverOnly['model'], $serverOnly['serviceid']);
+
+        $result = ispconfigconnect_singleSignOn($serverOnly, 'AdminSingleSignOn');
+
+        self::assertFalse($result['success']);
+        self::assertStringContainsString('no administrator single sign-on', $result['errorMsg']);
+        self::assertStringContainsString("the panel's own login page", $result['errorMsg']);
+    }
 }

@@ -146,4 +146,31 @@ final class ChangePackageSafetyTest extends ModuleTestCase
         self::assertSame('y', $this->fake->sites()[$siteId]['active']);
         self::assertSame(0, $this->fake->activeSessionCount());
     }
+    public function testAServiceSuspendedWebsiteOnlyAndMovedToAWholeClientProductIsLockedNotLeftLive(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params(self::WEBSITE_ONLY)));
+        $clientId = (int) array_key_first($this->fake->clients());
+        $siteId = (int) array_key_first($this->fake->sites());
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(self::WEBSITE_ONLY)));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+
+        // The new product locks the whole client on suspension.
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_ChangePackage($this->params([
+            'status' => 'Suspended',
+            'configoption1' => (string) $this->proTemplateId,
+        ]));
+
+        self::assertSame('success', $result);
+        self::assertSame($this->proTemplateId, (int) $this->fake->clients()[$clientId]['template_master']);
+        // Suspended the way the NEW product suspends: the client is locked.
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('n', $this->fake->sites()[$siteId]['active']);
+        self::assertNotContains('sites_web_domain_set_status', $this->methodsSince($mark));
+
+        // Unsuspend under the new product unlocks it, and the site comes back.
+        self::assertSame('success', ispconfigconnect_UnsuspendAccount($this->params()));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('y', $this->fake->sites()[$siteId]['active']);
+    }
 }

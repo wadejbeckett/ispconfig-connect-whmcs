@@ -763,12 +763,16 @@ function ispconfigconnect_ChangePackage(array $params): string
         $service = Params::service($params);
 
         // Read BEFORE the update, from WHMCS's own record: whether this service
-        // is currently suspended website-only, i.e. whether its website is
-        // inactive on purpose and has to stay that way.
+        // is suspended, i.e. whether what the update re-activates has to go
+        // offline again. It is put back in the NEW product's mode: a service
+        // suspended website-only under the old product and moved to a
+        // whole-client product would otherwise stay live (its client is not
+        // locked, and the update re-activates the website). A locked client
+        // never gets this far - Recipe refuses it below.
         $domainId = $properties->domainId();
-        $reapplyWebsiteSuspension = !$product->suspendEntireClient
-            && $domainId !== null
-            && ispconfigconnect_serviceStatusOf($params) === ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended');
+        $suspended = ispconfigconnect_serviceStatusOf($params) === ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended');
+        $reapplyEntireClient = $suspended && $product->suspendEntireClient;
+        $reapplyWebsite = $suspended && !$product->suspendEntireClient && $domainId !== null;
 
         $reSuspendFailure = null;
         $session = Factory::sessionManager($params);
@@ -814,9 +818,9 @@ function ispconfigconnect_ChangePackage(array $params): string
             // is re-enabled by any client_update, this one included. The module
             // cannot tell such an object from one that was simply off, so it
             // does not try; the limitation predates this build and is documented.
-            if ($reapplyWebsiteSuspension) {
+            if ($reapplyWebsite || $reapplyEntireClient) {
                 try {
-                    $recipe->suspend($clientId, $domainId, false);
+                    $recipe->suspend($clientId, $domainId, $reapplyEntireClient);
                 } catch (\Throwable $failure) {
                     $reSuspendFailure = $failure;
                 }
@@ -836,10 +840,11 @@ function ispconfigconnect_ChangePackage(array $params): string
             // must not read as 'success'.
             return sprintf(
                 'Change Package applied the new package, but FAILED to suspend this Suspended service\'s'
-                . ' website (ISPConfig website #%d) again afterwards: %s. ISPConfig re-activated the'
-                . ' website when the package changed, so it is LIVE now. Press Suspend on this service'
-                . ' to take it offline again.',
-                $domainId,
+                . ' %s again afterwards: %s. ISPConfig re-activated it when the package changed, so it is'
+                . ' LIVE now. Press Suspend on this service to take it offline again.',
+                $reapplyEntireClient
+                    ? sprintf('ISPConfig client #%d', $clientId)
+                    : sprintf('website (ISPConfig website #%d)', (int) $domainId),
                 ispconfigconnect_failureText($reSuspendFailure)
             );
         }
@@ -2149,17 +2154,26 @@ function ispconfigconnect_singleSignOn(
     }
 
     if ($clientId === null) {
-        $detail = $serviceInScope
-            ? 'Single sign-on is not available for this service: it has no stored'
+        if ($serviceInScope) {
+            $detail = 'Single sign-on is not available for this service: it has no stored'
                 . ' ispconfig_client_id service property, so it was not provisioned by'
-                . ' ISPConfig Connect.'
-            : sprintf(
+                . ' ISPConfig Connect.';
+        } else {
+            // The panel address is only advice here; a server row whose
+            // Hostname/IP ServerConfig rejects must not turn it into a throw.
+            try {
+                $signInAt = ispconfigconnect_panelUrl($params);
+            } catch (\Throwable) {
+                $signInAt = 'the panel\'s own login page';
+            }
+            $detail = sprintf(
                 'ISPConfig has no administrator single sign-on. The remote API user is not a'
                 . ' panel user, and the ISPConfig SSO project refuses to mint tokens for administrator'
                 . ' accounts because such a token would be a full panel takeover. Sign in at %s'
                 . ' instead, or use the per-service login button on a client\'s service.',
-                ispconfigconnect_panelUrl($params)
+                $signInAt
             );
+        }
 
         return ispconfigconnect_ssoFailure($context, $serviceId, null, null, $detail, $customerFacing);
     }
@@ -4194,6 +4208,24 @@ function ispconfigconnect_clientExists(SessionManager $session, int $clientId): 
  * over a database hiccup strands a customer, and the log line says the guard
  * did not run.
  *
+ * ## Only services on the same ISPConfig panel count
+ *
+ * ISPConfig client ids are per-panel auto-increments: client #1 on panel A and
+ * client #1 on panel B are different customers. A service on a WHMCS server
+ * record that is DEFINITELY another panel (ispconfigconnect_otherPanelServerIds)
+ * is therefore not a sharer. Everything else still counts - the same record,
+ * another record for the same panel, a service with no server, a server record
+ * that no longer exists - because missing a real sharer deletes someone's
+ * hosting, while a false match only refuses.
+ *
+ * ## The id each candidate is judged by is the one the module would read
+ *
+ * A package change (before the fix round) could leave an old product's
+ * custom-field row holding a client id the service no longer uses. Matching on
+ * any row made that stale value a false "shared" refusal. Each candidate is
+ * now judged by the same rule as the property reader in
+ * ispconfigconnect_serviceProperties() (ispconfigconnect_effectiveClientIds).
+ *
  * @return list<array{serviceid: int, userid: int, domain: string, status: string}>|null
  */
 function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clientId): ?array
@@ -4206,7 +4238,7 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
     }
 
     try {
-        $rows = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+        $query = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
             ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
             ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
             ->where('tblcustomfields.type', 'product')
@@ -4217,25 +4249,40 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
                 ispconfigconnect_serviceStatus('TERMINATED', 'Terminated'),
                 ispconfigconnect_serviceStatus('CANCELLED', 'Cancelled'),
                 ispconfigconnect_serviceStatus('FRAUD', 'Fraud'),
-            ])
-            ->get([
-                'tblhosting.id as id',
-                'tblhosting.userid as userid',
-                'tblhosting.domain as domain',
-                'tblhosting.domainstatus as status',
             ]);
+        $otherPanels = ispconfigconnect_otherPanelServerIds($serviceId);
+        if ($otherPanels !== []) {
+            $query->whereNotIn('tblhosting.server', $otherPanels);
+        }
+        $rows = $query->get([
+            'tblhosting.id as id',
+            'tblhosting.userid as userid',
+            'tblhosting.domain as domain',
+            'tblhosting.domainstatus as status',
+        ]);
 
-        $result = [];
+        $candidates = [];
         foreach (is_iterable($rows) ? $rows : [] as $row) {
             $columns = (array) $row;
             $otherId = (int) ($columns['id'] ?? 0);
-            if ($otherId > 0) {
-                $result[] = [
+            if ($otherId > 0 && !isset($candidates[$otherId])) {
+                $candidates[$otherId] = [
                     'serviceid' => $otherId,
                     'userid' => (int) ($columns['userid'] ?? 0),
                     'domain' => (string) ($columns['domain'] ?? ''),
                     'status' => (string) ($columns['status'] ?? ''),
                 ];
+            }
+        }
+        if ($candidates === []) {
+            return [];
+        }
+
+        $effective = ispconfigconnect_effectiveClientIds(array_keys($candidates));
+        $result = [];
+        foreach ($candidates as $otherId => $candidate) {
+            if (($effective[$otherId] ?? null) === (string) $clientId) {
+                $result[] = $candidate;
             }
         }
 
@@ -4257,6 +4304,139 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
 
         return null;
     }
+}
+
+/**
+ * WHMCS server ids that are DEFINITELY a different ISPConfig panel from the one
+ * $serviceId's server record points at - the services on them cannot share its
+ * ISPConfig client, whose id is only unique per panel.
+ *
+ * Two server records are the same panel when any address matches (host name
+ * against host name or IP, IP against either), and are only called different
+ * when at least one address can be compared on both sides and none matches.
+ * A record with too little to compare is kept as a possible sharer. Anything
+ * unreadable - no server on the service, a missing record, a query failure -
+ * returns [], so the guard falls back to comparing every server, which can only
+ * over-refuse. Operators with two server records for one panel should give
+ * both the same Hostname or IP Address.
+ *
+ * @return list<int>
+ */
+function ispconfigconnect_otherPanelServerIds(int $serviceId): array
+{
+    if ($serviceId <= 0) {
+        return [];
+    }
+
+    try {
+        $serverId = \WHMCS\Database\Capsule::table('tblhosting')->where('id', $serviceId)->value('server');
+        if (!is_numeric($serverId) || (int) $serverId <= 0) {
+            return [];
+        }
+        $serverId = (int) $serverId;
+
+        $servers = [];
+        $rows = \WHMCS\Database\Capsule::table('tblservers')->get(['id', 'hostname', 'ipaddress']);
+        foreach (is_iterable($rows) ? $rows : [] as $row) {
+            $columns = (array) $row;
+            $id = (int) ($columns['id'] ?? 0);
+            if ($id > 0) {
+                $servers[$id] = [
+                    'host' => ispconfigconnect_panelAddress((string) ($columns['hostname'] ?? '')),
+                    'ip' => ispconfigconnect_panelAddress((string) ($columns['ipaddress'] ?? '')),
+                ];
+            }
+        }
+    } catch (\Throwable) {
+        return [];
+    }
+
+    if (!isset($servers[$serverId])) {
+        return [];
+    }
+    $own = $servers[$serverId];
+    $ownAddresses = array_values(array_filter([$own['host'], $own['ip']], static fn (string $a): bool => $a !== ''));
+
+    $different = [];
+    foreach ($servers as $id => $server) {
+        if ($id === $serverId) {
+            continue;
+        }
+        $addresses = array_values(array_filter([$server['host'], $server['ip']], static fn (string $a): bool => $a !== ''));
+        if (array_intersect($ownAddresses, $addresses) !== []) {
+            continue;
+        }
+        $comparable = ($own['host'] !== '' && $server['host'] !== '') || ($own['ip'] !== '' && $server['ip'] !== '');
+        if ($comparable) {
+            $different[] = $id;
+        }
+    }
+
+    return $different;
+}
+
+/** A server Hostname/IP Address in the one form two records are compared by. */
+function ispconfigconnect_panelAddress(string $address): string
+{
+    return strtolower(rtrim(trim(trim($address), '[]'), '.'));
+}
+
+/**
+ * The ispconfig_client_id each service would be read as, by the same rule as
+ * the property reader in ispconfigconnect_serviceProperties(): the newest row
+ * of the service's current product when it is not blank, otherwise the newest
+ * row of any product when that is not blank, otherwise none.
+ *
+ * @param list<int> $serviceIds
+ * @return array<int, string> service id => client id; services with none are absent
+ */
+function ispconfigconnect_effectiveClientIds(array $serviceIds): array
+{
+    if ($serviceIds === []) {
+        return [];
+    }
+
+    $rows = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+        ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
+        ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
+        ->where('tblcustomfields.type', 'product')
+        ->where('tblcustomfields.fieldname', ServiceProperties::KEY_CLIENT_ID)
+        ->whereIn('tblcustomfieldsvalues.relid', $serviceIds)
+        ->orderByDesc('tblcustomfieldsvalues.id')
+        ->get([
+            'tblcustomfieldsvalues.relid as serviceid',
+            'tblcustomfieldsvalues.value as value',
+            'tblcustomfields.relid as productid',
+            'tblhosting.packageid as packageid',
+        ]);
+
+    // Rows arrive newest first, so the first row seen per service and pass is
+    // the one the reader's ->value() would return.
+    $current = [];
+    $any = [];
+    foreach (is_iterable($rows) ? $rows : [] as $row) {
+        $columns = (array) $row;
+        $id = (int) ($columns['serviceid'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+        $value = trim((string) ($columns['value'] ?? ''));
+        $any[$id] ??= $value;
+        $productId = (int) ($columns['productid'] ?? 0);
+        if ($productId > 0 && $productId === (int) ($columns['packageid'] ?? 0)) {
+            $current[$id] ??= $value;
+        }
+    }
+
+    $effective = [];
+    foreach ($serviceIds as $id) {
+        $value = ($current[$id] ?? '') !== '' ? $current[$id] : ($any[$id] ?? '');
+        if ($value !== '') {
+            $effective[$id] = $value;
+        }
+    }
+
+    return $effective;
 }
 
 /**
