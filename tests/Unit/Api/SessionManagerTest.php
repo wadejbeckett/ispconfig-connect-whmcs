@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LockoutException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\LoginFailedException;
+use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\PermissionDeniedException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\SessionExpiredException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\TransportException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface;
@@ -288,45 +289,190 @@ final class SessionManagerTest extends TestCase
 
     // ---- transport-failure circuit (fail fast, per instance) ----------------
 
-    public function testTransportFailureLatchesTheCircuitOnTheSameManager(): void
+    private static function managerOver(FlakyTransport $transport, FakeIspconfigServer $fake): SessionManager
     {
-        // A transport failure cannot resolve mid-batch on the same connection.
-        // The NEXT call() on the SAME manager must fail fast with the stored
-        // exception - not re-attempt (burning another CURLOPT_TIMEOUT) and not
-        // silently continue - exactly as a lockout does.
+        return new SessionManager(new RestClient($transport), 'remote', 'secret', static fn (): int => $fake->clock);
+    }
+
+    public function testTwoConsecutiveTransportFailuresLatchTheCircuitOnTheSameManager(): void
+    {
+        // A panel that is really unreachable fails every call in a row. Once
+        // two have failed back to back, the NEXT call() on the SAME manager must
+        // fail fast with the stored exception - not re-attempt (burning another
+        // CURLOPT_TIMEOUT) and not silently continue - exactly as a lockout does.
         $fake = new FakeIspconfigServer();
-        $transport = new class implements HttpTransportInterface {
-            public int $attempts = 0;
-
-            public function post(string $method, string $jsonBody): string
-            {
-                $this->attempts++;
-
-                throw new TransportException('connect timeout after 10s');
-            }
-        };
-        $manager = new SessionManager(
-            new RestClient($transport),
-            'remote',
-            'secret',
-            static fn (): int => $fake->clock,
-        );
+        $transport = new FlakyTransport($fake);
+        $transport->down = true;
+        $manager = self::managerOver($transport, $fake);
 
         try {
             $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
             self::fail('Expected TransportException');
-        } catch (TransportException $first) {
-            $attemptsAfterFirst = $transport->attempts;
+        } catch (TransportException) {
+        }
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected TransportException on the second call');
+        } catch (TransportException $second) {
+        }
+        self::assertSame(2, $transport->attempts(), 'both failures went to the wire');
 
+        // The link comes back, but the latched manager no longer looks: the
+        // stored exception is rethrown and the wire is not touched.
+        $transport->down = false;
+        try {
+            $manager->call('client_templates_get_all', []);
+            self::fail('Expected the stored TransportException on the third call');
+        } catch (TransportException $third) {
+            self::assertSame($second, $third, 'the stored exception must be rethrown');
+        }
+        self::assertSame(2, $transport->attempts());
+
+        // Nor does close(): the session is unknown after a transport failure.
+        $manager->close();
+        self::assertSame(2, $transport->attempts());
+    }
+
+    public function testOneTransientTransportFailureFollowedBySuccessDoesNotLatch(): void
+    {
+        // A usage/metrics sweep shares ONE manager across every service on the
+        // server. One proxy 502 or one timeout on one tenant must cost that
+        // tenant its import - not every tenant after it.
+        $fake = new FakeIspconfigServer();
+        $fake->jobqueueCount = 4;
+        $transport = new FlakyTransport($fake);
+        $manager = self::managerOver($transport, $fake);
+
+        $manager->call('server_get_all', []); // login + call succeed
+        $transport->down = true;
+        try {
+            $manager->call('monitor_jobqueue_count', ['server_id' => 0]);
+            self::fail('Expected TransportException');
+        } catch (TransportException) {
+        }
+        $transport->down = false;
+
+        self::assertSame('4', $manager->call('monitor_jobqueue_count', ['server_id' => 0]));
+        self::assertSame('4', $manager->call('monitor_jobqueue_count', ['server_id' => 0]));
+        // The transport failure dropped the session (its state is unknown), so
+        // the recovery logged in once and then reused the new session.
+        self::assertSame(
+            ['login', 'server_get_all', 'login', 'monitor_jobqueue_count', 'monitor_jobqueue_count'],
+            self::methodSequence($fake)
+        );
+    }
+
+    public function testASuccessBetweenTransportFailuresResetsTheCount(): void
+    {
+        // Two failures that are NOT back to back never open the circuit: the
+        // success in between proves the link works.
+        $fake = new FakeIspconfigServer();
+        $transport = new FlakyTransport($fake);
+        $manager = self::managerOver($transport, $fake);
+
+        foreach ([1, 2, 3] as $round) {
+            $transport->down = true;
             try {
                 $manager->call('server_get_all', []);
-                self::fail('Expected the stored TransportException on the second call');
-            } catch (TransportException $second) {
-                self::assertSame($first, $second, 'the stored exception must be rethrown');
+                self::fail('Expected TransportException in round ' . $round);
+            } catch (TransportException) {
             }
-            // The second call touched the wire zero times.
-            self::assertSame($attemptsAfterFirst, $transport->attempts);
+            $transport->down = false;
+            $manager->call('server_get_all', []);
         }
+
+        $attempts = $transport->attempts();
+        $manager->call('server_get_all', []);
+        self::assertSame($attempts + 1, $transport->attempts(), 'the manager is still talking to the wire');
+    }
+
+    public function testAnApiFaultBetweenTransportFailuresAlsoResetsTheCount(): void
+    {
+        // A permission-denied or record-not-found answer is still an ANSWER:
+        // the panel was reached, so the two transport failures around it are
+        // not consecutive and must not open the circuit.
+        $fake = new FakeIspconfigServer();
+        $transport = new FlakyTransport($fake);
+        $manager = self::managerOver($transport, $fake);
+
+        $transport->down = true;
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected TransportException');
+        } catch (TransportException) {
+        }
+        $transport->down = false;
+        $fake->failNextWith('server_get_all', self::SENTINEL_PERMISSION_DENIED);
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected PermissionDeniedException');
+        } catch (PermissionDeniedException) {
+        }
+        $transport->down = true;
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected TransportException');
+        } catch (TransportException) {
+        }
+        $transport->down = false;
+
+        // Not latched: this call reaches the wire (a fresh login, since the
+        // transport failure dropped the session) and succeeds.
+        $before = $transport->attempts();
+        $manager->call('server_get_all', []);
+        self::assertSame(['login', 'server_get_all'], array_slice($transport->attempted, $before));
+    }
+
+    public function testATransportFailureAtLoginCountsTowardTheLatch(): void
+    {
+        // The session is dropped on a transport failure, so the next call()
+        // starts with a login - and if the link is still down, that login is
+        // the second consecutive failure and opens the circuit.
+        $fake = new FakeIspconfigServer();
+        $transport = new FlakyTransport($fake);
+        $manager = self::managerOver($transport, $fake);
+        $manager->call('server_get_all', []);
+
+        $transport->down = true;
+        foreach ([1, 2] as $failure) {
+            try {
+                $manager->call('server_get_all', []);
+                self::fail('Expected TransportException #' . $failure);
+            } catch (TransportException) {
+            }
+        }
+        $transport->down = false;
+
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected the latched TransportException');
+        } catch (TransportException) {
+        }
+        // The first failure was the session call, the second the re-login it
+        // forced; the third call() never reached the wire.
+        self::assertSame(['login', 'server_get_all', 'server_get_all', 'login'], $transport->attempted);
+    }
+
+    public function testLoginFailureStillLatchesOnTheFirstOccurrence(): void
+    {
+        // Only the transport latch waits for a second failure. A wrong password
+        // cannot become right mid-batch, and every retry spends the panel's
+        // 10-failures-per-5-minutes budget, so it latches at once.
+        $fake = new FakeIspconfigServer();
+        $manager = $this->managerSharingClock($fake, 'wrong-password');
+
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected LoginFailedException');
+        } catch (LoginFailedException $first) {
+        }
+        try {
+            $manager->call('server_get_all', []);
+            self::fail('Expected the stored LoginFailedException');
+        } catch (LoginFailedException $second) {
+            self::assertSame($first, $second);
+        }
+        self::assertSame(['login'], self::methodSequence($fake));
     }
 
     public function testAFreshManagerDoesNotInheritAnotherInstancesCircuit(): void
@@ -336,8 +482,12 @@ final class SessionManagerTest extends TestCase
         // tripped its own circuit.
         $fake = new FakeIspconfigServer();
         $failing = new class implements HttpTransportInterface {
+            public int $attempts = 0;
+
             public function post(string $method, string $jsonBody): string
             {
+                $this->attempts++;
+
                 throw new TransportException('connect timeout after 10s');
             }
         };
@@ -348,11 +498,16 @@ final class SessionManagerTest extends TestCase
             'secret',
             static fn (): int => $fake->clock,
         );
-        try {
-            $doomed->call('server_get_all', []);
-            self::fail('Expected TransportException');
-        } catch (TransportException) {
+        // Two consecutive failures trip the doomed manager's circuit; the
+        // third call proves it is open (no new wire attempt).
+        for ($i = 0; $i < 3; $i++) {
+            try {
+                $doomed->call('server_get_all', []);
+                self::fail('Expected TransportException');
+            } catch (TransportException) {
+            }
         }
+        self::assertSame(2, $failing->attempts, 'the doomed manager must be latched');
 
         $healthy = new SessionManager(
             new RestClient($fake),
