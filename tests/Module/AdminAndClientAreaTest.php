@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Ispconfigconnect\Tests\Module;
 
+use PHPUnit\Framework\Attributes\DataProvider;
+
 /**
  * Admin surface (AdminServicesTabFields, VerifyPermissions custom button)
  * and the client-area overview wiring - including the no-credential rule
@@ -392,6 +394,87 @@ final class AdminAndClientAreaTest extends ModuleTestCase
         $beforeGate = substr($template, 0, (int) strpos($template, '{if $ssoAvailable}'));
         self::assertStringContainsString('$ispconfigUsername', $beforeGate);
         self::assertStringContainsString('$panelUrl', $beforeGate);
+    }
+
+    // ---- an unusable server record never breaks either page ----------------
+    //
+    // ServerConfig refuses an empty or malformed Hostname/IP by throwing: that
+    // value addresses the POST carrying the remote-API password, so it must be
+    // exact. But a customer's product page and an admin's service tab are the
+    // wrong places for that exception to surface - a service whose server was
+    // removed, or never set, must still render.
+
+    /** @return array<string, array{0: array<string, string>}> */
+    public static function unusableServerRecords(): array
+    {
+        return [
+            'no hostname and no IP' => [['serverhostname' => '', 'serverip' => '']],
+            'hostname with a port' => [['serverhostname' => 'panel.example.net:8080']],
+            'hostname with a scheme' => [['serverhostname' => 'https://panel.example.net']],
+        ];
+    }
+
+    /** @param array<string, string> $server */
+    #[DataProvider('unusableServerRecords')]
+    public function testTheClientAreaRendersWithoutPanelLinkOrLoginButtonOnAnUnusableServer(array $server): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+
+        $output = ispconfigconnect_ClientArea(
+            $this->params(['serverid' => 7, 'status' => 'Active'] + $server),
+            $this->fleet([7 => ['sso_state' => 'installed']])
+        );
+
+        self::assertSame('templates/overview.tpl', $output['tabOverviewReplacementTemplate']);
+        self::assertSame('', $output['templateVariables']['panelUrl']);
+        self::assertSame('exampleuser', $output['templateVariables']['ispconfigUsername']);
+        // The login URL is built from the same server record, so the button
+        // could only fail - it is not offered.
+        self::assertFalse($output['templateVariables']['ssoAvailable']);
+    }
+
+    public function testAValidPanelUrlOverrideStillShowsWhenTheServerRecordIsUnusable(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+
+        $output = ispconfigconnect_ClientArea(
+            $this->params([
+                'serverid' => 7,
+                'serverhostname' => '',
+                'serverip' => '',
+                'configoption14' => 'https://panel.example.org/',
+            ]),
+            $this->fleet([7 => ['sso_state' => 'installed']])
+        );
+
+        self::assertSame('https://panel.example.org/', $output['templateVariables']['panelUrl']);
+        self::assertFalse($output['templateVariables']['ssoAvailable']);
+    }
+
+    /** @param array<string, string> $server */
+    #[DataProvider('unusableServerRecords')]
+    public function testTheAdminTabKeepsEveryOtherRowAndExplainsThePanelRowOnAnUnusableServer(array $server): void
+    {
+        $this->model->serviceProperties->save([
+            'ispconfig_client_id' => '7',
+            'ispconfig_client_username' => 'user7',
+            'ispconfig_domain_id' => '3',
+        ]);
+
+        $fields = ispconfigconnect_AdminServicesTabFields($this->params($server));
+
+        // The rows an admin needs MOST when the server record is broken.
+        self::assertArrayHasKey('ISPConfig Link', $fields);
+        self::assertSame('7', $fields['ISPConfig Client ID']);
+        self::assertSame('user7', $fields['ISPConfig Username']);
+        self::assertSame('3', $fields['ISPConfig Domain ID']);
+        self::assertSame('n/a', $fields['ISPConfig Job Queue']);
+        // The panel row says what is wrong and where to fix it - no dead link.
+        self::assertStringStartsWith('Not available:', $fields['ISPConfig Panel']);
+        self::assertStringContainsString('Server Hostname/IP', $fields['ISPConfig Panel']);
+        self::assertStringNotContainsString('<a ', $fields['ISPConfig Panel']);
+        // A broken host is never even dialled.
+        self::assertSame([], $this->fake->requestLog);
     }
 
     public function testClientAreaVariablesNeverContainAPassword(): void

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Ispconfigconnect\Tests\Module;
 
+use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
 use WHMCS\Module\Server\Ispconfigconnect\Support\ServiceProperties;
 
 /**
@@ -41,6 +43,21 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
         Capsule::seed('tblhosting', [
             ['id' => $otherServiceId, 'userid' => $userid, 'domain' => 'other-customer.example', 'domainstatus' => $status, 'packageid' => $productId],
         ]);
+    }
+
+    /** @return array{action: string, request: mixed, response: array<string, mixed>} the last module-log entry for $action */
+    private function lastLog(string $action): array
+    {
+        $entries = array_values(array_filter(
+            ModuleCallLog::entries(),
+            static fn (array $entry): bool => $entry['action'] === $action
+        ));
+        self::assertNotSame([], $entries, $action . ' must write a module-log entry');
+        $last = $entries[count($entries) - 1];
+        self::assertIsArray($last['response']);
+
+        /** @var array{action: string, request: mixed, response: array<string, mixed>} $last */
+        return $last;
     }
 
     // ── C1: terminate never deletes a shared client ───────────────────────
@@ -154,6 +171,179 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
         self::assertSame('n', $this->fake->sites()[$siteId]['active']);
     }
 
+    public function testWebsiteOnlySuspendWithoutAWebsiteIdNeverLocksASharedClient(): void
+    {
+        // The escalation this pins shut: website-only mode skips the shared
+        // guard (it only ever touches this service's own site), so falling back
+        // to the whole-client lock took the OTHER service's hosting down too.
+        $clientId = $this->fake->addClient('sharedcustomer');
+        $ourSite = $this->fake->addWebsite($clientId, 'example.com');
+        $theirSite = $this->fake->addWebsite($clientId, 'other-customer.example');
+        $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
+        $this->seedServiceLinkedToClient(99, $clientId);
+
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_SuspendAccount($this->params(['serviceid' => 42, 'configoption13' => '']));
+
+        self::assertStringStartsWith('Suspend refused:', $result);
+        self::assertSame([], $this->methodsSince($mark));
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('y', $this->fake->sites()[$ourSite]['active']);
+        self::assertSame('y', $this->fake->sites()[$theirSite]['active']);
+    }
+
+    // ── Unsuspend on a shared client ──────────────────────────────────────
+
+    /**
+     * A client an older build locked while another service shared it. The
+     * unlock may go ahead when nobody else on the client is suspended - it
+     * restores nothing anyone is not entitled to - so a paying customer is not
+     * stranded behind the guard.
+     */
+    public function testEntireClientUnsuspendOfASharedClientProceedsWhenEveryOtherServiceIsActive(): void
+    {
+        Capsule::enable();
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params(['serviceid' => 42])));
+        $clientId = (int) array_key_first($this->fake->clients());
+        $siteId = (int) array_key_first($this->fake->sites());
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(['serviceid' => 42])));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        // Only now does the other (Active) service appear on the same client.
+        $this->seedServiceLinkedToClient(99, $clientId, 'Active');
+
+        $result = ispconfigconnect_UnsuspendAccount($this->params(['serviceid' => 42]));
+
+        self::assertSame('success', $result);
+        self::assertSame('n', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('y', $this->fake->sites()[$siteId]['active']);
+        // Allowed, but not silently: the log names the other service.
+        $decision = $this->lastLog('UnsuspendAccount');
+        self::assertTrue($decision['response']['shared_client']);
+        self::assertStringContainsString('#99', (string) $decision['response']['other_services']);
+    }
+
+    public function testEntireClientUnsuspendRefusesWhileAnotherServiceOnTheClientIsSuspended(): void
+    {
+        Capsule::enable();
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params(['serviceid' => 42])));
+        $clientId = (int) array_key_first($this->fake->clients());
+        $siteId = (int) array_key_first($this->fake->sites());
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(['serviceid' => 42])));
+        $this->seedServiceLinkedToClient(99, $clientId, 'Suspended');
+
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_UnsuspendAccount($this->params(['serviceid' => 42]));
+
+        // Unlocking would bring service #99 - which WHMCS has suspended - back
+        // online with this one.
+        self::assertStringStartsWith('Unsuspend refused:', $result);
+        self::assertStringContainsString('#99', $result);
+        self::assertStringContainsString('Suspended', $result);
+        self::assertSame([], $this->methodsSince($mark));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame('n', $this->fake->sites()[$siteId]['active']);
+    }
+
+    // ── The guard never fails open silently ───────────────────────────────
+    //
+    // The Capsule double is left DISABLED in these tests, so every query the
+    // guard makes throws - exactly what a failing WHMCS database does.
+
+    public function testTerminateRefusesWhenTheSharedClientCheckCannotRun(): void
+    {
+        $clientId = $this->fake->addClient('solocustomer');
+        $this->fake->addWebsite($clientId, 'solo-customer.example');
+        $this->model->serviceProperties->save([ServiceProperties::KEY_CLIENT_ID => (string) $clientId]);
+
+        $mark = $this->wireMark();
+        $result = ispconfigconnect_TerminateAccount($this->params(['serviceid' => 42]));
+
+        self::assertStringStartsWith(
+            'Terminate refused: the module could not verify that no other WHMCS service shares ISPConfig client #'
+            . $clientId,
+            $result
+        );
+        // Irreversible, so nothing was attempted: no session, no delete.
+        self::assertSame([], $this->methodsSince($mark));
+        self::assertArrayHasKey($clientId, $this->fake->clients());
+        self::assertSame((string) $clientId, $this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
+
+        $guard = $this->lastLog('SharedClientGuard');
+        self::assertFalse($guard['response']['checked']);
+        self::assertStringContainsString('Capsule is unavailable', (string) $guard['response']['error']);
+    }
+
+    public function testOtherOperationsProceedWhenTheSharedClientCheckCannotRunButSaySoInTheLog(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params(['serviceid' => 42])));
+        $clientId = (int) array_key_first($this->fake->clients());
+
+        self::assertSame('success', ispconfigconnect_SuspendAccount($this->params(['serviceid' => 42])));
+        self::assertSame('y', $this->fake->clients()[$clientId]['locked']);
+        self::assertSame(
+            'success',
+            ispconfigconnect_ChangePassword($this->params(['serviceid' => 42, 'password' => 'N3w!pass']))
+        );
+
+        $guardLines = array_values(array_filter(
+            ModuleCallLog::entries(),
+            static fn (array $entry): bool => $entry['action'] === 'SharedClientGuard'
+        ));
+        self::assertCount(2, $guardLines, 'each operation that ran unchecked must say so');
+    }
+
+    public function testLinkProceedsWhenTheSharedClientCheckCannotRun(): void
+    {
+        $clientId = $this->fake->addClient('paigemurray');
+
+        self::assertSame('success', ispconfigconnect_LinkAccount($this->params(['username' => 'paigemurray'])));
+
+        self::assertSame((string) $clientId, $this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
+        self::assertFalse($this->lastLog('SharedClientGuard')['response']['checked']);
+    }
+
+    public function testAutomaticAdoptionLeavesAServiceUnlinkedWhenTheSharedClientCheckCannotRun(): void
+    {
+        // Nobody asked for an automatic link, so an unverified one is not made
+        // (adoption rule 1) - on the admin tab...
+        $clientId = $this->fake->addClient('acme');
+        $this->fake->addWebsite($clientId, 'acme.example');
+        $resolver = static fn (SessionManager $session, array $services): array => [42 => [
+            'reason' => 'matched',
+            'clientid' => $clientId,
+            'clientusername' => 'acme',
+            'evidence' => 'service domain acme.example matched ISPConfig client #' . $clientId,
+        ]];
+
+        $fields = ispconfigconnect_AdminServicesTabFields($this->params(['domain' => 'acme.example']), $resolver);
+
+        self::assertStringContainsString('could not run', $fields['ISPConfig Link']);
+        self::assertNull($this->model->serviceProperties->get(ServiceProperties::KEY_CLIENT_ID));
+
+        // ...and in the nightly sweep.
+        $written = [];
+        ispconfigconnect_UsageUpdate(
+            $this->params(['serverid' => 3]),
+            static fn (int $serverId): array => [[
+                'id' => 42,
+                'username' => 'oldpleskname',
+                'domain' => 'acme.example',
+                'ispconfig_client_id' => '',
+                'ispconfig_client_username' => '',
+            ]],
+            static function (int $serviceId, array $columns): void {
+            },
+            $resolver,
+            static function (int $serviceId, array $values) use (&$written): void {
+                $written[$serviceId] = $values;
+            }
+        );
+
+        self::assertSame([], $written);
+        $summary = $this->lastLog('UsageUpdate');
+        self::assertStringContainsString('could not run', (string) $summary['response']['unlinked'][42]);
+    }
+
     // ── H2: clear() forgets the link across every product ─────────────────
 
     public function testUnlinkBlanksPropertiesAcrossEveryProductRow(): void
@@ -217,16 +407,22 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
     }
 
     // ── M1: SSO is gated on an active service ──────────────────────────────
+    //
+    // Keyed on 'status', the parameter WHMCS actually sends (core's
+    // buildServiceParams: $params["status"] = $serviceData->domainStatus).
+    // These two tests used 'domainstatus' - the tblhosting column name, which
+    // WHMCS never passes - and so passed while the gate was dead in production.
+    // ServiceStatusSourceTest covers the model fallback and the precedence.
 
     public function testClientAreaHidesTheSsoButtonForASuspendedService(): void
     {
         self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
         $fleet = static fn (int $serverId): ?array => $serverId === 7 ? ['sso_state' => 'installed'] : null;
 
-        $active = ispconfigconnect_ClientArea($this->params(['serverid' => 7, 'domainstatus' => 'Active']), $fleet);
+        $active = ispconfigconnect_ClientArea($this->params(['serverid' => 7, 'status' => 'Active']), $fleet);
         self::assertTrue($active['templateVariables']['ssoAvailable']);
 
-        $suspended = ispconfigconnect_ClientArea($this->params(['serverid' => 7, 'domainstatus' => 'Suspended']), $fleet);
+        $suspended = ispconfigconnect_ClientArea($this->params(['serverid' => 7, 'status' => 'Suspended']), $fleet);
         self::assertFalse($suspended['templateVariables']['ssoAvailable']);
     }
 
@@ -235,7 +431,7 @@ final class OwnershipAndSafetyTest extends ModuleTestCase
         $this->fake->installCompanion();
         self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
 
-        $result = ispconfigconnect_ServiceSingleSignOn($this->params(['domainstatus' => 'Suspended']));
+        $result = ispconfigconnect_ServiceSingleSignOn($this->params(['status' => 'Suspended']));
 
         self::assertFalse($result['success']);
         self::assertArrayHasKey('errorMsg', $result);

@@ -164,16 +164,14 @@ final class Recipe
      *
      * Website-only mode: a lock that spares the website does not exist, so
      * no client_update is made at all - just sites_web_domain_set_status.
+     *
+     * @throws \InvalidArgumentException website-only mode with no website id -
+     *         see requireWebsiteId()
      */
     public function suspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        // Website-only mode acts on the site alone - but ONLY when its id is
-        // known. A linked or adopted service, or a product with Create Website
-        // off, stores no website id; falling through to the whole-client lock
-        // there makes suspension actually take effect instead of a silent
-        // no-op that reports success while the account stays fully live.
-        if (!$suspendEntireClient && $domainId !== null) {
-            $this->setWebsiteStatus($domainId, 'inactive');
+        if (!$suspendEntireClient) {
+            $this->setWebsiteStatus(self::requireWebsiteId($domainId, 'suspend'), 'inactive');
 
             return;
         }
@@ -195,14 +193,16 @@ final class Recipe
      * set_status in entire-client mode either: the unlock restores every
      * object except those tmp_data remembers as previously-inactive
      * (functions.inc.php func_client_lock).
+     *
+     * @throws \InvalidArgumentException website-only mode with no website id -
+     *         see requireWebsiteId()
      */
     public function unsuspend(int $clientId, ?int $domainId, bool $suspendEntireClient): void
     {
-        // Exact inverse of suspend(): website-only mode with a known site id
-        // reactivates just that site; otherwise - entire-client mode, or
-        // website-only with no stored site id - reverse the whole-client lock.
-        if (!$suspendEntireClient && $domainId !== null) {
-            $this->setWebsiteStatus($domainId, 'active');
+        // Exact inverse of suspend(): website-only mode reactivates just the
+        // site, and never touches the client lock.
+        if (!$suspendEntireClient) {
+            $this->setWebsiteStatus(self::requireWebsiteId($domainId, 'unsuspend'), 'active');
 
             return;
         }
@@ -267,8 +267,35 @@ final class Recipe
      * server-side. Unchanged assignments keep their rows; no separate
      * client_template_additional_add/_delete calls are needed.
      *
+     * ## A locked client is refused, and nothing is sent
+     *
+     * client_update merges the stored record into its params and re-runs
+     * func_client_lock() on the merged 'locked' value (remote.d/client.inc.php
+     * client_update). On a LOCKED client that re-locks it, which overwrites
+     * client.tmp_data with "everything was already inactive" and leaves a later
+     * unsuspend unable to restore anything (functions.inc.php
+     * func_client_lock). So a locked client gets ClientLockedException and NO
+     * client_update: the caller has to unsuspend first.
+     *
+     * The rejected alternative was bracketing the change - unlock, update,
+     * re-lock. It disables and re-enables every object of the client in two
+     * separate calls (every website, mailbox and database flaps), and a failure
+     * between the calls strands the client in the flipped state while a retry
+     * reports success. One call, or none, has no intermediate state.
+     *
+     * ## What the one update still does on an unlocked client
+     *
+     * The merged 'locked' is 'n', so client_update runs func_client_lock('n'),
+     * which re-activates the client's objects. That is ISPConfig's own
+     * behaviour and applies to every client_update, not just this one. Its two
+     * consequences live with the caller (ispconfigconnect_ChangePackage): a
+     * website-only suspension is re-applied there after this returns, and an
+     * object an admin disabled by hand on an active client is re-enabled - a
+     * documented, pre-existing limitation.
+     *
      * @param list<int> $addonTemplateIds the DESIRED addon template ids
      *        (resolved by the caller via Mapper::addonTemplateIds())
+     * @throws ClientLockedException the client is locked; nothing was changed
      */
     public function changePackage(int $clientId, ProductConfig $product, array $addonTemplateIds): void
     {
@@ -282,32 +309,16 @@ final class Recipe
             }
         }
 
-        // client_update merges the stored record and re-runs ISPConfig's
-        // func_client_lock on the merged 'locked' value, so a bare template
-        // change would re-snapshot a LOCKED client's state (leaving a later
-        // unsuspend unable to restore anything) or re-enable a suspended or
-        // deliberately-disabled object on an UNLOCKED one. Bracket the change:
-        // apply the template with the lock state flipped, then restore the
-        // original state, so func_client_lock's snapshot/restore runs against a
-        // known state and the net lock state plus every object's active flag
-        // are preserved. Package changes are infrequent admin/billing events,
-        // so the extra client_update is an acceptable cost for that safety.
+        // Read once: the lock check and the protective update's
+        // web_php_options/ssh_chroot re-send both come from this record.
         $record = $this->clientRecord($clientId);
-        $wasLocked = (string) ($record['locked'] ?? 'n') === 'y';
+        if ((string) ($record['locked'] ?? 'n') === 'y') {
+            throw new ClientLockedException($clientId);
+        }
 
-        $desiredList = implode('/', $desired);
         $this->protectiveClientUpdate($clientId, [
             'template_master' => $product->clientTemplateId,
-            'template_additional' => $desiredList,
-            'locked' => $wasLocked ? 'n' : 'y',
-        ], $record);
-
-        // Restore the original lock state. Re-send the desired template list and
-        // reuse the record already read, so this second update needs no extra
-        // client_get / client_template_additional_get round trips.
-        $this->protectiveClientUpdate($clientId, [
-            'template_additional' => $desiredList,
-            'locked' => $wasLocked ? 'y' : 'n',
+            'template_additional' => implode('/', $desired),
         ], $record);
     }
 
@@ -430,6 +441,34 @@ final class Recipe
         $record = $this->session->call('client_get', ['client_id' => $clientId]);
 
         return is_array($record) ? $record : [];
+    }
+
+    /**
+     * Website-only mode needs the website's id, and there is no safe default
+     * when it is missing.
+     *
+     * The two candidates are both wrong. Doing nothing reports a suspension
+     * that never happened - the site stays live and WHMCS believes it is
+     * suspended. Falling back to the whole-client lock does the opposite: it
+     * takes down mail, FTP, databases and cron on a product whose admin chose
+     * "website only" precisely to keep them running, and on a client shared by
+     * several services it takes the OTHER services down too. So a direct caller
+     * gets an exception instead of either. The entry file refuses this case
+     * with operator advice before a session is ever opened; this is the
+     * backstop for any other caller.
+     */
+    private static function requireWebsiteId(?int $domainId, string $operation): int
+    {
+        if ($domainId === null || $domainId <= 0) {
+            throw new \InvalidArgumentException(sprintf(
+                'Website-only %s needs the ISPConfig website id, and none was given. Nothing was'
+                . ' changed: without the id there is no website to act on, and the whole-client lock'
+                . ' would reach far beyond the website.',
+                $operation
+            ));
+        }
+
+        return $domainId;
     }
 
     private function setWebsiteStatus(int $domainId, string $status): void

@@ -206,6 +206,50 @@ final class TestConnectionTest extends ModuleTestCase
         self::assertStringContainsStringIgnoringCase('maintenance', $result['error']);
     }
 
+    /**
+     * Only a PANEL answer is a grant verdict. A probe that dies inside this
+     * module - a missing PHP function (e.g. mb_scrub() without ext-mbstring),
+     * a TypeError, a bug - proves nothing about the grant, and counting it as
+     * "present" let Test Connection report "Connected" on a module that could
+     * not parse a single reply.
+     */
+    public function testAnInternalErrorDuringAGrantProbeFailsTheTestInsteadOfReadingAsAGrant(): void
+    {
+        $fake = $this->fake;
+        \WHMCS\Module\Server\Ispconfigconnect\Support\Factory::$transportFactory =
+            static fn (): \WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface =>
+                new class ($fake) implements \WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface {
+                    public function __construct(
+                        private readonly \WHMCS\Module\Server\Ispconfigconnect\Api\HttpTransportInterface $inner
+                    ) {
+                    }
+
+                    public function post(string $method, string $jsonBody): string
+                    {
+                        if ($method === 'client_get_all') {
+                            throw new \Error(
+                                'Call to undefined function WHMCS\Module\Server\Ispconfigconnect\Api\mb_scrub()'
+                            );
+                        }
+
+                        return $this->inner->post($method, $jsonBody);
+                    }
+                };
+
+        $result = ispconfigconnect_TestConnection($this->params());
+
+        self::assertFalse($result['success']);
+        self::assertStringContainsString('mb_scrub', $result['error']);
+        self::assertStringNotContainsString('Connected', $result['error']);
+
+        $verify = ispconfigconnect_VerifyPermissions($this->params());
+        self::assertStringStartsWith('Verify Permissions failed:', $verify);
+        self::assertStringContainsString('mb_scrub', $verify);
+
+        // The session was still closed behind both.
+        self::assertSame(0, $this->fake->activeSessionCount());
+    }
+
     public function testTlsMismatchAgainstBareIpAdvisesFillingTheHostnameField(): void
     {
         \WHMCS\Module\Server\Ispconfigconnect\Support\Factory::$transportFactory =

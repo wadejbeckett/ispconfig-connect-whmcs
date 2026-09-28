@@ -10,6 +10,7 @@ use PHPUnit\Framework\TestCase;
 use WHMCS\Module\Server\Ispconfigconnect\Api\Exception\RemoteFaultException;
 use WHMCS\Module\Server\Ispconfigconnect\Api\RestClient;
 use WHMCS\Module\Server\Ispconfigconnect\Api\SessionManager;
+use WHMCS\Module\Server\Ispconfigconnect\Provision\ClientLockedException;
 use WHMCS\Module\Server\Ispconfigconnect\Provision\CreateResult;
 use WHMCS\Module\Server\Ispconfigconnect\Provision\ProvisioningException;
 use WHMCS\Module\Server\Ispconfigconnect\Provision\Recipe;
@@ -25,6 +26,7 @@ use WHMCS\Module\Server\Ispconfigconnect\Support\ServiceParams;
 #[CoversClass(Recipe::class)]
 #[CoversClass(CreateResult::class)]
 #[CoversClass(ProvisioningException::class)]
+#[CoversClass(ClientLockedException::class)]
 final class RecipeTest extends TestCase
 {
     private function recipe(FakeIspconfigServer $fake): Recipe
@@ -485,25 +487,50 @@ final class RecipeTest extends TestCase
         self::assertSame('y', $fake->sites()[$result->domainId]['active']);
     }
 
-    public function testWebsiteOnlySuspendWithoutADomainIdFallsBackToTheWholeClientLock(): void
+    /**
+     * A website-only product whose service has no stored website id (a linked
+     * service, or Create Website off) has no safe action: doing nothing would
+     * report a suspension that never happened, and the whole-client lock would
+     * take down mail, FTP and databases the admin chose to keep running - and,
+     * on a shared client, other services. Both directions throw and send
+     * nothing. (This replaces a fallback that escalated to the whole-client
+     * lock.)
+     */
+    public function testWebsiteOnlySuspendAndUnsuspendWithoutADomainIdThrowAndChangeNothing(): void
     {
-        // A website-only product whose service has no stored website id (a
-        // linked/adopted service, or Create Website off) must NOT silently do
-        // nothing: with no site to disable, suspension falls back to locking
-        // the whole client so it actually takes effect. Unsuspend reverses it.
         $fake = new FakeIspconfigServer();
         $recipe = $this->recipe($fake);
         $result = $recipe->create($this->product(), $this->service());
         $logOffset = count($fake->requestLog);
 
-        $recipe->suspend($result->clientId, null, false);
-        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
-        self::assertContains(
-            'client_update',
-            array_column(array_slice($fake->requestLog, $logOffset), 'method')
-        );
+        foreach (['suspend', 'unsuspend'] as $operation) {
+            try {
+                $recipe->{$operation}($result->clientId, null, false);
+                self::fail($operation . ' must refuse website-only mode without a website id');
+            } catch (\InvalidArgumentException $refusal) {
+                self::assertStringContainsString('website id', $refusal->getMessage());
+            }
+        }
 
-        $recipe->unsuspend($result->clientId, null, false);
+        // Not a single wire call - in particular no client_get/client_update.
+        self::assertSame([], array_slice($fake->requestLog, $logOffset));
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        self::assertSame('y', $fake->ftpUsers()[$result->ftpUserId]['active']);
+    }
+
+    public function testEntireClientModeStillLocksWithoutADomainId(): void
+    {
+        // The website id is irrelevant to the whole-client lock: entire-client
+        // mode must keep working for services that never stored one.
+        $fake = new FakeIspconfigServer();
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(['createWebsite' => false]), $this->service());
+
+        $recipe->suspend($result->clientId, null, true);
+        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
+
+        $recipe->unsuspend($result->clientId, null, true);
         self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
     }
 
@@ -614,14 +641,12 @@ final class RecipeTest extends TestCase
         // update_client_templates' old-style count-diff applies the delta
         // atomically (client_templates.inc.php) - no
         // client_template_additional_add/_delete calls. client_get precedes the
-        // updates so the protective update can re-send the template-governed
-        // web_php_options/ssh_chroot from the live record. TWO client_updates:
-        // the change is bracketed with the lock state flipped then restored, so
-        // client_update's merged func_client_lock cannot corrupt a locked
-        // client's saved state or re-enable a suspended/disabled object on an
-        // unlocked one.
+        // update: it is the lock check (a locked client is refused) and the
+        // source of the template-governed web_php_options/ssh_chroot the
+        // protective update re-sends. ONE client_update: no lock flip, so no
+        // intermediate state in which every object of the client is disabled.
         self::assertSame(
-            ['client_get', 'client_update', 'client_update'],
+            ['client_get', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         self::assertSame($proId, $fake->clients()[$result->clientId]['template_master']);
@@ -652,17 +677,80 @@ final class RecipeTest extends TestCase
 
         $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $basicId]), [$spaceId]);
 
-        // client_get precedes the two bracketed client_updates (lock state
-        // flipped then restored - see the addon-delta test above); the
-        // protective update re-sends the template-governed
-        // web_php_options/ssh_chroot from the live record.
+        // client_get (lock check + live record) precedes the ONE protective
+        // client_update - see the addon-delta test above.
         self::assertSame(
-            ['client_get', 'client_update', 'client_update'],
+            ['client_get', 'client_update'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         // Old-style count-diff no-op: the very same assignment rows survive
         // (same assigned_template_id - not delete-and-reinsert).
         self::assertSame($assignmentsBefore, $fake->templateAssignments());
+    }
+
+    public function testChangePackageRefusesALockedClientAndSendsNoClientUpdate(): void
+    {
+        $fake = new FakeIspconfigServer();
+        $basicId = $fake->addClientTemplate('Basic', 'm');
+        $proId = $fake->addClientTemplate('Pro', 'm');
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(['clientTemplateId' => $basicId]), $this->service());
+        // An admin had disabled the FTP user before the (entire-client)
+        // suspension, so the lock snapshot remembers it as previously-inactive.
+        $this->rawCall($fake, 'sites_ftp_user_update', [
+            'client_id' => $result->clientId,
+            'primary_id' => $result->ftpUserId,
+            'params' => ['active' => 'n'],
+        ]);
+        $recipe->suspend($result->clientId, $result->domainId, true);
+        $snapshot = $fake->clientTmpData($result->clientId);
+        self::assertNotSame([], $snapshot);
+        $logOffset = count($fake->requestLog);
+
+        try {
+            $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $proId]), []);
+            self::fail('changePackage must refuse a locked client');
+        } catch (ClientLockedException $refusal) {
+            self::assertSame($result->clientId, $refusal->clientId);
+        }
+
+        // Only the lock check went out - no client_update, so ISPConfig never
+        // re-ran func_client_lock('y') and the snapshot is exactly as it was.
+        self::assertSame(['client_get'], array_column(array_slice($fake->requestLog, $logOffset), 'method'));
+        self::assertSame($basicId, (int) $fake->clients()[$result->clientId]['template_master']);
+        self::assertSame('y', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame($snapshot, $fake->clientTmpData($result->clientId));
+
+        // Proof the snapshot is intact: the unlock restores the website and
+        // keeps the admin-disabled FTP user off.
+        $recipe->unsuspend($result->clientId, $result->domainId, true);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        self::assertSame('n', $fake->ftpUsers()[$result->ftpUserId]['active']);
+    }
+
+    public function testChangePackageOnAnActiveClientNeverPassesThroughALockedState(): void
+    {
+        // The rejected bracket (lock flipped, then restored) disabled every
+        // object of an ACTIVE client between two calls. One update never sets
+        // locked='y', so no snapshot is ever taken for an active client.
+        $fake = new FakeIspconfigServer();
+        $basicId = $fake->addClientTemplate('Basic', 'm');
+        $proId = $fake->addClientTemplate('Pro', 'm');
+        $recipe = $this->recipe($fake);
+        $result = $recipe->create($this->product(['clientTemplateId' => $basicId]), $this->service());
+        $logOffset = count($fake->requestLog);
+
+        $recipe->changePackage($result->clientId, $this->product(['clientTemplateId' => $proId]), []);
+
+        foreach (array_slice($fake->requestLog, $logOffset) as $request) {
+            if ($request['method'] === 'client_update') {
+                self::assertArrayNotHasKey('locked', (array) ($request['params']['params'] ?? []));
+            }
+        }
+        self::assertSame([], $fake->clientTmpData($result->clientId));
+        self::assertSame('n', $fake->clients()[$result->clientId]['locked']);
+        self::assertSame('y', $fake->sites()[$result->domainId]['active']);
+        self::assertSame($proId, (int) $fake->clients()[$result->clientId]['template_master']);
     }
 
     public function testChangePackageSkipsMalformedAndDuplicateDesiredIds(): void

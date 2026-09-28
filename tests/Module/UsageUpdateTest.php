@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ispconfigconnect\Tests\Module;
 
 use Ispconfigconnect\Tests\Stubs\ModuleCallLog;
+use WHMCS\Database\Capsule;
 
 /**
  * ispconfigconnect_UsageUpdate - WHMCS's nightly per-server disk/bandwidth
@@ -307,6 +308,135 @@ final class UsageUpdateTest extends ModuleTestCase
         );
         $summary = self::lastUsageUpdateLog();
         self::assertStringContainsString('login failure limit', (string) $summary['response']['error']);
+    }
+
+    // ---- the default row provider: property rows across products ----------
+    //
+    // A service carries ispconfig_* custom-field rows on EVERY product it has
+    // been on: a package change leaves the old product's rows behind, and
+    // Unlink/Terminate/Replace blank every product's rows while a re-link
+    // writes only the current product's. These run the real Capsule query
+    // (through the in-memory double, which returns rows in insertion order).
+
+    private const PRODUCT_NOW = 200;
+    private const PRODUCT_BEFORE = 300;
+
+    /**
+     * Service 101 on server 3, currently on PRODUCT_NOW, with both products'
+     * client-id/username fields defined.
+     *
+     * @param list<array{fieldid: int, value: string}> $values in insertion order
+     */
+    private function seedServiceOnTwoProducts(array $values): void
+    {
+        Capsule::seed('tblhosting', [[
+            'id' => 101,
+            'server' => 3,
+            'domainstatus' => 'Active',
+            'packageid' => self::PRODUCT_NOW,
+            'username' => 'svc1',
+            'domain' => 'one.example',
+            'bwusage' => 0,
+            'lastupdate' => '0000-00-00 00:00:00',
+        ]]);
+        Capsule::seed('tblcustomfields', [
+            ['id' => 1, 'type' => 'product', 'relid' => self::PRODUCT_NOW, 'fieldname' => 'ispconfig_client_id'],
+            ['id' => 2, 'type' => 'product', 'relid' => self::PRODUCT_NOW, 'fieldname' => 'ispconfig_client_username'],
+            ['id' => 3, 'type' => 'product', 'relid' => self::PRODUCT_BEFORE, 'fieldname' => 'ispconfig_client_id'],
+            ['id' => 4, 'type' => 'product', 'relid' => self::PRODUCT_BEFORE, 'fieldname' => 'ispconfig_client_username'],
+        ]);
+        $rows = [];
+        foreach ($values as $value) {
+            $rows[] = ['fieldid' => $value['fieldid'], 'relid' => 101, 'value' => $value['value']];
+        }
+        Capsule::seed('tblcustomfieldsvalues', $rows);
+    }
+
+    public function testABlankRowOfAnotherProductNeverErasesTheLiveClientId(): void
+    {
+        // Relinked on the current product, then the old product's rows were
+        // blanked - and the blank rows come back LAST.
+        $this->seedServiceOnTwoProducts([
+            ['fieldid' => 1, 'value' => '42'],
+            ['fieldid' => 2, 'value' => 'svc1'],
+            ['fieldid' => 3, 'value' => ''],
+            ['fieldid' => 4, 'value' => ''],
+        ]);
+
+        $rows = ispconfigconnect_serverServiceRows(3);
+
+        self::assertCount(1, $rows);
+        self::assertSame('42', $rows[0]['ispconfig_client_id']);
+        self::assertSame('svc1', $rows[0]['ispconfig_client_username']);
+    }
+
+    public function testTheCurrentProductsRowWinsOverANewerRowOfAnotherProduct(): void
+    {
+        // A stale id left on the old product, written AFTER the current one:
+        // "the last row returned" would bill the wrong client.
+        $this->seedServiceOnTwoProducts([
+            ['fieldid' => 1, 'value' => '42'],
+            ['fieldid' => 3, 'value' => '7'],
+        ]);
+
+        self::assertSame('42', ispconfigconnect_serverServiceRows(3)[0]['ispconfig_client_id']);
+    }
+
+    public function testAnotherProductsValueIsStillReadWhenTheCurrentProductHasNone(): void
+    {
+        // Right after a package change, before the ids are migrated: the old
+        // product's row is the only one, and it must still be found.
+        $this->seedServiceOnTwoProducts([
+            ['fieldid' => 1, 'value' => ''],
+            ['fieldid' => 3, 'value' => '42'],
+        ]);
+
+        self::assertSame('42', ispconfigconnect_serverServiceRows(3)[0]['ispconfig_client_id']);
+    }
+
+    public function testTheNightlySweepBillsAServiceWhoseOldProductRowIsBlank(): void
+    {
+        $clientId = $this->fake->addClient('svc1');
+        $domainId = $this->fake->addWebsite($clientId, 'one.example');
+        $this->fake->setDiskUsage('web' . $domainId, usedKilobytes: 524288);
+        $this->seedServiceOnTwoProducts([
+            ['fieldid' => 1, 'value' => (string) $clientId],
+            ['fieldid' => 2, 'value' => 'svc1'],
+            ['fieldid' => 3, 'value' => ''],
+            ['fieldid' => 4, 'value' => ''],
+        ]);
+
+        // No row provider: the module reads tblhosting and the property rows.
+        ispconfigconnect_UsageUpdate($this->params(['serverid' => 3]), null, $this->writer());
+
+        self::assertArrayHasKey(101, $this->writes, 'the linked service must be billed, not skipped as unlinked');
+        self::assertSame(512, $this->writes[101]['diskusage']);
+    }
+
+    // ---- the default writer's clock ----------------------------------------
+
+    public function testTheUsageWriterStampsLastupdateWithPhpsClock(): void
+    {
+        // Usage\ServiceUsage reads lastupdate back against PHP's clock to
+        // detect a month rollover, so it must be written from PHP's clock
+        // too. The double resolves a raw now() to Capsule::$now - set here to a
+        // moment no PHP clock would produce, standing in for a MySQL server in
+        // another time zone.
+        Capsule::seed('tblhosting', [['id' => 101, 'lastupdate' => '2000-01-01 00:00:00']]);
+        Capsule::$now = '1999-12-31 23:59:59';
+
+        $before = time();
+        (ispconfigconnect_usageWriter())(101, ['diskusage' => 5]);
+        $after = time();
+
+        $row = Capsule::rows('tblhosting')[0];
+        self::assertSame(5, $row['diskusage']);
+        self::assertIsString($row['lastupdate']);
+        self::assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $row['lastupdate']);
+        $stamped = strtotime($row['lastupdate']);
+        self::assertGreaterThanOrEqual($before, $stamped);
+        self::assertLessThanOrEqual($after, $stamped);
+        self::assertNotSame(Capsule::$now, $row['lastupdate']);
     }
 
     /** @return array{action: string, request: array<string, mixed>, response: array<string, mixed>} */
