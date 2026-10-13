@@ -4481,7 +4481,11 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
             ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
             ->where('tblcustomfields.type', 'product')
             ->where('tblcustomfields.fieldname', ServiceProperties::KEY_CLIENT_ID)
-            ->where('tblcustomfieldsvalues.value', (string) $clientId)
+            // Not `value = '<id>'`: the property reader reads ' 4', '04',
+            // '4.0' or '4e0' as client 4 too, and a SQL string comparison
+            // would miss that holder. Values are compared in PHP below, by
+            // the reader's own rule.
+            ->where('tblcustomfieldsvalues.value', '!=', '')
             ->where('tblcustomfieldsvalues.relid', '!=', $serviceId)
             ->whereNotIn('tblhosting.domainstatus', [
                 ispconfigconnect_serviceStatus('TERMINATED', 'Terminated'),
@@ -4518,7 +4522,7 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
         $effective = ispconfigconnect_effectivePropertyValues(ServiceProperties::KEY_CLIENT_ID, array_keys($candidates));
         $sharers = [];
         foreach ($candidates as $otherId => $candidate) {
-            if (($effective[$otherId] ?? null) === (string) $clientId) {
+            if (ispconfigconnect_storedIdIs($effective[$otherId] ?? null, $clientId)) {
                 $sharers[$otherId] = $candidate;
             }
         }
@@ -4630,6 +4634,15 @@ function ispconfigconnect_otherPanelServerIds(int $serviceId): array
     }
 
     return $different;
+}
+
+/**
+ * Whether a stored id custom-field value reads as $id by the property
+ * reader's rule (ServiceProperties::intValue(): is_numeric, then an int cast).
+ */
+function ispconfigconnect_storedIdIs(?string $value, int $id): bool
+{
+    return $value !== null && is_numeric($value) && (int) $value === $id;
 }
 
 /** A server Hostname/IP Address in the one form two records are compared by. */

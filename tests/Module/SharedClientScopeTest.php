@@ -80,6 +80,39 @@ final class SharedClientScopeTest extends ModuleTestCase
         return array_map(static fn (array $other): int => $other['serviceid'], $others);
     }
 
+    /**
+     * The property reader reads ' 7', '07', '7.0' or '7e0' as client 7, so a
+     * service holding one of those IS a sharer: terminating client 7 from
+     * service 42 would delete its hosting too.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function nonCanonicalSpellingsOfSeven(): array
+    {
+        return ['leading space' => [' 7'], 'leading zero' => ['07'], 'decimal' => ['7.0'], 'exponent' => ['7e0']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonCanonicalSpellingsOfSeven')]
+    public function testANonCanonicalSpellingOfTheSameIdIsASharer(string $stored): void
+    {
+        $this->seedService(42, 0);
+        $this->seedService(99, 0);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, $stored);
+
+        self::assertSame([99], $this->sharersOf42());
+    }
+
+    public function testADifferentIdIsNotASharer(): void
+    {
+        $this->seedService(42, 0);
+        $this->seedService(99, 0);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '77');
+
+        self::assertSame([], $this->sharersOf42());
+    }
+
     // ── R1: client ids are per panel ─────────────────────────────────────
 
     public function testAServiceOnAnotherPanelWithAnotherClientUsernameIsNotASharer(): void
