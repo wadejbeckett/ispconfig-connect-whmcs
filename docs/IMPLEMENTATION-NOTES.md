@@ -1,8 +1,9 @@
 # Implementation Notes — ISPConfig Connect for WHMCS
 
 Working spec for the build, and the reference for anyone changing the module. A sibling to the scope
-& design document in this repository,
-[`docs/superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md`](superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md).
+& design document kept in the development repository
+(`docs/superpowers/specs/2026-08-05-whmcs-ispconfig-connector-design.md`, not included in release
+archives).
 
 Everything in §1 below was re-verified on 2026-08-24 directly against the ISPConfig **3.3.1p1**
 release tarball. To re-verify it — or to answer anything this file does not — download the matching

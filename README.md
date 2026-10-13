@@ -15,9 +15,6 @@ cPanel and Plesk to ISPConfig hosting servers.
 > been checked against a real service**, so usage-based billing is not ready to sell. Reseller
 > products, dedicated IPs and client-area management screens are not started. Licensed under
 > **GPLv3**.
->
-> [`docs/ROADMAP.md`](docs/ROADMAP.md) is the full current-state account: what is proven and how it
-> was verified, what is built but unproven, what is not built, and what happens next.
 
 ---
 
@@ -156,7 +153,7 @@ higher bar than the abandoned modules it replaces:
 ## Requirements
 
 - WHMCS 8.13 or 9.x. Verified in use on **9.0.6**; 8.13 is expected to work but has not been
-  tested (see [`docs/ROADMAP.md`](docs/ROADMAP.md))
+  tested
 - PHP ≥ 8.2 (8.2 and 8.3 verified) with **ext-curl** and **ext-ctype**. **ext-intl** is recommended:
   without it an internationalised server hostname must be entered in punycode (`xn--`) form, and
   internationalised customer domains are not converted. ext-mbstring is optional
@@ -196,8 +193,7 @@ its own separate harness in its own repository.) The suite and the static analys
 by hand — there is no CI yet. See [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) — its §5
 records the WHMCS-side contracts, including the ones that are not documented anywhere and had to be
 established on a live install, and its §6 is the settled, evidence-backed account of what the WHMCS
-servers page does and does not let a third-party module do. For project status and what is planned
-next, see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+servers page does and does not let a third-party module do.
 
 ## License
 

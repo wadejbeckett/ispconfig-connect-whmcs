@@ -1,6 +1,6 @@
 # Live test plan: WHMCS test install
 
-This plan takes the build on `claude/zen-franklin-z7oak2` through a real WHMCS and a real
+This plan takes this build through a real WHMCS and a real
 ISPConfig panel. The unit and module suites prove the code against a fake panel and an
 in-memory database. This plan is what proves it against the real ones, and it is the gate
 before any production use.
@@ -24,7 +24,7 @@ find ispconfigconnect -type f | wc -l
 
 | Build | Commit | Files | Digest |
 |---|---|---|---|
-| This build | the head of `claude/zen-franklin-z7oak2` that carries this table (`git log -1 -- docs/LIVE-TEST-PLAN.md`) | 58 | `4fdf357f05bbb57fb9e7292a645bb387cdcc29cf3433b91416b0d090bfadc364` |
+| This build | the commit that carries this table (`git log -1 -- docs/LIVE-TEST-PLAN.md`) | 58 | `4fdf357f05bbb57fb9e7292a645bb387cdcc29cf3433b91416b0d090bfadc364` |
 | Earlier live-verified build (`build/phase-0-1`) | `1ed05b3` | 57 | recorded in the prerequisites backup |
 
 Per-file digests for the three files most worth checking by hand:

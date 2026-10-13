@@ -1,0 +1,7 @@
+# Internal development records: kept in the repository, left out of release
+# archives (git archive / GitHub source downloads).
+docs/REVIEW-STATUS.md export-ignore
+docs/LIVE-TEST-RESULTS.md export-ignore
+docs/ROADMAP.md export-ignore
+docs/superpowers/ export-ignore
+tools/live-harness/ export-ignore
