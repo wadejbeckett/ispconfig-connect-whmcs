@@ -1997,7 +1997,9 @@ final class FakeIspconfigServer implements HttpTransportInterface
             'path' => $this->companionTokenPath,
             'expires_in' => $this->companionTokenTtl,
             'client_id' => (int) $client_id,
-            'username' => 'client' . (int) $client_id,
+            // The ispconfig-sso project reports the sys_user the token logs
+            // in as, which is the client's own panel username.
+            'username' => $this->clients[(int) $client_id]['username'] ?? 'client' . (int) $client_id,
         ];
     }
 

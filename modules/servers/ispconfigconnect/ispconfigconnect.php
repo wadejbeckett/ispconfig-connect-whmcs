@@ -2378,8 +2378,11 @@ function ispconfigconnect_singleSignOn(
     $customerFacing = $context === 'ServiceSingleSignOn';
 
     $clientId = null;
+    $clientUsername = null;
     try {
-        $clientId = ispconfigconnect_serviceProperties($params)->clientId();
+        $properties = ispconfigconnect_serviceProperties($params);
+        $clientId = $properties->clientId();
+        $clientUsername = $properties->clientUsername();
     } catch (\Throwable) {
         // No service model in scope (a server-level admin call).
     }
@@ -2457,13 +2460,39 @@ function ispconfigconnect_singleSignOn(
             // from the address WHMCS saw, and any CDN, proxy or IPv4/IPv6
             // asymmetry between WHMCS and the panel would break every login
             // (the ispconfig-sso project's README documents the trade-off).
-            $result = [
-                'success' => true,
-                'redirectTo' => ispconfigconnect_companionClient($params, $session)->loginUrl($clientId),
-            ];
+            $ticket = ispconfigconnect_companionClient($params, $session)->ticket($clientId);
         } finally {
             $session->close();
         }
+
+        // The token logs in as whichever client holds $clientId on the panel
+        // the service's server record points at NOW. After the service is
+        // moved to another server, or the id is reused after a delete on the
+        // panel, that is a different customer. When both the panel and the
+        // stored link name the username, they must agree; a mismatched token
+        // is dropped, never handed to a browser.
+        if (
+            $ticket->username !== null
+            && $clientUsername !== null
+            && strtolower(trim($ticket->username)) !== strtolower(trim($clientUsername))
+        ) {
+            return ispconfigconnect_ssoFailure(
+                $context,
+                $serviceId,
+                $clientId,
+                null,
+                sprintf(
+                    'Single sign-on refused: ISPConfig client #%d on this panel is "%s", but this service is'
+                    . ' linked to "%s". The service may have been moved to another server, or the client id'
+                    . ' reused on the panel. Check the link with "Replace ISPConfig Link". No login was issued.',
+                    $clientId,
+                    $ticket->username,
+                    $clientUsername
+                ),
+                $customerFacing
+            );
+        }
+        $result = ['success' => true, 'redirectTo' => $ticket->url];
     } catch (CompanionNotInstalledException) {
         return ispconfigconnect_ssoFailure(
             $context,
