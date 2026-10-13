@@ -858,10 +858,12 @@ final class RestClientTest extends TestCase
         self::assertSame($record['email'], $logged['email']);
         self::assertSame($record['locked'], $logged['locked']);
         self::assertSame($record['template_master'], $logged['template_master']);
-        // Kept and MASKED: key material is high-entropy, so replaceVars is an
-        // exact control, and seeing the column tells the operator the panel
-        // returned a private key at all.
-        self::assertSame($record['id_rsa'], $logged['id_rsa']);
+        // Kept, REDACTED and also MASKED: seeing the column tells the operator
+        // the panel returned a private key at all, but its value must not
+        // depend on how WHMCS serialises the array before applying
+        // replaceVars (a PEM does not survive JSON escaping byte-for-byte).
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['id_rsa']);
+        self::assertStringNotContainsString('PRIVATE KEY', (string) json_encode($logged));
         self::assertContains($record['id_rsa'], $this->logged[1]['sensitive']);
         // The dropped columns are accounted for rather than silently missing.
         self::assertArrayHasKey(RestClient::SCRUB_NOTICE_KEY, $logged);
@@ -910,8 +912,9 @@ final class RestClientTest extends TestCase
         $logged = $this->logged[1]['response'];
         self::assertIsArray($logged);
 
-        // The panel login hash and the 2FA recovery hash: kept, masked.
-        self::assertSame($row['passwort'], $logged['passwort']);
+        // The panel login hash and the 2FA recovery hash: kept, redacted, masked.
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['passwort']);
+        self::assertSame(RestClient::REDACTED_PLACEHOLDER, $logged['otp_recovery']);
         self::assertContains($row['passwort'], $this->logged[1]['sensitive']);
         self::assertContains($row['otp_recovery'], $this->logged[1]['sensitive']);
         // The 2FA mail address, the reset-token hash: gone.
