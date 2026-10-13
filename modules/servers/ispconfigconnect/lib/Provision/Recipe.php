@@ -312,11 +312,12 @@ final class Recipe
         ?int $ftpUserId = null,
         ?int $databaseUserId = null,
     ): void {
-        $this->session->call('client_change_password', [
-            'client_id' => $clientId,
-            'new_password' => $newPassword,
-        ]);
-
+        // The panel login goes LAST. sites_ftp_user_update and
+        // sites_database_user_update run the panel's password policy
+        // (validate_password) and can refuse the new password, while
+        // client_change_password writes it unchecked. Rotating the login
+        // first left a refused password half-applied: new panel login, old
+        // FTP/database credentials, and every retry failing the same way.
         if ($ftpUserId !== null) {
             $this->session->call('sites_ftp_user_update', [
                 'client_id' => $clientId,
@@ -332,6 +333,11 @@ final class Recipe
                 'params' => ['database_password' => $newPassword],
             ]);
         }
+
+        $this->session->call('client_change_password', [
+            'client_id' => $clientId,
+            'new_password' => $newPassword,
+        ]);
     }
 
     /**
