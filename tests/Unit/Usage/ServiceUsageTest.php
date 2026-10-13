@@ -63,6 +63,23 @@ final class ServiceUsageTest extends TestCase
         self::assertSame(51200, $columns['bwusage']);
     }
 
+    /**
+     * The panel dates `this_month` by its own clock. A WHMCS cron that ran just
+     * after midnight on the 1st, while a panel behind WHMCS's time zone was
+     * still in last month, stored last month's whole total. That figure must
+     * not become this month's peak.
+     */
+    public function testAFigureStoredOnTheFirstDoesNotBecomeThisMonthsPeak(): void
+    {
+        $columns = $this->usage(1024)->toHostingColumnsGiven(
+            51200,
+            '2026-10-01 00:30:00',
+            new \DateTimeImmutable('2026-10-02 00:30:00')
+        );
+
+        self::assertSame(1024, $columns['bwusage']);
+    }
+
     public function testAHigherCurrentMonthReadingReplacesTheStoredPeak(): void
     {
         $columns = $this->usage(60000)->toHostingColumnsGiven(

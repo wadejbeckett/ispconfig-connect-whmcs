@@ -587,7 +587,7 @@ delay that reset. The figures come from the panel's own accounting:
 |---|---|
 | `diskusage` | `quota_get_by_user` — the repquota block count for each of the client's websites |
 | `disklimit` | `web_domain.hd_quota` (MB; `-1`/`0` = unlimited, in which case the column is **left unset** so WHMCS keeps the product's own limit) |
-| `bwusage` | `trafficquota_get_by_user` — this calendar month's `web_traffic` bytes (reset at the month boundary, never carried forward as a peak) |
+| `bwusage` | `trafficquota_get_by_user` — this calendar month's `web_traffic` bytes (reset at the month boundary, never carried forward as a peak; a figure stored on the 1st is not kept as a peak, because the panel may still have been in the previous month) |
 | `bwlimit` | `web_domain.traffic_quota` (MB, same unlimited convention as `disklimit`) |
 
 Requirements and behaviour worth knowing:
