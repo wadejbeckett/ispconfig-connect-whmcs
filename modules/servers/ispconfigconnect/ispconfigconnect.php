@@ -511,7 +511,7 @@ function ispconfigconnect_SuspendAccount(array $params): string
             $shared = ispconfigconnect_sharedClientRefusal(
                 'Suspend',
                 $clientId,
-                ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId) ?? []
+                ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId, null, (int) ($params['addonId'] ?? 0)) ?? []
             );
             if ($shared !== null) {
                 return $shared;
@@ -624,7 +624,7 @@ function ispconfigconnect_UnsuspendAccount(array $params): string
         if ($entireClient) {
             $serviceId = (int) ($params['serviceid'] ?? 0);
             // null = the guard could not run and has logged why; proceed.
-            $others = ispconfigconnect_otherServicesLinkedToClient($serviceId, $clientId) ?? [];
+            $others = ispconfigconnect_otherServicesLinkedToClient($serviceId, $clientId, null, (int) ($params['addonId'] ?? 0)) ?? [];
             $suspended = ispconfigconnect_serviceStatus('SUSPENDED', 'Suspended');
             $suspendedOthers = array_values(array_filter(
                 $others,
@@ -787,7 +787,7 @@ function ispconfigconnect_TerminateAccount(array $params): string
         // One WHMCS service maps to one ISPConfig client. If another live
         // service also points at this client, client_delete_everything would
         // delete THEIR hosting too, so refuse before opening a session.
-        $others = ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId);
+        $others = ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId, null, (int) ($params['addonId'] ?? 0));
         if ($others === null) {
             // FAIL CLOSED. Suspend, Unsuspend, Change Password, Change Package
             // and Link proceed when the check cannot run, because refusing
@@ -865,7 +865,7 @@ function ispconfigconnect_ChangePassword(array $params): string
         $shared = ispconfigconnect_sharedClientRefusal(
             'Change Password',
             $clientId,
-            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId) ?? []
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId, null, (int) ($params['addonId'] ?? 0)) ?? []
         );
         if ($shared !== null) {
             return $shared;
@@ -915,7 +915,7 @@ function ispconfigconnect_ChangePackage(array $params): string
         $shared = ispconfigconnect_sharedClientRefusal(
             'Change Package',
             $clientId,
-            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId) ?? []
+            ispconfigconnect_otherServicesLinkedToClient((int) ($params['serviceid'] ?? 0), $clientId, null, (int) ($params['addonId'] ?? 0)) ?? []
         );
         if ($shared !== null) {
             return $shared;
@@ -2378,8 +2378,11 @@ function ispconfigconnect_singleSignOn(
     $customerFacing = $context === 'ServiceSingleSignOn';
 
     $clientId = null;
+    $clientUsername = null;
     try {
-        $clientId = ispconfigconnect_serviceProperties($params)->clientId();
+        $properties = ispconfigconnect_serviceProperties($params);
+        $clientId = $properties->clientId();
+        $clientUsername = $properties->clientUsername();
     } catch (\Throwable) {
         // No service model in scope (a server-level admin call).
     }
@@ -2457,13 +2460,39 @@ function ispconfigconnect_singleSignOn(
             // from the address WHMCS saw, and any CDN, proxy or IPv4/IPv6
             // asymmetry between WHMCS and the panel would break every login
             // (the ispconfig-sso project's README documents the trade-off).
-            $result = [
-                'success' => true,
-                'redirectTo' => ispconfigconnect_companionClient($params, $session)->loginUrl($clientId),
-            ];
+            $ticket = ispconfigconnect_companionClient($params, $session)->ticket($clientId);
         } finally {
             $session->close();
         }
+
+        // The token logs in as whichever client holds $clientId on the panel
+        // the service's server record points at NOW. After the service is
+        // moved to another server, or the id is reused after a delete on the
+        // panel, that is a different customer. When both the panel and the
+        // stored link name the username, they must agree; a mismatched token
+        // is dropped, never handed to a browser.
+        if (
+            $ticket->username !== null
+            && $clientUsername !== null
+            && strtolower(trim($ticket->username)) !== strtolower(trim($clientUsername))
+        ) {
+            return ispconfigconnect_ssoFailure(
+                $context,
+                $serviceId,
+                $clientId,
+                null,
+                sprintf(
+                    'Single sign-on refused: ISPConfig client #%d on this panel is "%s", but this service is'
+                    . ' linked to "%s". The service may have been moved to another server, or the client id'
+                    . ' reused on the panel. Check the link with "Replace ISPConfig Link". No login was issued.',
+                    $clientId,
+                    $ticket->username,
+                    $clientUsername
+                ),
+                $customerFacing
+            );
+        }
+        $result = ['success' => true, 'redirectTo' => $ticket->url];
     } catch (CompanionNotInstalledException) {
         return ispconfigconnect_ssoFailure(
             $context,
@@ -3559,7 +3588,8 @@ function ispconfigconnect_link(array $params, string $context, bool $replace): s
                     ispconfigconnect_otherServicesLinkedToClient(
                         $serviceId,
                         $resolvedId,
-                        (string) ($record['username'] ?? $name)
+                        (string) ($record['username'] ?? $name),
+                        (int) ($params['addonId'] ?? 0)
                     ) ?? []
                 );
                 if ($shared !== null) {
@@ -4437,8 +4467,12 @@ function ispconfigconnect_clientExists(SessionManager $session, int $clientId): 
  *        caller knows it (Link, adoption); otherwise this service's stored one is read
  * @return list<array{serviceid: int, userid: int, domain: string, status: string}>|null
  */
-function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clientId, ?string $clientUsername = null): ?array
-{
+function ispconfigconnect_otherServicesLinkedToClient(
+    int $serviceId,
+    int $clientId,
+    ?string $clientUsername = null,
+    int $addonId = 0
+): ?array {
     // No positive id names no real client, and with no Capsule class at all
     // there is no WHMCS database and so no other service to find - both are
     // answers, not failures.
@@ -4452,7 +4486,11 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
             ->join('tblhosting', 'tblhosting.id', '=', 'tblcustomfieldsvalues.relid')
             ->where('tblcustomfields.type', 'product')
             ->where('tblcustomfields.fieldname', ServiceProperties::KEY_CLIENT_ID)
-            ->where('tblcustomfieldsvalues.value', (string) $clientId)
+            // Not `value = '<id>'`: the property reader reads ' 4', '04',
+            // '4.0' or '4e0' as client 4 too, and a SQL string comparison
+            // would miss that holder. Values are compared in PHP below, by
+            // the reader's own rule.
+            ->where('tblcustomfieldsvalues.value', '!=', '')
             ->where('tblcustomfieldsvalues.relid', '!=', $serviceId)
             ->whereNotIn('tblhosting.domainstatus', [
                 ispconfigconnect_serviceStatus('TERMINATED', 'Terminated'),
@@ -4482,14 +4520,15 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
                 $servers[$otherId] = (int) ($columns['server'] ?? 0);
             }
         }
+        $addonHolders = ispconfigconnect_addonsLinkedToClient($serviceId, $clientId, $clientUsername, $addonId);
         if ($candidates === []) {
-            return [];
+            return $addonHolders;
         }
 
         $effective = ispconfigconnect_effectivePropertyValues(ServiceProperties::KEY_CLIENT_ID, array_keys($candidates));
         $sharers = [];
         foreach ($candidates as $otherId => $candidate) {
-            if (($effective[$otherId] ?? null) === (string) $clientId) {
+            if (ispconfigconnect_storedIdIs($effective[$otherId] ?? null, $clientId)) {
                 $sharers[$otherId] = $candidate;
             }
         }
@@ -4515,7 +4554,7 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
             }
         }
 
-        return array_values($sharers);
+        return array_merge(array_values($sharers), $addonHolders);
     } catch (\Throwable $failure) {
         // Not [] - see the docblock. The line is what lets an operator tell
         // "the guard ran and found nobody" from "the guard never ran".
@@ -4533,6 +4572,100 @@ function ispconfigconnect_otherServicesLinkedToClient(int $serviceId, int $clien
 
         return null;
     }
+}
+
+/**
+ * Live WHMCS product ADDONS that store $clientId as their own ISPConfig client.
+ *
+ * An addon provisioned by this module keeps its ids in addon-scoped custom
+ * fields (tblcustomfields.type = 'addon', relid = tblhostingaddons.id), which
+ * the product-row query above never sees. Without this, Link could point a
+ * product service at an addon's client and Terminate would then delete the
+ * addon's hosting. $ownAddonId excludes the calling addon itself.
+ *
+ * Panel scope as for products: an addon on a server record with no address in
+ * common is dropped only when both usernames are known and differ. For an
+ * addon caller nothing is dropped (its own server is not the parent's).
+ *
+ * Throws on a query failure; the caller turns that into "could not check".
+ *
+ * @return list<array{serviceid: int, userid: int, domain: string, status: string}>
+ */
+function ispconfigconnect_addonsLinkedToClient(int $serviceId, int $clientId, ?string $clientUsername, int $ownAddonId): array
+{
+    $rows = \WHMCS\Database\Capsule::table('tblcustomfieldsvalues')
+        ->join('tblcustomfields', 'tblcustomfields.id', '=', 'tblcustomfieldsvalues.fieldid')
+        ->join('tblhostingaddons', 'tblhostingaddons.id', '=', 'tblcustomfieldsvalues.relid')
+        ->where('tblcustomfields.type', 'addon')
+        ->whereIn('tblcustomfields.fieldname', [ServiceProperties::KEY_CLIENT_ID, ServiceProperties::KEY_CLIENT_USERNAME])
+        ->where('tblcustomfieldsvalues.value', '!=', '')
+        ->where('tblcustomfieldsvalues.relid', '!=', $ownAddonId)
+        ->whereNotIn('tblhostingaddons.status', [
+            ispconfigconnect_serviceStatus('TERMINATED', 'Terminated'),
+            ispconfigconnect_serviceStatus('CANCELLED', 'Cancelled'),
+            ispconfigconnect_serviceStatus('FRAUD', 'Fraud'),
+        ])
+        ->orderByDesc('tblcustomfieldsvalues.id')
+        ->get([
+            'tblhostingaddons.id as addonid',
+            'tblhostingaddons.hostingid as hostingid',
+            'tblhostingaddons.userid as userid',
+            'tblhostingaddons.status as status',
+            'tblhostingaddons.server as server',
+            'tblcustomfields.fieldname as fieldname',
+            'tblcustomfieldsvalues.value as value',
+        ]);
+
+    $holders = [];
+    $usernames = [];
+    foreach (is_iterable($rows) ? $rows : [] as $row) {
+        $columns = (array) $row;
+        $id = (int) ($columns['addonid'] ?? 0);
+        $value = trim((string) ($columns['value'] ?? ''));
+        if ($id <= 0) {
+            continue;
+        }
+        if (($columns['fieldname'] ?? '') === ServiceProperties::KEY_CLIENT_USERNAME) {
+            $usernames[$id] ??= $value;
+            continue;
+        }
+        // Any matching row counts: a false match only refuses.
+        if (!isset($holders[$id]) && ispconfigconnect_storedIdIs($value, $clientId)) {
+            $holders[$id] = [
+                'serviceid' => (int) ($columns['hostingid'] ?? 0),
+                'userid' => (int) ($columns['userid'] ?? 0),
+                'domain' => sprintf('product addon #%d', $id),
+                'status' => (string) ($columns['status'] ?? ''),
+                'server' => (int) ($columns['server'] ?? 0),
+            ];
+        }
+    }
+    if ($holders === []) {
+        return [];
+    }
+
+    if ($ownAddonId <= 0) {
+        $otherPanels = ispconfigconnect_otherPanelServerIds($serviceId);
+        $own = strtolower(trim(
+            $clientUsername ?? (ispconfigconnect_effectivePropertyValues(ServiceProperties::KEY_CLIENT_USERNAME, [$serviceId])[$serviceId] ?? '')
+        ));
+        foreach ($holders as $id => $holder) {
+            $theirs = strtolower(trim($usernames[$id] ?? ''));
+            if (in_array($holder['server'], $otherPanels, true) && $own !== '' && $theirs !== '' && $own !== $theirs) {
+                unset($holders[$id]);
+            }
+        }
+    }
+
+    return array_values(array_map(
+        static fn (array $holder): array => [
+            'serviceid' => $holder['serviceid'],
+            'userid' => $holder['userid'],
+            'domain' => $holder['domain'],
+            'status' => $holder['status'],
+        ],
+        $holders
+    ));
 }
 
 /**
@@ -4601,6 +4734,15 @@ function ispconfigconnect_otherPanelServerIds(int $serviceId): array
     }
 
     return $different;
+}
+
+/**
+ * Whether a stored id custom-field value reads as $id by the property
+ * reader's rule (ServiceProperties::intValue(): is_numeric, then an int cast).
+ */
+function ispconfigconnect_storedIdIs(?string $value, int $id): bool
+{
+    return $value !== null && is_numeric($value) && (int) $value === $id;
 }
 
 /** A server Hostname/IP Address in the one form two records are compared by. */

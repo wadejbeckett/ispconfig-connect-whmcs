@@ -80,6 +80,104 @@ final class SharedClientScopeTest extends ModuleTestCase
         return array_map(static fn (array $other): int => $other['serviceid'], $others);
     }
 
+    /**
+     * The property reader reads ' 7', '07', '7.0' or '7e0' as client 7, so a
+     * service holding one of those IS a sharer: terminating client 7 from
+     * service 42 would delete its hosting too.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function nonCanonicalSpellingsOfSeven(): array
+    {
+        return ['leading space' => [' 7'], 'leading zero' => ['07'], 'decimal' => ['7.0'], 'exponent' => ['7e0']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonCanonicalSpellingsOfSeven')]
+    public function testANonCanonicalSpellingOfTheSameIdIsASharer(string $stored): void
+    {
+        $this->seedService(42, 0);
+        $this->seedService(99, 0);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, $stored);
+
+        self::assertSame([99], $this->sharersOf42());
+    }
+
+    public function testADifferentIdIsNotASharer(): void
+    {
+        $this->seedService(42, 0);
+        $this->seedService(99, 0);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedClientIdRow(99, self::FIELD_OLD_PRODUCT, '77');
+
+        self::assertSame([], $this->sharersOf42());
+    }
+
+    private const FIELD_ADDON_CLIENT_ID = 93;
+
+    private function seedAddonHolding(int $addonId, string $clientIdValue, string $status = 'Active', int $parentId = 55): void
+    {
+        Capsule::seed('tblcustomfields', [
+            ['id' => self::FIELD_ADDON_CLIENT_ID, 'type' => 'addon', 'fieldname' => ServiceProperties::KEY_CLIENT_ID, 'relid' => 300],
+        ]);
+        Capsule::seed('tblhostingaddons', [[
+            'id' => $addonId, 'hostingid' => $parentId, 'userid' => 77, 'status' => $status, 'server' => 0, 'addonid' => 300,
+        ]]);
+        Capsule::seed('tblcustomfieldsvalues', [['fieldid' => self::FIELD_ADDON_CLIENT_ID, 'relid' => $addonId, 'value' => $clientIdValue]]);
+    }
+
+    /**
+     * A product addon provisioned by this module stores its client id in
+     * addon-scoped custom fields. Terminating client 7 from service 42 would
+     * delete that addon's hosting, so the addon is a sharer.
+     */
+    public function testALiveProductAddonHoldingTheSameClientIsASharer(): void
+    {
+        $this->seedService(42, 0);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedAddonHolding(12, '7');
+
+        $others = ispconfigconnect_otherServicesLinkedToClient(42, 7);
+        self::assertIsArray($others);
+        self::assertSame([55], array_column($others, 'serviceid'));
+        self::assertStringContainsString('addon #12', ispconfigconnect_describeServices($others));
+
+        $refusal = ispconfigconnect_TerminateAccount($this->params(['serviceid' => 42]));
+        self::assertStringContainsString('also linked to service #55 (product addon #12', $refusal);
+    }
+
+    public function testAnAddonOnAnotherPanelIsDroppedOnlyWhenTheUsernamesDiffer(): void
+    {
+        $this->seedServers([[1, 'panel-a.example', '10.0.0.1'], [2, 'panel-b.example', '10.0.0.2']]);
+        $this->seedService(42, 2);
+        $this->seedClientIdRow(42, self::FIELD_OLD_PRODUCT, '7');
+        $this->seedUsername(42, 'bob');
+        $this->seedAddonHolding(12, '7');
+        Capsule::seed('tblcustomfields', [
+            ['id' => 94, 'type' => 'addon', 'fieldname' => ServiceProperties::KEY_CLIENT_USERNAME, 'relid' => 300],
+        ]);
+        Capsule::seed('tblcustomfieldsvalues', [['fieldid' => 94, 'relid' => 12, 'value' => 'alice']]);
+        Capsule::table('tblhostingaddons')->where('id', 12)->update(['server' => 1]);
+
+        self::assertSame([], $this->sharersOf42());
+        // Same username: one client on one panel reached under two records.
+        self::assertSame([55], array_column(ispconfigconnect_otherServicesLinkedToClient(42, 7, 'Alice') ?? [], 'serviceid'));
+    }
+
+    public function testATerminatedAddonIsNotASharer(): void
+    {
+        $this->seedService(42, 0);
+        $this->seedAddonHolding(12, '7', 'Terminated');
+        self::assertSame([], $this->sharersOf42());
+    }
+
+    public function testTheCallingAddonIsNotItsOwnSharer(): void
+    {
+        $this->seedService(42, 0);
+        $this->seedAddonHolding(12, '7');
+        self::assertSame([], ispconfigconnect_otherServicesLinkedToClient(42, 7, null, 12));
+    }
+
     // ── R1: client ids are per panel ─────────────────────────────────────
 
     public function testAServiceOnAnotherPanelWithAnotherClientUsernameIsNotASharer(): void

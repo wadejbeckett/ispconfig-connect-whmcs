@@ -167,7 +167,7 @@ final class RestClient
         // hold operator secrets; ssl_key/ssl_request the site's TLS key),
         // mail_user (name, cc, autoresponder text), web_database and dns_soa
         // (mbox contact). Only numeric usage/quota columns and the structural
-        // ids the log needs are kept; MASKED_KEYS survive (masked by value),
+        // ids the log needs are kept; MASKED_KEYS survive (value redacted),
         // everything else is dropped before logging.
         'quota_get_by_user' => self::WEB_DOMAIN_USAGE_LOGGED,
         'sites_web_domain_get' => self::WEB_DOMAIN_USAGE_LOGGED,
@@ -186,7 +186,7 @@ final class RestClient
      * Provision\Recipe) plus the structural columns that make a log entry
      * worth reading - ownership, lock state, node bindings. Everything else -
      * the postal address, the bank block, the tax id, the notes field - is
-     * dropped. MASKED_KEYS survive too, masked by value.
+     * dropped. MASKED_KEYS survive too, their values redacted.
      *
      * @var list<string>
      */
@@ -707,7 +707,7 @@ final class RestClient
             $response = self::project($response, $projection);
         }
 
-        return self::scrub($response);
+        return self::scrub($response, true);
     }
 
     /**
@@ -792,9 +792,10 @@ final class RestClient
 
     /**
      * @param array<array-key, mixed> $payload
+     * @param bool $redactMasked also redact MASKED_KEYS values (responses)
      * @return array<array-key, mixed>
      */
-    private static function scrub(array $payload): array
+    private static function scrub(array $payload, bool $redactMasked = false): array
     {
         $out = [];
         foreach ($payload as $key => $value) {
@@ -802,7 +803,18 @@ final class RestClient
                 $out[$key] = $value === null || $value === '' ? $value : self::REDACTED_PLACEHOLDER;
                 continue;
             }
-            $out[$key] = is_array($value) ? self::scrub($value) : $value;
+            // In a RESPONSE, MASKED_KEYS values (password hashes, TLS/SSH
+            // private keys the panel echoes back) are also handed to WHMCS as
+            // replaceVars, but that by-value replacement
+            // only works if WHMCS stores the array in a form that keeps each
+            // value byte-for-byte; a multi-line PEM or a value containing '/'
+            // does not survive JSON escaping. Redact them here as well, so
+            // the logged copy never depends on how WHMCS serialises it.
+            if ($redactMasked && is_string($value) && $value !== '' && self::isMaskedKey($key)) {
+                $out[$key] = self::REDACTED_PLACEHOLDER;
+                continue;
+            }
+            $out[$key] = is_array($value) ? self::scrub($value, $redactMasked) : $value;
         }
 
         return $out;

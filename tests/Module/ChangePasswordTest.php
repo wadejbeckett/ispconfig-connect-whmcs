@@ -48,6 +48,24 @@ final class ChangePasswordTest extends ModuleTestCase
         self::assertContains('sites_database_user_update', $methods);
     }
 
+    /**
+     * The FTP and database updates run the panel's password policy; the panel
+     * login rotation does not. A password the panel refuses must not leave the
+     * login rotated while FTP and the database keep the old one.
+     */
+    public function testAPasswordThePanelRefusesLeavesThePanelLoginUnchanged(): void
+    {
+        self::assertSame('success', ispconfigconnect_CreateAccount($this->params()));
+        $clientId = (int) array_key_first($this->fake->clients());
+        $before = $this->fake->clients()[$clientId]['password'];
+        $this->fake->failNextWith('sites_ftp_user_update', 'weak_password_txt');
+
+        $result = ispconfigconnect_ChangePassword($this->params(['password' => self::NEW_PASSWORD]));
+
+        self::assertNotSame('success', $result);
+        self::assertSame($before, $this->fake->clients()[$clientId]['password']);
+    }
+
     public function testWithoutStoredFtpAndDatabaseIdsOnlyThePanelRotates(): void
     {
         self::assertSame('success', ispconfigconnect_CreateAccount($this->params([

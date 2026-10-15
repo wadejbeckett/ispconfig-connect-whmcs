@@ -604,7 +604,8 @@ final class RecipeTest extends TestCase
             $fake->databaseUsers()[$result->databaseUserId]['database_password']
         );
         self::assertSame(
-            ['client_change_password', 'sites_ftp_user_update', 'sites_database_user_update'],
+            // The policy-checked updates first, the unchecked login last.
+            ['sites_ftp_user_update', 'sites_database_user_update', 'client_change_password'],
             array_column(array_slice($fake->requestLog, $logOffset), 'method')
         );
         // The updates went to the RIGHT records - nothing else changed.

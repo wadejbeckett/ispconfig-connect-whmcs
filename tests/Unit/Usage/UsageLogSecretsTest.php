@@ -55,16 +55,38 @@ final class UsageLogSecretsTest extends TestCase
         );
     }
 
-    /** True when some logged entry's raw response carries $secret. */
-    private static function secretWasOnTheWire(string $secret): bool
+    /**
+     * True when some logged response carries the $column column redacted - the
+     * guard against a vacuous pass (the panel really returned the key), now
+     * that the logged copy no longer holds the value itself.
+     */
+    private static function secretWasOnTheWire(string $column): bool
     {
         foreach (ModuleCallLog::entries() as $entry) {
-            if (str_contains(print_r($entry['response'], true), $secret)) {
+            if (str_contains(print_r($entry['response'], true), '[' . $column . '] => ' . RestClient::REDACTED_PLACEHOLDER)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * The secret must be absent from the logged request/response however WHMCS
+     * serialises them, not only after a by-value replacement of print_r output:
+     * json_encode escapes newlines and '/', so a PEM would survive replaceVars.
+     */
+    private static function assertAbsentInEveryEncoding(string $secret): void
+    {
+        foreach (ModuleCallLog::entries() as $entry) {
+            foreach ([$entry['request'], $entry['response']] as $logged) {
+                self::assertStringNotContainsString($secret, print_r($logged, true));
+                self::assertStringNotContainsString(
+                    (string) json_encode($secret),
+                    (string) json_encode($logged)
+                );
+            }
+        }
     }
 
     public function testUsageUpdateSweepNeverLeaksTheWebsiteTlsPrivateKey(): void
@@ -82,10 +104,11 @@ final class UsageLogSecretsTest extends TestCase
         // key (the log stores request/response INTACT; masking is driven by
         // replaceVars, which entriesLeaking() honours).
         self::assertTrue(
-            self::secretWasOnTheWire($tlsKey),
+            self::secretWasOnTheWire('ssl_key'),
             'quota_get_by_user did not put ssl_key on the wire - the fake no longer emits it'
         );
         self::assertSame([], ModuleCallLog::entriesLeaking($tlsKey));
+        self::assertAbsentInEveryEncoding($tlsKey);
     }
 
     public function testListAccountsRunNeverLeaksTheClientSshPrivateKey(): void
@@ -98,10 +121,11 @@ final class UsageLogSecretsTest extends TestCase
 
         self::assertCount(1, $accounts);
         self::assertTrue(
-            self::secretWasOnTheWire($sshKey),
+            self::secretWasOnTheWire('id_rsa'),
             'client_get(-1) did not put id_rsa on the wire - the fake no longer emits it'
         );
         self::assertSame([], ModuleCallLog::entriesLeaking($sshKey));
+        self::assertAbsentInEveryEncoding($sshKey);
     }
 
     public function testNoSeededKeyMaterialLeaksAcrossBothSweepsTogether(): void

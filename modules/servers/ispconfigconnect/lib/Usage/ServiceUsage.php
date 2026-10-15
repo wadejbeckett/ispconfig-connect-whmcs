@@ -186,6 +186,12 @@ final readonly class ServiceUsage
             return false;
         }
 
-        return $stored->format('Y-m') === $now->format('Y-m');
+        // A figure stored on the 1st does not count as this month's. The panel
+        // dates `this_month` by ITS clock: a WHMCS cron that runs while the
+        // panel is still in the previous month (panel time zone behind
+        // WHMCS's) reads last month's whole total, and keeping it as this
+        // month's peak would bill it again until real traffic passed it. From
+        // the 2nd on, the stored figure is trusted as this month's accrual.
+        return $stored->format('Y-m') === $now->format('Y-m') && (int) $stored->format('j') >= 2;
     }
 }

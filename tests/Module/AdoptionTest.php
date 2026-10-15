@@ -277,12 +277,12 @@ final class AdoptionTest extends ModuleTestCase
 
     public function testAnAlreadyLinkedServiceIsNeverEvenOfferedToTheResolver(): void
     {
-        $clientId = $this->fake->addClient('noiz');
-        $this->fake->addWebsite($clientId, 'noiz.co.za');
+        $clientId = $this->fake->addClient('acme');
+        $this->fake->addWebsite($clientId, 'acme.example');
 
         ispconfigconnect_UsageUpdate(
             $this->params(),
-            $this->rows([$this->row(101, $clientId, 'noiz', 'noiz.co.za')]),
+            $this->rows([$this->row(101, $clientId, 'acme', 'acme.example')]),
             $this->usageWriter(),
             $this->resolver([101 => self::matched(999, 'somebodyelse', 'should never be consulted')]),
             $this->propertyWriter()
@@ -298,15 +298,15 @@ final class AdoptionTest extends ModuleTestCase
 
     public function testOnlyTheUnlinkedServicesGoToTheResolverAndTheyGoInOneBatch(): void
     {
-        $linked = $this->fake->addClient('noiz');
-        $this->fake->addWebsite($linked, 'noiz.co.za');
+        $linked = $this->fake->addClient('acme');
+        $this->fake->addWebsite($linked, 'acme.example');
         $acme = $this->fake->addClient('acme');
         $this->fake->addWebsite($acme, 'acme.example');
 
         ispconfigconnect_UsageUpdate(
             $this->params(),
             $this->rows([
-                $this->row(101, $linked, 'noiz', 'noiz.co.za'),
+                $this->row(101, $linked, 'acme', 'acme.example'),
                 $this->row(102, 0, 'oldpleskname', 'acme.example'),
                 $this->row(103, 0, 'anotherold', 'nowhere.example'),
             ]),
@@ -378,15 +378,15 @@ final class AdoptionTest extends ModuleTestCase
 
     public function testWithNoResolverInstalledTheSweepSaysSoInsteadOfFailing(): void
     {
-        $clientId = $this->fake->addClient('noiz');
-        $this->fake->addWebsite($clientId, 'noiz.co.za');
+        $clientId = $this->fake->addClient('acme');
+        $this->fake->addWebsite($clientId, 'acme.example');
 
         // Third argument omitted entirely: exactly what happens on an install
         // where the resolver class is absent.
         ispconfigconnect_UsageUpdate(
             $this->params(),
             $this->rows([
-                $this->row(101, $clientId, 'noiz', 'noiz.co.za'),
+                $this->row(101, $clientId, 'acme', 'acme.example'),
                 $this->row(102, 0, 'legacy', 'globex.example'),
             ]),
             $this->usageWriter()
@@ -576,13 +576,13 @@ final class AdoptionTest extends ModuleTestCase
 
     public function testLinkAccountIsIdempotentWhenTheSameAccountIsAlreadyStored(): void
     {
-        $clientId = $this->fake->addClient('noiz');
+        $clientId = $this->fake->addClient('acme');
         $this->model->serviceProperties->save([
             'ispconfig_client_id' => (string) $clientId,
-            'ispconfig_client_username' => 'noiz',
+            'ispconfig_client_username' => 'acme',
         ]);
 
-        self::assertSame('success', ispconfigconnect_LinkAccount($this->params(['username' => 'noiz'])));
+        self::assertSame('success', ispconfigconnect_LinkAccount($this->params(['username' => 'acme'])));
         self::assertSame((string) $clientId, $this->model->serviceProperties->get('ispconfig_client_id'));
     }
 

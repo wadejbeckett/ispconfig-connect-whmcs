@@ -202,6 +202,53 @@ final class SingleSignOnTest extends ModuleTestCase
         $this->assertNoCredentialLeak(str_repeat('a1b2c3d4', 8));
     }
 
+    /**
+     * The token logs in as whoever holds the stored client id on the panel the
+     * service points at now. If the panel names a different user than the one
+     * stored at link time (the service was moved to another server, or the id
+     * was reused), no login may be handed out.
+     */
+    public function testATokenForADifferentPanelUserIsNeverHandedOut(): void
+    {
+        $this->fake->installCompanion();
+        $params = $this->provisionedParams();
+        $this->fake->companionResponseOverride = [
+            'token' => str_repeat('f0e1d2c3', 8),
+            'path' => '/connectsso/',
+            'expires_in' => 45,
+            'username' => 'another-customer',
+        ];
+
+        $result = ispconfigconnect_ServiceSingleSignOn($params);
+
+        self::assertFalse($result['success']);
+        self::assertArrayNotHasKey('redirectTo', $result);
+        $this->assertCustomerSafe($result['errorMsg']);
+        $entries = $this->logEntriesFor('ServiceSingleSignOn');
+        self::assertStringContainsString('another-customer', (string) json_encode(end($entries)));
+
+        // The admin path falls back to the panel's own login page, never the token.
+        $admin = ispconfigconnect_AdminSingleSignOn($params);
+        self::assertStringNotContainsString('token=', (string) ($admin['redirectTo'] ?? ''));
+        $entries = $this->logEntriesFor('AdminSingleSignOn');
+        self::assertStringContainsString('No login was issued', (string) json_encode(end($entries)));
+    }
+
+    public function testATokenForTheStoredPanelUserIsHandedOut(): void
+    {
+        $this->fake->installCompanion();
+        $params = $this->provisionedParams();
+        $stored = ispconfigconnect_serviceProperties($params)->clientUsername();
+        self::assertNotNull($stored);
+        $this->fake->companionResponseOverride = [
+            'token' => str_repeat('f0e1d2c3', 8),
+            'path' => '/connectsso/',
+            'username' => strtoupper($stored),
+        ];
+
+        self::assertTrue(ispconfigconnect_ServiceSingleSignOn($params)['success']);
+    }
+
     public function testThePanelUrlOverrideDecidesWhereTheCustomerLands(): void
     {
         $this->fake->installCompanion();
