@@ -122,10 +122,14 @@ modules/servers/ispconfigconnect/
 ├── templates/                  # Smarty-4-clean; Twenty-One (BS4) + Nexus tested
 └── tests/                      # PHPUnit; FakeIspconfigServer (JSON transport double)
 
-companion/ispconfig-sso/        # OPTIONAL ISPConfig-side module (own installer, own docs)
-└── interface/web/connectsso/   # remote.d SSO-token function + consumer endpoint
-                                # (documented auto-load extension point; zero core mods)
+(the OPTIONAL ISPConfig-side SSO module was planned here as companion/ispconfig-sso/
+ — it now lives in its own repository; see the note below)
 ```
+
+> **Superseded 2026-08-25.** The panel-side SSO module is no longer part of this repository. It ships
+> as the standalone **`ispconfig-sso`** project (the decision recorded in §8.3), so that any billing
+> system — not only WHMCS — can use it. This module keeps only `lib/Sso/CompanionClient.php`, which
+> detects that project at runtime and calls its one remote function when it is present.
 
 **WHMCS server form mapping:** hostname = panel host; port = 8080 default (`MetaData` DefaultSSLPort); username/password = the least-privilege **remote user**; Access Hash = optional CA bundle / companion shared secret; Secure = HTTPS.
 

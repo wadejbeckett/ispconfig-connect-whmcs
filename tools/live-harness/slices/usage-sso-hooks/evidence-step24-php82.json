@@ -1,0 +1,268 @@
+[
+    {
+        "id": "24-meta",
+        "ok": true,
+        "what": "MetaData offers Sync Accounts: identifier field domain, product field configoption1",
+        "evidence": {
+            "DisplayName": "ISPConfig Connect",
+            "APIVersion": "1.1",
+            "RequiresServer": true,
+            "DefaultSSLPort": "8080",
+            "DefaultNonSSLPort": "8080",
+            "ListAccountsUniqueIdentifierDisplayName": "Domain",
+            "ListAccountsUniqueIdentifierField": "domain",
+            "ListAccountsProductField": "configoption1"
+        }
+    },
+    {
+        "id": "24-success",
+        "ok": true,
+        "what": "no error: success=true",
+        "evidence": true
+    },
+    {
+        "id": "24-count",
+        "ok": true,
+        "what": "every panel client is listed, ordered by client id",
+        "evidence": [
+            "testone1",
+            "testtwo2",
+            "mailonly3",
+            "handmade1",
+            "orphan5"
+        ]
+    },
+    {
+        "id": "24-s1",
+        "ok": true,
+        "what": "testone1 listed with its primary domain test-one.example",
+        "evidence": {
+            "email": "jane@test.example",
+            "username": "testone1",
+            "domain": "test-one.example",
+            "uniqueIdentifier": "test-one.example",
+            "product": "1",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:30",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-s2",
+        "ok": true,
+        "what": "testtwo2 listed with its primary domain",
+        "evidence": {
+            "email": "jane@test.example",
+            "username": "testtwo2",
+            "domain": "test-two.example",
+            "uniqueIdentifier": "test-two.example",
+            "product": "1",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:31",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-nodomain-3",
+        "ok": true,
+        "what": "mailonly3 (no website) appears as client-3.no-domain.invalid",
+        "evidence": {
+            "email": "jane@test.example",
+            "username": "mailonly3",
+            "domain": "client-3.no-domain.invalid",
+            "uniqueIdentifier": "client-3.no-domain.invalid",
+            "product": "1",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:31",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-nodomain-hand",
+        "ok": true,
+        "what": "handmade1 (no website, not in WHMCS) appears as client-4.no-domain.invalid",
+        "evidence": {
+            "email": "hand@made.example",
+            "username": "handmade1",
+            "domain": "client-4.no-domain.invalid",
+            "uniqueIdentifier": "client-4.no-domain.invalid",
+            "product": "1",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:32",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-orphan",
+        "ok": true,
+        "what": "orphan5 (sys_user missing; client_get_by_username faults) tolerated, synthetic identifier",
+        "evidence": {
+            "email": "orphan@x.example",
+            "username": "orphan5",
+            "domain": "client-5.no-domain.invalid",
+            "uniqueIdentifier": "client-5.no-domain.invalid",
+            "product": "2",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:45",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-status",
+        "ok": true,
+        "what": "all Active",
+        "evidence": [
+            "Active",
+            "Active",
+            "Active",
+            "Active",
+            "Active"
+        ]
+    },
+    {
+        "id": "24-product",
+        "ok": true,
+        "what": "product = template_master id (configoption1): Basic=1, Pro=2",
+        "evidence": {
+            "testone1": "1",
+            "testtwo2": "1",
+            "mailonly3": "1",
+            "handmade1": "1",
+            "orphan5": "2"
+        }
+    },
+    {
+        "id": "24-fields",
+        "ok": true,
+        "what": "primaryip = server IP, email, created Y-m-d H:i:s",
+        "evidence": {
+            "email": "jane@test.example",
+            "username": "testone1",
+            "domain": "test-one.example",
+            "uniqueIdentifier": "test-one.example",
+            "product": "1",
+            "primaryip": "127.0.0.1",
+            "created": "2026-09-28 17:33:30",
+            "status": "Active"
+        }
+    },
+    {
+        "id": "24-readonly",
+        "ok": true,
+        "what": "read-only: no sys_datalog entry on the panel, tblhosting untouched"
+    },
+    {
+        "id": "24-login",
+        "ok": true,
+        "what": "one login for the whole sync",
+        "evidence": 13
+    },
+    {
+        "id": "24-match",
+        "ok": true,
+        "what": "S1 matches (tblhosting.domain \"Test-One.Example\" vs \"test-one.example\" under utf8_unicode_ci), S2 matches; synthetic identifiers match nothing (no blank-domain match)",
+        "evidence": {
+            "testone1": [
+                1
+            ],
+            "testtwo2": [
+                2
+            ],
+            "mailonly3": [],
+            "handmade1": [],
+            "orphan5": []
+        }
+    },
+    {
+        "id": "24-blank",
+        "ok": true,
+        "what": "a blank-domain service would match an EMPTY identifier - the synthetic one keeps it unmatched",
+        "evidence": [
+            5
+        ]
+    },
+    {
+        "id": "24-log-street",
+        "ok": true,
+        "what": "ListAccounts module log carries no street",
+        "evidence": 0
+    },
+    {
+        "id": "24-log-IBAN",
+        "ok": true,
+        "what": "ListAccounts module log carries no IBAN",
+        "evidence": 0
+    },
+    {
+        "id": "24-log-VAT-id",
+        "ok": true,
+        "what": "ListAccounts module log carries no VAT id",
+        "evidence": 0
+    },
+    {
+        "id": "24-log-notes",
+        "ok": true,
+        "what": "ListAccounts module log carries no notes",
+        "evidence": 0
+    },
+    {
+        "id": "24-log-client-password",
+        "ok": true,
+        "what": "ListAccounts module log carries no client password",
+        "evidence": 0
+    },
+    {
+        "id": "24-log-id_rsa-harness",
+        "ok": false,
+        "what": "multi-line client.id_rsa absent from the harness tblmodulelog (masking by value; harness json_encodes before str_replace)",
+        "evidence": 1
+    },
+    {
+        "id": "24-susp1",
+        "ok": true,
+        "what": "Suspend S1 (entire client)"
+    },
+    {
+        "id": "24-susp2",
+        "ok": true,
+        "what": "Suspend S2 (website only)"
+    },
+    {
+        "id": "24-status-susp",
+        "ok": true,
+        "what": "locked client -> Suspended; inactive primary website -> Suspended; others Active",
+        "evidence": {
+            "testone1": "Suspended",
+            "testtwo2": "Suspended",
+            "mailonly3": "Active",
+            "handmade1": "Active",
+            "orphan5": "Active"
+        }
+    },
+    {
+        "id": "24-unsusp",
+        "ok": true,
+        "what": "Unsuspend S1 and S2"
+    },
+    {
+        "id": "24-status-back",
+        "ok": true,
+        "what": "all Active again",
+        "evidence": {
+            "testone1": "Active",
+            "testtwo2": "Active",
+            "mailonly3": "Active",
+            "handmade1": "Active",
+            "orphan5": "Active"
+        }
+    },
+    {
+        "id": "24-neg",
+        "ok": true,
+        "what": "NEGATIVE: success=false with the login advice, one failed login",
+        "evidence": {
+            "success": false,
+            "error": "ISPConfig rejected the login. Check the Username and Password fields of this WHMCS server: they must hold an ISPConfig REMOTE user (System > Remote Users), not a panel administrator login. (The login failed. Username or password wrong.)"
+        }
+    }
+]

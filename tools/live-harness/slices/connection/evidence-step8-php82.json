@@ -1,0 +1,468 @@
+[
+    [
+        "(a) 301 TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (HTTP status 301 from http://127.0.0.2:80/remote/json.php?login)"
+            },
+            "redirect_server_requests": [
+                "[301] POST /remote/json.php?login"
+            ],
+            "catcher_requests": [],
+            "modulelog": [
+                {
+                    "id": 459,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "HTTP status 301 from http://127.0.0.2:80/remote/json.php?login",
+                    "response_bytes": 62
+                }
+            ]
+        }
+    ],
+    [
+        "(a) 301 GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: HTTP status 301 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[301] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.2",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: HTTP status 301 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(a) 302 TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (HTTP status 302 from http://127.0.0.2:80/remote/json.php?login)"
+            },
+            "redirect_server_requests": [
+                "[302] POST /remote/json.php?login"
+            ],
+            "catcher_requests": [],
+            "modulelog": [
+                {
+                    "id": 461,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "HTTP status 302 from http://127.0.0.2:80/remote/json.php?login",
+                    "response_bytes": 62
+                }
+            ]
+        }
+    ],
+    [
+        "(a) 302 GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: HTTP status 302 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[302] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.2",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: HTTP status 302 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(a) 307 TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (HTTP status 307 from http://127.0.0.2:80/remote/json.php?login)"
+            },
+            "redirect_server_requests": [
+                "[307] POST /remote/json.php?login"
+            ],
+            "catcher_requests": [],
+            "modulelog": [
+                {
+                    "id": 463,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "HTTP status 307 from http://127.0.0.2:80/remote/json.php?login",
+                    "response_bytes": 62
+                }
+            ]
+        }
+    ],
+    [
+        "(a) 307 GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: HTTP status 307 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[307] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.2",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: HTTP status 307 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(a) 308 TestConnection",
+        {
+            "result": {
+                "success": false,
+                "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (HTTP status 308 from http://127.0.0.2:80/remote/json.php?login)"
+            },
+            "redirect_server_requests": [
+                "[308] POST /remote/json.php?login"
+            ],
+            "catcher_requests": [],
+            "modulelog": [
+                {
+                    "id": 465,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "HTTP status 308 from http://127.0.0.2:80/remote/json.php?login",
+                    "response_bytes": 62
+                }
+            ]
+        }
+    ],
+    [
+        "(a) 308 GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: HTTP status 308 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[308] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.2",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: HTTP status 308 from http://127.0.0.2:80/remote/json.php?login; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(b) html TestConnection",
+        {
+            "served_bytes": 5255,
+            "result": {
+                "success": false,
+                "error": "Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3..."
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                {
+                    "id": 467,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3...",
+                    "response_bytes": 208
+                }
+            ]
+        }
+    ],
+    [
+        "(b) html excerpt",
+        {
+            "bytes": 120,
+            "ends_with_ellipsis": true,
+            "valid_utf8": true,
+            "text": "<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3"
+        }
+    ],
+    [
+        "(b) html GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.3",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 5255 bytes, starts with: <!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>html { color-scheme: light dark; } body { width: 3...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(b) utf8 TestConnection",
+        {
+            "served_bytes": 437,
+            "result": {
+                "success": false,
+                "error": "Response is not the ISPConfig JSON envelope: non-JSON body, 437 bytes, starts with: <!DOCTYPE html>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..."
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                {
+                    "id": 469,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "Response is not the ISPConfig JSON envelope: non-JSON body, 437 bytes, starts with: <!DOCTYPE html>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...",
+                    "response_bytes": 206
+                }
+            ]
+        }
+    ],
+    [
+        "(b) utf8 excerpt",
+        {
+            "bytes": 119,
+            "ends_with_ellipsis": true,
+            "valid_utf8": true,
+            "text": "<!DOCTYPE html>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+    ],
+    [
+        "(b) utf8 GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 437 bytes, starts with: <!DOCTYPE html>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.3",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: Response is not the ISPConfig JSON envelope: non-JSON body, 437 bytes, starts with: <!DOCTYPE html>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "(b) empty TestConnection",
+        {
+            "served_bytes": 0,
+            "result": {
+                "success": false,
+                "error": "Response is not the ISPConfig JSON envelope: empty body (0 bytes) - the panel returned nothing, e.g. an HTTP redirect/error page or json_encode() failing on non-UTF-8 record data"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "modulelog": [
+                {
+                    "id": 471,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "Response is not the ISPConfig JSON envelope: empty body (0 bytes) - the panel returned nothing, e.g. an HTTP redirect/error page or json_encode() failing on non-UTF-8 record data",
+                    "response_bytes": 178
+                }
+            ]
+        }
+    ],
+    [
+        "(b) empty GetRemoteMetaData + rendered block",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:09:59 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "panel version: Response is not the ISPConfig JSON envelope: empty body (0 bytes) - the panel returned nothing, e.g. an HTTP redirect/error page or json_encode() failing on non-UTF-8 record data; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                "sso_state": "unknown"
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login"
+            ],
+            "block": {
+                "id": 2,
+                "hostname": "127.0.0.3",
+                "lines": [
+                    {
+                        "label": "Single Sign-On",
+                        "value": "Cannot tell - grant get_function_list to this server's remote user"
+                    },
+                    {
+                        "label": "Last Updated",
+                        "value": "just now",
+                        "hint": "2026-09-28 17:09:59"
+                    },
+                    {
+                        "label": "Probe Errors",
+                        "value": "panel version: Response is not the ISPConfig JSON envelope: empty body (0 bytes) - the panel returned nothing, e.g. an HTTP redirect/error page or json_encode() failing on non-UTF-8 record data; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+                        "warn": true
+                    }
+                ]
+            }
+        }
+    ],
+    [
+        "extra outage sweep: requests seen by the outage proxy",
+        [
+            "1 /remote/json.php?login -> proxied",
+            "2 /remote/json.php?monitor_jobqueue_count -> proxied",
+            "3 /remote/json.php?quota_get_by_user -> 502",
+            "4 /remote/json.php?login -> 502"
+        ]
+    ],
+    [
+        "extra outage sweep: tblmodulelog",
+        [
+            {
+                "id": 473,
+                "action": "login",
+                "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                "response": "***",
+                "response_bytes": 3
+            },
+            {
+                "id": 474,
+                "action": "monitor_jobqueue_count",
+                "request": "{\"server_id\":0,\"session_id\":\"***\"}",
+                "response": "0",
+                "response_bytes": 1
+            },
+            {
+                "id": 475,
+                "action": "quota_get_by_user",
+                "request": "{\"client_id\":901,\"session_id\":\"***\"}",
+                "response": "HTTP status 502 from http://127.0.0.5:80/remote/json.php?quota_get_by_user",
+                "response_bytes": 74
+            },
+            {
+                "id": 476,
+                "action": "login",
+                "request": "{\"username\":\"whmcs\",\"password\":\"***\",\"client_login\":false}",
+                "response": "HTTP status 502 from http://127.0.0.5:80/remote/json.php?login",
+                "response_bytes": 62
+            },
+            {
+                "id": 477,
+                "action": "UsageUpdate",
+                "request": "{\"serverid\":3,\"services\":4}",
+                "response": "{\"updated\":0,\"skipped\":{\"2\":\"HTTP status 502 from http://127.0.0.5:80/remote/json.php?quota_get_by_user\",\"3\":\"HTTP status 502 from http://127.0.0.5:80/remote/json.php?login\",\"4\":\"HTTP status 502 from http://127.0.0.5:80/remote/json.php?login\",\"5\":\"HTTP status 502 from http://127.0.0.5:80/remote/json.php?login\"}}",
+                "response_bytes": 313
+            }
+        ]
+    ],
+    [
+        "summary",
+        {
+            "pass": 44,
+            "fail": 0
+        }
+    ]
+]

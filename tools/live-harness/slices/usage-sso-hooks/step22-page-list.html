@@ -1,0 +1,188 @@
+<!doctype html><html><head><title>Servers - WHMCS</title></head><body><div id="sidebar"><a href="clientssummary.php?id=1">client 1</a></div><div id="content"><h2>Server Groups</h2><table class="datatable" id="groups"><tr><th>Group Name</th><th>Fill Type</th><th></th></tr><tr id="grow1"><td id="gname1"><a href="?action=managegroup&amp;id=1">G1</a></td><td>Fill</td><td class="server-usage-count" id="gusage1">Accounts: 0<br>Services: 9</td></tr><tr id="grow2"><td id="gname2"><a href="?action=managegroup&amp;id=2">G2</a></td><td>Fill</td><td class="server-usage-count" id="gusage2">Accounts: 0<br>Services: 0</td></tr></table><table class="datatable" id="servers" width="100%"><tr><th>Server Name</th><th>IP Address</th><th>Active Accounts</th><th>Remote Usage Stats</th><th></th><th></th><th></th><th width="20"></th><th width="20"></th></tr><tr><td colspan="9"><strong>ISPConfig Connect</strong></td></tr><tr id="srow1"><td id="name1"><a href="?action=makedefault&amp;id=1&amp;token=abc123">ISPC-TEST</a></td><td>127.0.0.1</td><td>3/0</td><td class="server-usage-count" id="usage1">Accounts: 0<br>Services: 4</td><td></td><td></td><td><a href="?action=toggle&amp;id=1&amp;token=abc123">Disable</a></td><td id="edit1"><a href="?action=manage&amp;id=1"><img src="images/edit.gif" alt="Edit"></a></td><td><a href="#" onclick="doDelete('1');return false"><img src="images/delete.gif" alt="Delete"></a></td></tr><tr id="srow2"><td id="name2"><a href="?action=makedefault&amp;id=2&amp;token=abc123">ISPC-NEGATIVE</a></td><td>127.0.0.1</td><td>0/0</td><td class="server-usage-count" id="usage2">Accounts: 0<br>Services: 0</td><td></td><td></td><td><a href="?action=toggle&amp;id=2&amp;token=abc123">Disable</a></td><td id="edit2"><a href="?action=manage&amp;id=2"><img src="images/edit.gif" alt="Edit"></a></td><td><a href="#" onclick="doDelete('2');return false"><img src="images/delete.gif" alt="Delete"></a></td></tr><tr><td colspan="9"><strong>cPanel</strong></td></tr><tr id="srow3"><td id="name3"><a href="?action=makedefault&amp;id=3&amp;token=abc123">CPANEL-OTHER</a></td><td>127.0.0.1</td><td>0/0</td><td class="server-usage-count" id="usage3">Accounts: 7<br>Services: 3</td><td></td><td></td><td><a href="?action=toggle&amp;id=3&amp;token=abc123">Disable</a></td><td id="edit3"><a href="?action=manage&amp;id=3"><img src="images/edit.gif" alt="Edit"></a></td><td><a href="#" onclick="doDelete('3');return false"><img src="images/delete.gif" alt="Delete"></a></td></tr></table></div><script type="application/json" id="ispconfigconnect-server-meta">[{"id":1,"hostname":"127.0.0.1","lines":[{"label":"ISPConfig Version","value":"3.2dev"},{"label":"Pending Jobs","value":"58"},{"label":"Clients","value":"4"},{"label":"ISPConfig Nodes","value":"1"},{"label":"Single Sign-On","value":"Not installed"},{"label":"Last Updated","value":"just now","hint":"2026-09-28 17:33:44"}],"accounts":4},{"id":2,"hostname":"127.0.0.1","lines":[{"label":"Single Sign-On","value":"Cannot tell - grant get_function_list to this server\u0027s remote user"},{"label":"Last Updated","value":"just now","hint":"2026-09-28 17:33:44"},{"label":"Probe Errors","value":"panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window","warn":true}]}]</script>
+<style>.ispconfigconnect-meta{margin-top:5px;font-size:11px;line-height:1.5;color:#6c757d}.ispconfigconnect-meta .ispconfigconnect-meta-label{font-weight:600}.ispconfigconnect-meta .ispconfigconnect-meta-warn{color:#b02a37}</style>
+<script>(function () {
+    function serverLinks() {
+        var preferred = {}, fallback = {}, links = document.getElementsByTagName('a');
+        for (var i = 0; i < links.length; i++) {
+            var link = links[i], target = linkTarget(link);
+            if (!target) { continue; }
+            if (target.serversScript) {
+                // Only the per-server EDIT link (action=manage) is an
+                // unambiguous anchor for a server row, and it exists
+                // wherever the row is, so a redesigned (non-table)
+                // layout still resolves. configservers.php with
+                // action=managegroup (server groups) shares the id
+                // namespace, so any configservers link that is NOT
+                // action=manage is ignored outright - never taken as a
+                // row anchor and never used as a fallback either.
+                if (target.action === 'manage' && !preferred[target.id]) {
+                    preferred[target.id] = link;
+                }
+            } else if (!fallback[target.id] && link.closest && link.closest('table')) {
+                // Some other ?id=N link, accepted only inside a table -
+                // sidebar and breadcrumb links must never be mistaken
+                // for a server row.
+                fallback[target.id] = link;
+            }
+        }
+        for (var key in fallback) {
+            if (!preferred[key]) { preferred[key] = fallback[key]; }
+        }
+        return preferred;
+    }
+
+    /**
+     * Where a link really goes, resolved exactly as the browser
+     * resolves it on a click. WHMCS writes the per-row edit link
+     * RELATIVE - href="?action=manage&id=N", with no script name at
+     * all - so the raw attribute cannot say which script it targets
+     * (and a substring test on it silently sent every relative link,
+     * group links included, down the unfiltered fallback path).
+     * Resolving it answers that for the relative, root-relative and
+     * absolute forms alike.
+     *
+     * A link counts as the servers script when it names
+     * configservers.php, or points back at this very page under
+     * whatever URL the page was served (the PHP side only emits this
+     * script on the servers list).
+     *
+     * null - never a guess - when the href is missing or unparsable,
+     * carries no purely numeric id, or the browser has no URL
+     * parser; the row then falls back to the hostname-text match,
+     * which places the block but never rewrites core's Accounts cell.
+     */
+    function linkTarget(link) {
+        var href = link.getAttribute('href');
+        if (!href || typeof URL !== 'function') { return null; }
+        var url;
+        try {
+            url = new URL(href, document.baseURI || window.location.href);
+        } catch (err) {
+            return null;
+        }
+        if (!url.searchParams) { return null; }
+        var id = url.searchParams.get('id');
+        if (!id || !/^\d+$/.test(id)) { return null; }
+        var path = url.pathname || '';
+        return {
+            id: id,
+            action: url.searchParams.get('action'),
+            serversScript: /(?:^|\/)configservers\.php$/i.test(path)
+                || path === window.location.pathname
+        };
+    }
+
+    function cellWithExactText(text) {
+        if (!text) { return null; }
+        var cells = document.getElementsByTagName('td');
+        for (var c = 0; c < cells.length; c++) {
+            if ((cells[c].textContent || '').replace(/^\s+|\s+$/g, '') === text) { return cells[c]; }
+        }
+        return null;
+    }
+
+    function buildBlock(lines) {
+        var box = document.createElement('div');
+        box.className = 'remote-meta-data ispconfigconnect-meta';
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line) { continue; }
+            var row = document.createElement('div');
+            if (line.warn) { row.className = 'ispconfigconnect-meta-warn'; }
+            if (line.hint) { row.setAttribute('title', String(line.hint)); }
+            var label = document.createElement('span');
+            label.className = 'ispconfigconnect-meta-label';
+            label.textContent = String(line.label) + ': ';
+            row.appendChild(label);
+            row.appendChild(document.createTextNode(String(line.value)));
+            box.appendChild(row);
+        }
+        return box;
+    }
+
+    function run() {
+        var holder = document.getElementById('ispconfigconnect-server-meta');
+        if (!holder) { return; }
+        var servers;
+        try { servers = JSON.parse(holder.textContent || '[]'); } catch (err) { return; }
+        if (!servers || typeof servers.length !== 'number') { return; }
+
+        var links = serverLinks();
+        for (var s = 0; s < servers.length; s++) {
+            var server = servers[s];
+            if (!server || !server.lines || !server.lines.length) { continue; }
+            var link = links[String(server.id)];
+            var matchedByLink = false;
+            var cell = null;
+            var linkCell = link && link.closest ? link.closest('td') : null;
+            if (!linkCell && link) { linkCell = link.parentNode; }
+            if (linkCell) {
+                matchedByLink = true;
+                // The edit link identifies the row, but core renders
+                // it alone in a narrow icon column; the block belongs
+                // under the server's name, in the row's first cell.
+                cell = firstCellOf(linkCell.parentNode) || linkCell;
+            }
+            if (!cell) { cell = cellWithExactText(server.hostname); }
+            if (!cell || cell.querySelector('.ispconfigconnect-meta')) { continue; }
+            cell.appendChild(buildBlock(server.lines));
+            // The Accounts rewrite MUTATES a cell core owns, so only
+            // do it when the row is certain: a link (id) match. A
+            // hostname-text match can land on another vendor's row for
+            // the same host, so the block is placed there but core's
+            // Accounts figure is left untouched.
+            if (matchedByLink) { correctAccountCount(cell, server); }
+        }
+    }
+
+    function firstCellOf(row) {
+        if (!row) { return null; }
+        if (row.cells && row.cells.length) { return row.cells[0]; }
+        var kids = row.childNodes || [];
+        for (var k = 0; k < kids.length; k++) {
+            if (kids[k].nodeType === 1 && (kids[k].tagName === 'TD' || kids[k].tagName === 'TH')) {
+                return kids[k];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Core prints "Accounts: N" from tblservers_remote.num_accounts,
+     * a column no module can write: it is reset to 0 on every
+     * metadata refresh and only core's own sync process() step ever
+     * fills it, so for this module it reads 0 forever (see
+     * docs/IMPLEMENTATION-NOTES.md, "WHMCS servers page"). We know
+     * the true figure - it was just probed live - so put it in the
+     * cell rather than leave a permanently wrong zero on the page.
+     *
+     * Strictly presentational, strictly our own rows: the Services
+     * figure beside it is core's and is left untouched, and if the
+     * cell is not in the shape core renders, nothing happens.
+     */
+    function correctAccountCount(hostnameCell, server) {
+        if (typeof server.accounts !== 'number') { return; }
+        var row = hostnameCell.parentNode;
+        if (!row || !row.getElementsByClassName) { return; }
+        var counts = row.getElementsByClassName('server-usage-count');
+        if (!counts || !counts.length) { return; }
+        var cell = counts[0];
+        var nodes = cell.childNodes;
+        for (var n = 0; n < nodes.length; n++) {
+            var node = nodes[n];
+            if (node.nodeType !== 3) { continue; }
+            var text = node.nodeValue || '';
+            if (!/^\s*Accounts:\s*\d+\s*$/.test(text)) { continue; }
+            node.nodeValue = text.replace(/(\d+)/, String(server.accounts));
+            cell.setAttribute('title', 'Live count from the ISPConfig panel');
+            return;
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', run);
+    } else {
+        run();
+    }
+})();</script>
+</body></html>

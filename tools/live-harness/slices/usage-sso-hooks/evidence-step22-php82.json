@@ -1,0 +1,283 @@
+[
+    {
+        "id": "22-hookreg",
+        "ok": true,
+        "what": "loading the installed hook file registers AdminAreaFooterOutput",
+        "evidence": [
+            [
+                "AdminAreaFooterOutput",
+                1,
+                "ispconfigconnect_metaPanelFooterOutput"
+            ]
+        ]
+    },
+    {
+        "id": "22-meta-test",
+        "ok": true,
+        "what": "ISPC-TEST metadata: status ok, client_count 4",
+        "evidence": {
+            "ispconfig_version": "3.2dev",
+            "pending_jobs": 58,
+            "client_count": 4,
+            "service_count": 4,
+            "server_count": 1,
+            "checked_at": "2026-09-28 17:33:44 UTC",
+            "ispconfig_status": "ok",
+            "sso_state": "absent",
+            "sso_available": false
+        }
+    },
+    {
+        "id": "22-login-test",
+        "ok": true,
+        "what": "ISPC-TEST: exactly one login for the page render",
+        "evidence": [
+            "[200] POST /remote/json.php?login",
+            "[200] POST /remote/json.php?server_get_app_version",
+            "[200] POST /remote/json.php?monitor_jobqueue_count",
+            "[200] POST /remote/json.php?client_get_all",
+            "[200] POST /remote/json.php?server_get_all",
+            "[200] POST /remote/json.php?get_function_list",
+            "[200] POST /remote/json.php?logout"
+        ]
+    },
+    {
+        "id": "22-meta-neg",
+        "ok": true,
+        "what": "ISPC-NEGATIVE metadata: unavailable, probe error names the failed login and the skipped probes",
+        "evidence": {
+            "checked_at": "2026-09-28 17:33:44 UTC",
+            "ispconfig_status": "unavailable",
+            "ispconfig_error": "panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window",
+            "sso_state": "unknown"
+        }
+    },
+    {
+        "id": "22-login-neg",
+        "ok": true,
+        "what": "ISPC-NEGATIVE: one failed login, no second attempt, remaining probes skipped",
+        "evidence": [
+            "[200] POST /remote/json.php?login"
+        ]
+    },
+    {
+        "id": "22-attempts",
+        "ok": true,
+        "what": "attempts_login rose by exactly 1 (the NEGATIVE render)",
+        "evidence": [
+            {
+                "ip": "f528764d624db129b32c21fbca0cb8d6",
+                "times": 1
+            }
+        ]
+    },
+    {
+        "id": "22-noapi-list",
+        "ok": true,
+        "what": "footer hook on list made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-noapi-list-explicit",
+        "ok": true,
+        "what": "footer hook on list-explicit made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-noapi-edit",
+        "ok": true,
+        "what": "footer hook on edit made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-noapi-group",
+        "ok": true,
+        "what": "footer hook on group made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-noapi-add",
+        "ok": true,
+        "what": "footer hook on add made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-noapi-other-admin-page",
+        "ok": true,
+        "what": "footer hook on other-admin-page made no panel request and no module-log entry"
+    },
+    {
+        "id": "22-list",
+        "ok": true,
+        "what": "servers list (no action, or action=list): block + script emitted"
+    },
+    {
+        "id": "22-empty-edit",
+        "ok": true,
+        "what": "edit page: no ISPConfig block or script",
+        "evidence": 0
+    },
+    {
+        "id": "22-empty-group",
+        "ok": true,
+        "what": "group page: no ISPConfig block or script",
+        "evidence": 0
+    },
+    {
+        "id": "22-empty-add",
+        "ok": true,
+        "what": "add page: no ISPConfig block or script",
+        "evidence": 0
+    },
+    {
+        "id": "22-empty-other-admin-page",
+        "ok": true,
+        "what": "other-admin-page page: no ISPConfig block or script",
+        "evidence": 0
+    },
+    {
+        "id": "22-payload-scope",
+        "ok": true,
+        "what": "payload lists only the two ISPConfig servers (the cPanel row is never decorated)",
+        "evidence": [
+            1,
+            2
+        ]
+    },
+    {
+        "id": "22-payload-raw",
+        "ok": true,
+        "what": "payload JSON carries no raw < or >"
+    },
+    {
+        "id": "22-js-ok",
+        "ok": true,
+        "what": "the page renders: the script runs with no JS error",
+        "evidence": [
+            0,
+            [],
+            ""
+        ]
+    },
+    {
+        "id": "22-js-where",
+        "ok": true,
+        "what": "blocks placed under ISPC-TEST's and ISPC-NEGATIVE's names only - not the group rows, not the cPanel row",
+        "evidence": [
+            "name1",
+            "name2"
+        ]
+    },
+    {
+        "id": "22-js-firstcol",
+        "ok": true,
+        "what": "block is in the FIRST column (not the edit-icon column)",
+        "evidence": {
+            "name1": 0,
+            "name2": 0
+        }
+    },
+    {
+        "id": "22-js-lines",
+        "ok": true,
+        "what": "ISPC-TEST block: ISPConfig version, pending jobs, clients, nodes, single sign-on line, last updated",
+        "evidence": [
+            "ISPConfig Version",
+            "Pending Jobs",
+            "Clients",
+            "ISPConfig Nodes",
+            "Single Sign-On",
+            "Last Updated"
+        ]
+    },
+    {
+        "id": "22-js-values",
+        "ok": true,
+        "what": "ISPC-TEST values: Clients 4, SSO Not installed, Last Updated just now, pending jobs as probed",
+        "evidence": [
+            "ISPConfig Version: 3.2dev",
+            "Pending Jobs: 58",
+            "Clients: 4",
+            "ISPConfig Nodes: 1",
+            "Single Sign-On: Not installed",
+            "Last Updated: just now"
+        ]
+    },
+    {
+        "id": "22-js-accounts",
+        "ok": true,
+        "what": "Accounts cell shows the live client count (4), matched by the edit link (not hostname text)",
+        "evidence": {
+            "text": "Accounts: 4Services: 4",
+            "title": "Live count from the ISPConfig panel"
+        }
+    },
+    {
+        "id": "22-js-cpanel",
+        "ok": true,
+        "what": "cPanel row on the same hostname untouched",
+        "evidence": {
+            "text": "Accounts: 7Services: 3",
+            "title": null
+        }
+    },
+    {
+        "id": "22-js-groups",
+        "ok": true,
+        "what": "server-group rows (same ids) untouched",
+        "evidence": [
+            {
+                "text": "Accounts: 0Services: 9",
+                "title": null
+            },
+            {
+                "text": "Accounts: 0Services: 0",
+                "title": null
+            }
+        ]
+    },
+    {
+        "id": "22-js-neg",
+        "ok": true,
+        "what": "ISPC-NEGATIVE shows its probe errors (warn line)",
+        "evidence": [
+            "Single Sign-On: Cannot tell - grant get_function_list to this server's remote user",
+            "Last Updated: just now",
+            "Probe Errors: panel version: The login failed. Username or password wrong.; remaining probes skipped - every retry would repeat the same failed login and extend the panel lockout window"
+        ]
+    },
+    {
+        "id": "22-js-neg-sso",
+        "ok": false,
+        "what": "ISPC-NEGATIVE: the single sign-on line does not send the admin to grant get_function_list when the LOGIN failed (sso_state=unknown was recorded because the probe was skipped)",
+        "evidence": [
+            "Single Sign-On: Cannot tell - grant get_function_list to this server's remote user"
+        ]
+    },
+    {
+        "id": "22-js-neg-accounts",
+        "ok": true,
+        "what": "ISPC-NEGATIVE Accounts cell left alone (no live count to give)",
+        "evidence": {
+            "text": "Accounts: 0Services: 0",
+            "title": null
+        }
+    },
+    {
+        "id": "22-js-idempotent",
+        "ok": true,
+        "what": "running the script twice does not duplicate the block",
+        "evidence": 2
+    },
+    {
+        "id": "22-js-edit",
+        "ok": true,
+        "what": "edit page: no ISPConfig block or script in the source"
+    },
+    {
+        "id": "22-js-group",
+        "ok": true,
+        "what": "group page: no ISPConfig block or script in the source"
+    },
+    {
+        "id": "22-twice",
+        "ok": true,
+        "what": "loading includes/hooks/ispconfigconnect.php twice: no fatal, no warning",
+        "evidence": "ok"
+    }
+]

@@ -1,0 +1,287 @@
+[
+    [
+        "TestConnection hostname=\"https:\\/\\/panel.test.example\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \"https://panel.test.example\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"https:\\/\\/panel.test.example\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \"https://panel.test.example\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"https:\\/\\/panel.test.example\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a URL scheme: \"https://panel.test.example\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "TestConnection hostname=\"panel.test.example:8080\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a port - set the port in the WHMCS Port field: \"panel.test.example:8080\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"panel.test.example:8080\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a port - set the port in the WHMCS Port field: \"panel.test.example:8080\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"panel.test.example:8080\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a port - set the port in the WHMCS Port field: \"panel.test.example:8080\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "TestConnection hostname=\"panel.test.example\\/\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a path or slash: \"panel.test.example/\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"panel.test.example\\/\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a path or slash: \"panel.test.example/\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"panel.test.example\\/\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a path or slash: \"panel.test.example/\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "TestConnection hostname=\"user@panel.test.example\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes user information: \"user@panel.test.example\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"user@panel.test.example\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes user information: \"user@panel.test.example\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"user@panel.test.example\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes user information: \"user@panel.test.example\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "TestConnection hostname=\"panel test.example\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it contains whitespace: \"panel test.example\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"panel test.example\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it contains whitespace: \"panel test.example\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"panel test.example\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it contains whitespace: \"panel test.example\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "TestConnection hostname=\"[2001:db8::1]:8080\"",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it is not a valid [IPv6] literal: \"[2001:db8::1]:8080\""
+            },
+            "requests": [],
+            "modulelog": [],
+            "attempts": []
+        }
+    ],
+    [
+        "GetRemoteMetaData hostname=\"[2001:db8::1]:8080\"",
+        {
+            "meta": {
+                "checked_at": "2026-09-28 17:11:18 UTC",
+                "ispconfig_status": "unavailable",
+                "ispconfig_error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it is not a valid [IPv6] literal: \"[2001:db8::1]:8080\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "VerifyPermissions hostname=\"[2001:db8::1]:8080\"",
+        {
+            "result": "Verify Permissions failed: Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it is not a valid [IPv6] literal: \"[2001:db8::1]:8080\"",
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "extra TestConnection {\"hostname\":\"\",\"ipaddress\":\"\",\"expect\":\"Server Hostname\\/IP is empty - set the WHMCS server Hostname or IP Address\"}",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP is empty - set the WHMCS server Hostname or IP Address"
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "extra TestConnection {\"hostname\":\"\",\"ipaddress\":\"127.0.0.1:8082\",\"expect\":\"Server Hostname\\/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a port - set the port in the WHMCS Port field: \\\"127.0.0.1:8082\\\"\"}",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it includes a port - set the port in the WHMCS Port field: \"127.0.0.1:8082\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "extra TestConnection {\"hostname\":\"panel\\uff0fevil.example\",\"ipaddress\":\"127.0.0.1\",\"expect_prefix\":\"Server Hostname\\/IP must be a bare host name or IP address (no scheme, port, path or user) - it contains characters that are not valid in a host name\"}",
+        {
+            "result": {
+                "success": false,
+                "error": "Server Hostname/IP must be a bare host name or IP address (no scheme, port, path or user) - it contains characters that are not valid in a host name (as ASCII it reads \"panel/evil.example\"): \"panel／evil.example\""
+            },
+            "requests": [],
+            "modulelog": []
+        }
+    ],
+    [
+        "extra TestConnection {\"hostname\":\"::1\",\"ipaddress\":\"\",\"expect_prefix\":\"Could not reach the ISPConfig API endpoint\"}",
+        {
+            "result": {
+                "success": false,
+                "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (curl error 7 while calling http://[::1]:8082/remote/json.php?login: Failed to connect to ::1 port 8082 after 0 ms: Couldn't connect to server)"
+            },
+            "requests": [],
+            "modulelog": [
+                {
+                    "id": 1,
+                    "action": "login",
+                    "request": "{\"username\":\"negative\",\"password\":\"***\",\"client_login\":false}",
+                    "response": "curl error 7 while calling http://[::1]:8082/remote/json.php?login: Failed to connect to ::1 port 8082 after 0 ms: Couldn't connect to server",
+                    "response_bytes": 141
+                }
+            ]
+        }
+    ],
+    [
+        "extra IDN TestConnection",
+        {
+            "success": false,
+            "error": "Could not reach the ISPConfig API endpoint. Check the hostname, port (default 8080), the Secure checkbox, and the TLS/CA settings in the Access Hash field. (curl error 6 while calling http://xn--bcher-kva.invalid:8082/remote/json.php?login: Could not resolve host: xn--bcher-kva.invalid)"
+        }
+    ],
+    [
+        "restored TestConnection (throwaway user, 9 groups)",
+        {
+            "result": {
+                "success": true,
+                "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+            },
+            "requests": [
+                "[200] POST /remote/json.php?login",
+                "[200] POST /remote/json.php?server_get_all",
+                "[200] POST /remote/json.php?client_templates_get_all",
+                "[200] POST /remote/json.php?monitor_jobqueue_count",
+                "[200] POST /remote/json.php?client_get",
+                "[200] POST /remote/json.php?client_get_all",
+                "[200] POST /remote/json.php?client_get_by_username",
+                "[200] POST /remote/json.php?client_get_sites_by_user",
+                "[200] POST /remote/json.php?sites_web_domain_get",
+                "[200] POST /remote/json.php?sites_ftp_user_get",
+                "[200] POST /remote/json.php?dns_zone_get",
+                "[200] POST /remote/json.php?quota_get_by_user",
+                "[200] POST /remote/json.php?mailquota_get_by_user",
+                "[200] POST /remote/json.php?databasequota_get_by_user",
+                "[200] POST /remote/json.php?get_function_list",
+                "[200] POST /remote/json.php?logout"
+            ]
+        }
+    ],
+    [
+        "summary",
+        {
+            "pass": 58,
+            "fail": 0
+        }
+    ]
+]

@@ -1,0 +1,95 @@
+vid	service	product	fieldname	adminonly	value
+1	1	1	ispconfig_client_id	on	1
+2	1	1	ispconfig_client_username	on	testone1
+8	1	1	ispconfig_database_id	on	1
+7	1	1	ispconfig_database_user_id	on	1
+6	1	1	ispconfig_dns_zone_id	on	1
+3	1	1	ispconfig_domain_id	on	1
+4	1	1	ispconfig_ftp_user_id	on	1
+5	1	1	ispconfig_mail_domain_id	on	1
+17	1	1	ispconfig_suspended_as	on	
+68	1	2	ispconfig_client_id	on	1
+69	1	2	ispconfig_client_username	on	testone1
+74	1	2	ispconfig_database_id	on	1
+75	1	2	ispconfig_database_user_id	on	1
+73	1	2	ispconfig_dns_zone_id	on	1
+70	1	2	ispconfig_domain_id	on	1
+71	1	2	ispconfig_ftp_user_id	on	1
+72	1	2	ispconfig_mail_domain_id	on	1
+76	1	2	ispconfig_suspended_as	on	
+35	1	3	ispconfig_client_id	on	1
+36	1	3	ispconfig_client_username	on	testone1
+41	1	3	ispconfig_database_id	on	1
+42	1	3	ispconfig_database_user_id	on	1
+40	1	3	ispconfig_dns_zone_id	on	1
+37	1	3	ispconfig_domain_id	on	1
+38	1	3	ispconfig_ftp_user_id	on	1
+39	1	3	ispconfig_mail_domain_id	on	1
+51	1	3	ispconfig_suspended_as	on	
+9	2	1	ispconfig_client_id	on	2
+10	2	1	ispconfig_client_username	on	bchertest2
+16	2	1	ispconfig_database_id	on	2
+15	2	1	ispconfig_database_user_id	on	2
+14	2	1	ispconfig_dns_zone_id	on	2
+11	2	1	ispconfig_domain_id	on	2
+12	2	1	ispconfig_ftp_user_id	on	2
+13	2	1	ispconfig_mail_domain_id	on	2
+43	2	3	ispconfig_client_id	on	2
+44	2	3	ispconfig_client_username	on	bchertest2
+49	2	3	ispconfig_database_id	on	2
+50	2	3	ispconfig_database_user_id	on	2
+48	2	3	ispconfig_dns_zone_id	on	2
+45	2	3	ispconfig_domain_id	on	2
+46	2	3	ispconfig_ftp_user_id	on	2
+47	2	3	ispconfig_mail_domain_id	on	2
+60	3	1	ispconfig_client_id	on	3
+61	3	1	ispconfig_client_username	on	testtwo3
+65	3	1	ispconfig_database_id	on	3
+66	3	1	ispconfig_database_user_id	on	3
+62	3	1	ispconfig_domain_id	on	3
+63	3	1	ispconfig_ftp_user_id	on	3
+64	3	1	ispconfig_mail_domain_id	on	3
+67	3	1	ispconfig_suspended_as	on	
+18	3	2	ispconfig_client_id	on	3
+19	3	2	ispconfig_client_username	on	testtwo3
+24	3	2	ispconfig_database_id	on	3
+23	3	2	ispconfig_database_user_id	on	3
+20	3	2	ispconfig_domain_id	on	3
+21	3	2	ispconfig_ftp_user_id	on	3
+22	3	2	ispconfig_mail_domain_id	on	3
+25	3	2	ispconfig_suspended_as	on	
+52	3	4	ispconfig_client_id	on	3
+53	3	4	ispconfig_client_username	on	testtwo3
+57	3	4	ispconfig_database_id	on	3
+58	3	4	ispconfig_database_user_id	on	3
+54	3	4	ispconfig_domain_id	on	3
+55	3	4	ispconfig_ftp_user_id	on	3
+56	3	4	ispconfig_mail_domain_id	on	3
+59	3	4	ispconfig_suspended_as	on	website
+26	4	2	ispconfig_client_id	on	4
+27	4	2	ispconfig_client_username	on	testthree4
+32	4	2	ispconfig_database_id	on	
+31	4	2	ispconfig_database_user_id	on	
+33	4	2	ispconfig_dns_zone_id	on	
+28	4	2	ispconfig_domain_id	on	4
+29	4	2	ispconfig_ftp_user_id	on	
+30	4	2	ispconfig_mail_domain_id	on	
+34	4	2	ispconfig_suspended_as	on	
+77	5	1	ispconfig_client_id	on	5
+78	5	1	ispconfig_client_username	on	testsix5
+84	5	1	ispconfig_database_id	on	5
+83	5	1	ispconfig_database_user_id	on	5
+82	5	1	ispconfig_dns_zone_id	on	3
+79	5	1	ispconfig_domain_id	on	5
+80	5	1	ispconfig_ftp_user_id	on	5
+81	5	1	ispconfig_mail_domain_id	on	5
+85	5	1	ispconfig_suspended_as	on	client
+86	5	2	ispconfig_client_id	on	5
+87	5	2	ispconfig_client_username	on	testsix5
+92	5	2	ispconfig_database_id	on	5
+93	5	2	ispconfig_database_user_id	on	5
+91	5	2	ispconfig_dns_zone_id	on	3
+88	5	2	ispconfig_domain_id	on	5
+89	5	2	ispconfig_ftp_user_id	on	5
+90	5	2	ispconfig_mail_domain_id	on	5
+94	5	2	ispconfig_suspended_as	on	

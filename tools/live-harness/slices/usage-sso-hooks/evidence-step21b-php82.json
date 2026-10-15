@@ -1,0 +1,11 @@
+[
+    {
+        "id": "21b-order",
+        "ok": false,
+        "what": "following the plan in order (row deleted at the end of step 20), step 21 still shows \"Bandwidth (about 500 MB)\"",
+        "evidence": {
+            "with_row": 500,
+            "after_plan_delete": 0
+        }
+    }
+]

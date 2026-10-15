@@ -1,0 +1,31 @@
+{
+    "schema": "1.0",
+    "type": "whmcs-servers",
+    "name": "ispconfigconnect",
+    "version": "0.2.0",
+    "license": "GPL-3.0-or-later",
+    "category": "provisioning",
+    "description": {
+        "name": "ISPConfig Connect",
+        "tagline": "Provision and manage ISPConfig 3 hosting accounts from WHMCS.",
+        "long": "ISPConfig Connect provisions ISPConfig 3 clients, websites, FTP users, mail domains, DNS zones and databases over the ISPConfig remote JSON API, and manages the full service lifecycle (suspend, unsuspend, password change, package change, terminate) from WHMCS. It also imports disk and bandwidth usage, publishes nine usage-billing metrics, synchronises accounts from the panel, and shows live panel health on the servers page. Single sign-on is optional and off unless the panel has the separate ispconfig-sso project installed, which the module detects on its own.",
+        "features": [
+            "All-or-nothing account provisioning with automatic rollback",
+            "Client template and web server dropdowns loaded live from the panel",
+            "Nightly disk and bandwidth usage import, and nine usage-billing metrics",
+            "Server Sync: compare WHMCS services against the accounts on the panel",
+            "Live panel version, node and job-queue health on Configuration > Servers",
+            "Optional password-free single sign-on, on panels running the separate ispconfig-sso project",
+            "Actionable Test Connection diagnostics including missing API grants",
+            "Every API call logged with credentials masked, and the panel's customer records - bank details, tax id, postal address, 2FA columns - dropped before they reach the log"
+        ]
+    },
+    "support": {
+        "docs_url": "https://github.com/wadejbeckett/ispconfig-connect-whmcs"
+    },
+    "authors": [
+        {
+            "name": "Noiz"
+        }
+    ]
+}

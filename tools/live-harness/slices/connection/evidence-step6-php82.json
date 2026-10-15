@@ -1,0 +1,313 @@
+[
+    [
+        "untick [Quota functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'quota_get_by_user' (needed by quota_get_by_user), 'mailquota_get_by_user' (needed by mailquota_get_by_user), 'databasequota_get_by_user' (needed by databasequota_get_by_user). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [Quota functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'quota_get_by_user' (needed by quota_get_by_user), 'mailquota_get_by_user' (needed by mailquota_get_by_user), 'databasequota_get_by_user' (needed by databasequota_get_by_user). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [Quota functions] probes answered permission_denied (TestConnection)",
+        [
+            "quota_get_by_user",
+            "mailquota_get_by_user",
+            "databasequota_get_by_user"
+        ]
+    ],
+    [
+        "untick [Quota functions] VerifyPermissions module-log line",
+        {
+            "id": 104,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'quota_get_by_user' (needed by quota_get_by_user)\",\"'mailquota_get_by_user' (needed by mailquota_get_by_user)\",\"'databasequota_get_by_user' (needed by databasequota_get_by_user)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open...[+69B]",
+            "response_bytes": 669
+        }
+    ],
+    [
+        "untick [Quota functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Client functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'client_get' (needed by client_get), 'client_get_all' (needed by client_get_all), 'client_get_by_username' (needed by client_get_by_username), 'client_get_sites_by_user' (needed by client_get_sites_by_user). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [Client functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'client_get' (needed by client_get), 'client_get_all' (needed by client_get_all), 'client_get_by_username' (needed by client_get_by_username), 'client_get_sites_by_user' (needed by client_get_sites_by_user). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [Client functions] probes answered permission_denied (TestConnection)",
+        [
+            "client_get",
+            "client_get_all",
+            "client_get_by_username",
+            "client_get_sites_by_user"
+        ]
+    ],
+    [
+        "untick [Client functions] VerifyPermissions module-log line",
+        {
+            "id": 138,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'client_get' (needed by client_get)\",\"'client_get_all' (needed by client_get_all)\",\"'client_get_by_username' (needed by client_get_by_username)\",\"'client_get_sites_by_user' (needed by client_get_sites_by_user)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this...[+101B]",
+            "response_bytes": 701
+        }
+    ],
+    [
+        "untick [Client functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Sites FTP-User functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'sites_ftp_user_get' (needed by sites_ftp_user_get). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [Sites FTP-User functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'sites_ftp_user_get' (needed by sites_ftp_user_get). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [Sites FTP-User functions] probes answered permission_denied (TestConnection)",
+        [
+            "sites_ftp_user_get"
+        ]
+    ],
+    [
+        "untick [Sites FTP-User functions] VerifyPermissions module-log line",
+        {
+            "id": 172,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'sites_ftp_user_get' (needed by sites_ftp_user_get)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 543
+        }
+    ],
+    [
+        "untick [Sites FTP-User functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [DNS zone functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'dns_zone_get' (needed by dns_zone_get). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [DNS zone functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'dns_zone_get' (needed by dns_zone_get). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [DNS zone functions] probes answered permission_denied (TestConnection)",
+        [
+            "dns_zone_get"
+        ]
+    ],
+    [
+        "untick [DNS zone functions] VerifyPermissions module-log line",
+        {
+            "id": 206,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'dns_zone_get' (needed by dns_zone_get)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 531
+        }
+    ],
+    [
+        "untick [DNS zone functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Sites Domain functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'sites_web_domain_get' (needed by sites_web_domain_get). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [Sites Domain functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'sites_web_domain_get' (needed by sites_web_domain_get). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [Sites Domain functions] probes answered permission_denied (TestConnection)",
+        [
+            "sites_web_domain_get"
+        ]
+    ],
+    [
+        "untick [Sites Domain functions] VerifyPermissions module-log line",
+        {
+            "id": 240,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'sites_web_domain_get' (needed by sites_web_domain_get)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 547
+        }
+    ],
+    [
+        "untick [Sites Domain functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Server functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'server_get' (needed by server_get_all), 'client_templates_get_all' (needed by client_templates_get_all). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list). Single sign-on: Cannot tell - this server's remote user lacks the get_function_list grant, so the panel cannot be asked whether the ispconfig-sso add-on is there. That is NOT the same as the add-on being absent: tick \"Server functions\" (the checkbox carrying get_function_list) under System > Remote Users > Functions and check again."
+        }
+    ],
+    [
+        "untick [Server functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'server_get' (needed by server_get_all), 'client_templates_get_all' (needed by client_templates_get_all). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list. Single sign-on: Cannot tell - this server's remote user lacks the get_function_list grant, so the panel cannot be asked whether the ispconfig-sso add-on is there. That is NOT the same as the add-on being absent: tick \"Server functions\" (the checkbox carrying get_function_list) under System > Remote Users > Functions and check again."
+    ],
+    [
+        "untick [Server functions] probes answered permission_denied (TestConnection)",
+        [
+            "server_get_all",
+            "client_templates_get_all",
+            "get_function_list"
+        ]
+    ],
+    [
+        "untick [Server functions] VerifyPermissions module-log line",
+        {
+            "id": 274,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'server_get' (needed by server_get_all)\",\"'client_templates_get_all' (needed by client_templates_get_all)\"],\"sso_state\":\"unknown\",\"sso\":\"Cannot tell - this server's remote user lacks the get_function_list grant, so the panel cannot be asked whether the ispconfig-sso add-on is there. That is NOT the same as the add-on being absent: tick \\\"Server functions\\\" (the checkbox carrying get_function_list) under System > Remote Users > Functions and check again.\"}",
+            "response_bytes": 479
+        }
+    ],
+    [
+        "untick [Server functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Monitor functions] TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'monitor_jobqueue_count' (needed by monitor_jobqueue_count). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list)."
+        }
+    ],
+    [
+        "untick [Monitor functions] Verify Permissions",
+        "The remote user is missing remote_functions grants: 'monitor_jobqueue_count' (needed by monitor_jobqueue_count). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list."
+    ],
+    [
+        "untick [Monitor functions] probes answered permission_denied (TestConnection)",
+        [
+            "monitor_jobqueue_count"
+        ]
+    ],
+    [
+        "untick [Monitor functions] VerifyPermissions module-log line",
+        {
+            "id": 308,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[\"'monitor_jobqueue_count' (needed by monitor_jobqueue_count)\"],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 551
+        }
+    ],
+    [
+        "untick [Monitor functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Sites database functions] TestConnection",
+        {
+            "success": true,
+            "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    ],
+    [
+        "untick [Sites database functions] Verify Permissions",
+        "success"
+    ],
+    [
+        "untick [Sites database functions] probes answered permission_denied (TestConnection)",
+        []
+    ],
+    [
+        "untick [Sites database functions] VerifyPermissions module-log line",
+        {
+            "id": 342,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 490
+        }
+    ],
+    [
+        "untick [Sites database functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "untick [Mail domain functions] TestConnection",
+        {
+            "success": true,
+            "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    ],
+    [
+        "untick [Mail domain functions] Verify Permissions",
+        "success"
+    ],
+    [
+        "untick [Mail domain functions] probes answered permission_denied (TestConnection)",
+        []
+    ],
+    [
+        "untick [Mail domain functions] VerifyPermissions module-log line",
+        {
+            "id": 376,
+            "action": "VerifyPermissions",
+            "request": "{\"serverid\":1}",
+            "response": "{\"missing_grants\":[],\"sso_state\":\"absent\",\"sso\":\"Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes.\"}",
+            "response_bytes": 490
+        }
+    ],
+    [
+        "untick [Mail domain functions] logins on the wire (TestConnection)",
+        1
+    ],
+    [
+        "INFO all-groups user minus Server functions: TestConnection",
+        {
+            "success": false,
+            "error": "Connected and logged in, but the remote user is missing remote_functions grants: 'client_templates_get_all' (needed by client_templates_get_all). Enable them on the remote user under System > Remote Users in ISPConfig (docs/REMOTE-USER.md documents the full grant list). Single sign-on: Cannot tell - this server's remote user lacks the get_function_list grant, so the panel cannot be asked whether the ispconfig-sso add-on is there. That is NOT the same as the add-on being absent: tick \"Server functions\" (the checkbox carrying get_function_list) under System > Remote Users > Functions and check again."
+        }
+    ],
+    [
+        "INFO all-groups user minus Server functions: Verify Permissions",
+        "The remote user is missing remote_functions grants: 'client_templates_get_all' (needed by client_templates_get_all). Enable them under System > Remote Users in ISPConfig; docs/REMOTE-USER.md documents the full grant list. Single sign-on: Cannot tell - this server's remote user lacks the get_function_list grant, so the panel cannot be asked whether the ispconfig-sso add-on is there. That is NOT the same as the add-on being absent: tick \"Server functions\" (the checkbox carrying get_function_list) under System > Remote Users > Functions and check again."
+    ],
+    [
+        "re-granted TestConnection",
+        {
+            "success": true,
+            "error": "Connected. Single sign-on: Not installed - this panel does not have the ispconfig-sso add-on, so no login button is offered for services on this server and customers sign in with the panel address and their login name (nothing is broken by this). To enable it, install the separate ispconfig-sso project on the ISPConfig server, tick connect_sso_token_create for this server's remote user, then open Configuration > System Settings > Servers once so WHMCS re-probes."
+        }
+    ],
+    [
+        "re-granted Verify Permissions",
+        "success"
+    ],
+    [
+        "summary",
+        {
+            "pass": 25,
+            "fail": 2
+        }
+    ]
+]

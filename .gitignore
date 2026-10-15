@@ -1,13 +1,100 @@
-# Tool/agent runtime state — never commit
+# ---------------------------------------------------------------------------
+# Secrets. Nothing matching these may ever reach a public repository.
+# ---------------------------------------------------------------------------
+.secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# ---------------------------------------------------------------------------
+# Dependencies and build/test output
+# ---------------------------------------------------------------------------
+/vendor/
+/node_modules/
+/build/
+/dist/
+/coverage/
+/.phpunit.cache/
+.phpunit.result.cache
+.php-cs-fixer.cache
+.php_cs.cache
+/phpstan.neon
+composer.phar
+
+# ---------------------------------------------------------------------------
+# Local tooling state — AI/agent assistants, task runners, session scratch.
+# This is machine-local, often contains absolute home paths, session ids and
+# live hostnames, and is worthless to anyone else. Ignore it by directory so a
+# new tool's state cannot arrive unnoticed in a public repo.
+#
+# If a project ever wants to SHARE one of these (a checked-in .claude/skills,
+# say), add it deliberately with `git add -f` rather than deleting the rule.
+# ---------------------------------------------------------------------------
+.claude/
 .omc/
 .remember/
-.claude/
-*.log
+.aider*
+.cursor/
+.continue/
+.windsurf/
+.codeium/
+.github-copilot/
+.opencode/
+.gemini/
+.specstory/
+.serena/
+.ruler/
+CLAUDE.local.md
+*.local.json
+scratchpad/
+/tmp/
 
-# Dependencies / build
-vendor/
-node_modules/
+# ---------------------------------------------------------------------------
+# Editors and IDEs
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.nova/
+.zed/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+tags
+.tags
+# Vim / Emacs / Kate swap and backup files
+*.swp
+*.swo
+*.swn
+*~
+.*.sw[a-p]
+\#*\#
+.\#*
+*.bak
+*.orig
+*.rej
 
-# Local environment
-.env
-*.local.php
+# ---------------------------------------------------------------------------
+# OS cruft
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.directory
+.fuse_hidden*
+.nfs*
